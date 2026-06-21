@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "249450735887",
+    "project_id": "aung-1756e",
+    "storage_bucket": "aung-1756e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:249450735887:android:d64e7a0d30d3e18c38767a",
+        "android_client_info": {
+          "package_name": "com.example.fly"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7nEx4x06gnWCXPst8fCWO9ZynGa9L4hY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
