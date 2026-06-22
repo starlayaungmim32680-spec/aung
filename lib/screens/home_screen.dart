@@ -157,19 +157,16 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     }
   }
 
-  void _pauseOnHold() {
+  void _togglePlayPause() {
     if (_controller == null) return;
     setState(() {
-      _controller!.pause();
-      _showPauseIcon = true;
-    });
-  }
-
-  void _resumeOnRelease() {
-    if (_controller == null) return;
-    setState(() {
-      _controller!.play();
-      _showPauseIcon = false;
+      if (_controller!.value.isPlaying) {
+        _controller!.pause();
+        _showPauseIcon = true;
+      } else {
+        _controller!.play();
+        _showPauseIcon = false;
+      }
     });
   }
 
@@ -182,11 +179,9 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
   @override
   Widget build(BuildContext context) {
-    return Listener(
+    return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onPointerDown: (_) => _pauseOnHold(),
-      onPointerUp: (_) => _resumeOnRelease(),
-      onPointerCancel: (_) => _resumeOnRelease(),
+      onTap: _togglePlayPause,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -204,7 +199,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
 
-          // Pause icon overlay - shows while user is holding down on the screen
+          // Pause icon overlay - shows when video is paused after a tap
           if (_showPauseIcon)
             const Center(
               child: Icon(
