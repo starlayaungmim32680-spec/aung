@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:video_player/video_player.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,6 +16,16 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _goToNextVideo(int totalCount) {
+    final int? currentPage = _pageController.page?.round();
+    if (currentPage != null && currentPage < totalCount - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
   }
 
   @override
@@ -58,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     videoUrl: post['videoUrl'] ?? '',
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
+                    onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
               ),
@@ -88,11 +98,13 @@ class _VideoPostItem extends StatefulWidget {
   final String videoUrl;
   final String caption;
   final String userEmail;
+  final VoidCallback onVideoEnd;
 
   const _VideoPostItem({
     required this.videoUrl,
     required this.caption,
     required this.userEmail,
+    required this.onVideoEnd,
   });
 
   @override
@@ -102,6 +114,8 @@ class _VideoPostItem extends StatefulWidget {
 class _VideoPostItemState extends State<_VideoPostItem> {
   VideoPlayerController? _controller;
   bool _isInitialized = false;
+  bool _showPauseIcon = false;
+  bool _hasEnded = false;
 
   @override
   void initState() {
@@ -115,8 +129,9 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final controller =
         VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
     await controller.initialize();
-    controller.setLooping(true);
+    // No looping - video ends naturally so we can detect completion and move to next
     controller.play();
+    controller.addListener(_onVideoProgress);
 
     if (mounted) {
       setState(() {
@@ -126,23 +141,52 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     }
   }
 
+  void _onVideoProgress() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final position = controller.value.position;
+    final duration = controller.value.duration;
+
+    // Detect when the video has finished playing
+    if (!_hasEnded &&
+        duration.inMilliseconds > 0 &&
+        position.inMilliseconds >= duration.inMilliseconds - 200) {
+      _hasEnded = true;
+      widget.onVideoEnd();
+    }
+  }
+
+  void _pauseOnHold() {
+    if (_controller == null) return;
+    setState(() {
+      _controller!.pause();
+      _showPauseIcon = true;
+    });
+  }
+
+  void _resumeOnRelease() {
+    if (_controller == null) return;
+    setState(() {
+      _controller!.play();
+      _showPauseIcon = false;
+    });
+  }
+
   @override
   void dispose() {
+    _controller?.removeListener(_onVideoProgress);
     _controller?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () {
-        if (_controller == null) return;
-        setState(() {
-          _controller!.value.isPlaying
-              ? _controller!.pause()
-              : _controller!.play();
-        });
-      },
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) => _pauseOnHold(),
+      onPointerUp: (_) => _resumeOnRelease(),
+      onPointerCancel: (_) => _resumeOnRelease(),
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -159,6 +203,35 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
+
+          // Pause icon overlay - shows while user is holding down on the screen
+          if (_showPauseIcon)
+            const Center(
+              child: Icon(
+                Icons.play_arrow,
+                color: Colors.white70,
+                size: 80,
+              ),
+            ),
+
+          // Seek/skip bar - lets users scrub or tap to skip through the video
+          if (_isInitialized && _controller != null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: VideoProgressIndicator(
+                _controller!,
+                allowScrubbing: true,
+                colors: const VideoProgressColors(
+                  playedColor: Colors.redAccent,
+                  bufferedColor: Colors.white24,
+                  backgroundColor: Colors.white10,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+              ),
+            ),
+
           Positioned(
             left: 16,
             bottom: 100,
