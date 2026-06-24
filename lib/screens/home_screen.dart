@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -62,11 +63,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 scrollDirection: Axis.vertical,
                 itemCount: posts.length,
                 itemBuilder: (context, index) {
-                  final post = posts[index].data() as Map<String, dynamic>;
+                  final postDoc = posts[index];
+                  final post = postDoc.data() as Map<String, dynamic>;
+                  final List<dynamic> likedBy = post['likedBy'] ?? [];
+
                   return _VideoPostItem(
+                    postId: postDoc.id,
                     videoUrl: post['videoUrl'] ?? '',
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
+                    likedBy: likedBy.cast<String>(),
                     onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
@@ -95,15 +101,19 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _VideoPostItem extends StatefulWidget {
+  final String postId;
   final String videoUrl;
   final String caption;
   final String userEmail;
+  final List<String> likedBy;
   final VoidCallback onVideoEnd;
 
   const _VideoPostItem({
+    required this.postId,
     required this.videoUrl,
     required this.caption,
     required this.userEmail,
+    required this.likedBy,
     required this.onVideoEnd,
   });
 
@@ -129,7 +139,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final controller =
         VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
     await controller.initialize();
-    // No looping - video ends naturally so we can detect completion and move to next
     controller.play();
     controller.addListener(_onVideoProgress);
 
@@ -148,7 +157,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final position = controller.value.position;
     final duration = controller.value.duration;
 
-    // Detect when the video has finished playing
     if (!_hasEnded &&
         duration.inMilliseconds > 0 &&
         position.inMilliseconds >= duration.inMilliseconds - 200) {
@@ -170,6 +178,24 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     });
   }
 
+  Future<void> _toggleLike() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final postRef =
+        FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+
+    if (widget.likedBy.contains(user.uid)) {
+      await postRef.update({
+        'likedBy': FieldValue.arrayRemove([user.uid]),
+      });
+    } else {
+      await postRef.update({
+        'likedBy': FieldValue.arrayUnion([user.uid]),
+      });
+    }
+  }
+
   @override
   void dispose() {
     _controller?.removeListener(_onVideoProgress);
@@ -179,6 +205,9 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
   @override
   Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    final bool isLiked = user != null && widget.likedBy.contains(user.uid);
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _togglePlayPause,
@@ -198,8 +227,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
-
-          // Pause icon overlay - shows when video is paused after a tap
           if (_showPauseIcon)
             const Center(
               child: Icon(
@@ -208,8 +235,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 size: 80,
               ),
             ),
-
-          // Seek/skip bar - lets users scrub or tap to skip through the video
           if (_isInitialized && _controller != null)
             Positioned(
               left: 0,
@@ -226,7 +251,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
               ),
             ),
-
           Positioned(
             left: 16,
             bottom: 100,
@@ -257,14 +281,35 @@ class _VideoPostItemState extends State<_VideoPostItem> {
           ),
           Positioned(
             right: 12,
-            bottom: 100,
+            bottom: 280,
             child: Column(
-              children: const [
-                Icon(Icons.favorite_border, color: Colors.white, size: 32),
-                SizedBox(height: 20),
-                Icon(Icons.comment_outlined, color: Colors.white, size: 32),
-                SizedBox(height: 20),
-                Icon(Icons.share_outlined, color: Colors.white, size: 32),
+              children: [
+                GestureDetector(
+                  onTap: _toggleLike,
+                  child: Column(
+                    children: [
+                      Icon(
+                        isLiked ? Icons.favorite : Icons.favorite_border,
+                        color: isLiked ? Colors.redAccent : Colors.white,
+                        size: 32,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${widget.likedBy.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Icon(Icons.comment_outlined,
+                    color: Colors.white, size: 32),
+                const SizedBox(height: 20),
+                const Icon(Icons.share_outlined, color: Colors.white, size: 32),
               ],
             ),
           ),
