@@ -1,7 +1,18 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
+
+// Available reaction types and their emojis
+const Map<String, String> kReactions = {
+  'like': '👍',
+  'love': '❤️',
+  'haha': '😂',
+  'wow': '😮',
+  'sad': '😢',
+  'angry': '😡',
+};
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -65,14 +76,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 itemBuilder: (context, index) {
                   final postDoc = posts[index];
                   final post = postDoc.data() as Map<String, dynamic>;
-                  final List<dynamic> likedBy = post['likedBy'] ?? [];
+                  final Map<String, dynamic> reactions =
+                      (post['reactions'] as Map<String, dynamic>?) ?? {};
 
                   return _VideoPostItem(
                     postId: postDoc.id,
                     videoUrl: post['videoUrl'] ?? '',
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
-                    likedBy: likedBy.cast<String>(),
+                    reactions: reactions,
                     onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
@@ -105,7 +117,7 @@ class _VideoPostItem extends StatefulWidget {
   final String videoUrl;
   final String caption;
   final String userEmail;
-  final List<String> likedBy;
+  final Map<String, dynamic> reactions;
   final VoidCallback onVideoEnd;
 
   const _VideoPostItem({
@@ -113,7 +125,7 @@ class _VideoPostItem extends StatefulWidget {
     required this.videoUrl,
     required this.caption,
     required this.userEmail,
-    required this.likedBy,
+    required this.reactions,
     required this.onVideoEnd,
   });
 
@@ -126,6 +138,10 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   bool _isInitialized = false;
   bool _showPauseIcon = false;
   bool _hasEnded = false;
+  bool _showReactionPicker = false;
+
+  // Holds the currently flying emojis
+  final List<_FlyingEmoji> _flyingEmojis = [];
 
   @override
   void initState() {
@@ -136,8 +152,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
 
-    final controller =
-        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
+    final controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
     await controller.initialize();
     controller.play();
     controller.addListener(_onVideoProgress);
@@ -165,6 +180,14 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     }
   }
 
+  void _handleScreenTap() {
+    if (_showReactionPicker) {
+      setState(() => _showReactionPicker = false);
+      return;
+    }
+    _togglePlayPause();
+  }
+
   void _togglePlayPause() {
     if (_controller == null) return;
     setState(() {
@@ -178,22 +201,46 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     });
   }
 
-  Future<void> _toggleLike() async {
+  // Spawns a single flying emoji that floats up and fades out
+  void _spawnFlyingEmojis(String emoji) {
+    final flyingEmoji = _FlyingEmoji(
+      id: DateTime.now().microsecondsSinceEpoch,
+      emoji: emoji,
+      startX: 0,
+      horizontalDrift: 20,
+      size: 40,
+      delayMs: 0,
+    );
+    _flyingEmojis.add(flyingEmoji);
+    setState(() {});
+  }
+
+  void _removeFlyingEmoji(int id) {
+    _flyingEmojis.removeWhere((e) => e.id == id);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _setReaction(String type) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final postRef =
-        FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+    final postRef = FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+    final String? currentReaction = widget.reactions[user.uid] as String?;
 
-    if (widget.likedBy.contains(user.uid)) {
-      await postRef.update({
-        'likedBy': FieldValue.arrayRemove([user.uid]),
-      });
+    setState(() => _showReactionPicker = false);
+
+    if (currentReaction == type) {
+      // Tapping the same reaction again removes it
+      await postRef.update({'reactions.${user.uid}': FieldValue.delete()});
     } else {
-      await postRef.update({
-        'likedBy': FieldValue.arrayUnion([user.uid]),
-      });
+      await postRef.update({'reactions.${user.uid}': type});
+      // Trigger the flying emoji animation
+      _spawnFlyingEmojis(kReactions[type]!);
     }
+  }
+
+  void _quickToggleLike() {
+    _setReaction('like');
   }
 
   @override
@@ -206,11 +253,13 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    final bool isLiked = user != null && widget.likedBy.contains(user.uid);
+    final String? myReaction =
+        user != null ? widget.reactions[user.uid] as String? : null;
+    final int reactionCount = widget.reactions.length;
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: _togglePlayPause,
+      onTap: _handleScreenTap,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -227,6 +276,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
+
           if (_showPauseIcon)
             const Center(
               child: Icon(
@@ -235,6 +285,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 size: 80,
               ),
             ),
+
           if (_isInitialized && _controller != null)
             Positioned(
               left: 0,
@@ -251,10 +302,11 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
               ),
             ),
+
           Positioned(
             left: 16,
             bottom: 100,
-            right: 80,
+            right: 90,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -279,41 +331,349 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               ],
             ),
           ),
+
+          // Flying emoji floats up from the reaction button area
+          ..._flyingEmojis.map((e) {
+            return Positioned(
+              right: 30,
+              bottom: 300,
+              child: _FlyingEmojiWidget(
+                key: ValueKey(e.id),
+                data: e,
+                onComplete: () => _removeFlyingEmoji(e.id),
+              ),
+            );
+          }),
+
+          if (_showReactionPicker)
+            Positioned(
+              right: 12,
+              bottom: 340,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(30),
+                  border: Border.all(color: Colors.white24, width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: kReactions.entries.map((entry) {
+                    final int i = kReactions.keys.toList().indexOf(entry.key);
+                    return _AnimatedEmoji(
+                      emoji: entry.value,
+                      delayMs: i * 90,
+                      onTap: () => _setReaction(entry.key),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+
           Positioned(
             right: 12,
             bottom: 280,
             child: Column(
               children: [
+                // Reaction button: tap = like, long press = open picker (no background)
                 GestureDetector(
-                  onTap: _toggleLike,
+                  onTap: _quickToggleLike,
+                  onLongPress: () => setState(() => _showReactionPicker = true),
                   child: Column(
                     children: [
-                      Icon(
-                        isLiked ? Icons.favorite : Icons.favorite_border,
-                        color: isLiked ? Colors.redAccent : Colors.white,
-                        size: 32,
+                      SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: Center(
+                          child: myReaction != null
+                              ? _PopInEmoji(
+                                  key: ValueKey(myReaction),
+                                  emoji: kReactions[myReaction]!,
+                                )
+                              : const Icon(
+                                  Icons.favorite_border,
+                                  color: Colors.white,
+                                  size: 36,
+                                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                                ),
+                        ),
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(height: 4),
                       Text(
-                        '${widget.likedBy.length}',
+                        '$reactionCount',
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 12,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
-                const Icon(Icons.comment_outlined,
-                    color: Colors.white, size: 32),
-                const SizedBox(height: 20),
-                const Icon(Icons.share_outlined, color: Colors.white, size: 32),
+                const SizedBox(height: 22),
+                _buildActionButton(
+                  icon: Icons.mode_comment_outlined,
+                  label: 'Comment',
+                  onTap: () {},
+                ),
+                const SizedBox(height: 22),
+                _buildActionButton(
+                  icon: Icons.send,
+                  label: 'Share',
+                  onTap: () {},
+                ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // Builds an icon-only action button with a label below (no background)
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Icon(
+            icon,
+            color: Colors.white,
+            size: 36,
+            shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Data describing a single flying emoji's path
+class _FlyingEmoji {
+  final int id;
+  final String emoji;
+  final double startX;
+  final double horizontalDrift;
+  final double size;
+  final int delayMs;
+
+  _FlyingEmoji({
+    required this.id,
+    required this.emoji,
+    required this.startX,
+    required this.horizontalDrift,
+    required this.size,
+    required this.delayMs,
+  });
+}
+
+// Animates one emoji floating upward while drifting sideways and fading out
+class _FlyingEmojiWidget extends StatefulWidget {
+  final _FlyingEmoji data;
+  final VoidCallback onComplete;
+
+  const _FlyingEmojiWidget({
+    super.key,
+    required this.data,
+    required this.onComplete,
+  });
+
+  @override
+  State<_FlyingEmojiWidget> createState() => _FlyingEmojiWidgetState();
+}
+
+class _FlyingEmojiWidgetState extends State<_FlyingEmojiWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
+
+    _controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        widget.onComplete();
+      }
+    });
+
+    Future.delayed(Duration(milliseconds: widget.data.delayMs), () {
+      if (mounted) _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final double t = _controller.value;
+        final double offsetY = -320 * t;
+        final double offsetX =
+            widget.data.startX + widget.data.horizontalDrift * sin(t * pi);
+        final double opacity = t < 0.7 ? 1.0 : (1.0 - (t - 0.7) / 0.3);
+        final double scale = 0.6 + 0.6 * t;
+
+        return Transform.translate(
+          offset: Offset(offsetX, offsetY),
+          child: Opacity(
+            opacity: opacity.clamp(0.0, 1.0),
+            child: Transform.scale(
+              scale: scale,
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: Text(
+        widget.data.emoji,
+        style: TextStyle(fontSize: widget.data.size),
+      ),
+    );
+  }
+}
+
+class _AnimatedEmoji extends StatefulWidget {
+  final String emoji;
+  final int delayMs;
+  final VoidCallback onTap;
+
+  const _AnimatedEmoji({
+    required this.emoji,
+    required this.delayMs,
+    required this.onTap,
+  });
+
+  @override
+  State<_AnimatedEmoji> createState() => _AnimatedEmojiState();
+}
+
+class _AnimatedEmojiState extends State<_AnimatedEmoji>
+    with TickerProviderStateMixin {
+  late final AnimationController _bounceController;
+  late final AnimationController _entranceController;
+  late final Animation<double> _entranceScale;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _bounceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+
+    _entranceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _entranceScale = CurvedAnimation(
+      parent: _entranceController,
+      curve: Curves.elasticOut,
+    );
+
+    Future.delayed(Duration(milliseconds: widget.delayMs), () {
+      if (mounted) _entranceController.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _bounceController.dispose();
+    _entranceController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: ScaleTransition(
+        scale: _entranceScale,
+        child: AnimatedBuilder(
+          animation: _bounceController,
+          builder: (context, child) {
+            final double offsetY = -6 * _bounceController.value;
+            return Transform.translate(
+              offset: Offset(0, offsetY),
+              child: child,
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              widget.emoji,
+              style: const TextStyle(fontSize: 32),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PopInEmoji extends StatefulWidget {
+  final String emoji;
+
+  const _PopInEmoji({super.key, required this.emoji});
+
+  @override
+  State<_PopInEmoji> createState() => _PopInEmojiState();
+}
+
+class _PopInEmojiState extends State<_PopInEmoji>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+    _scale = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: Text(
+        widget.emoji,
+        style: const TextStyle(fontSize: 32),
       ),
     );
   }
