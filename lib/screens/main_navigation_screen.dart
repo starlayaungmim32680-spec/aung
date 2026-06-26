@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
@@ -31,11 +32,28 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     ProfileScreen(),
   ];
 
+  // Each menu item has an icon and its own accent gradient
   final List<Map<String, dynamic>> _menuItems = const [
-    {'icon': Icons.home, 'label': 'Home'},
-    {'icon': Icons.chat_bubble_outline, 'label': 'Chat'},
-    {'icon': Icons.add_box_outlined, 'label': 'Upload'},
-    {'icon': Icons.person_outline, 'label': 'Profile'},
+    {
+      'icon': Icons.home_rounded,
+      'label': 'Home',
+      'colors': [Color(0xFFFF4B6E), Color(0xFFD32F4F)],
+    },
+    {
+      'icon': Icons.chat_bubble_rounded,
+      'label': 'Chat',
+      'colors': [Color(0xFF3A8DFF), Color(0xFF1565C0)],
+    },
+    {
+      'icon': Icons.add_rounded,
+      'label': 'Upload',
+      'colors': [Color(0xFF24D17E), Color(0xFF0E9F5E)],
+    },
+    {
+      'icon': Icons.person_rounded,
+      'label': 'Profile',
+      'colors': [Color(0xFF9C4DFF), Color(0xFF6A1B9A)],
+    },
   ];
 
   @override
@@ -142,6 +160,73 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
+  // Builds one menu item. The active item expands into a gradient pill with a label
+  Widget _buildMenuItem(int i) {
+    final item = _menuItems[i];
+    final bool isActive = _currentIndex == i;
+    final List<Color> colors = (item['colors'] as List).cast<Color>();
+
+    return GestureDetector(
+      onTap: () => _selectTab(i),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+        padding: EdgeInsets.symmetric(
+          horizontal: isActive ? 18 : 14,
+          vertical: 12,
+        ),
+        decoration: BoxDecoration(
+          gradient: isActive
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: colors,
+                )
+              : null,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: isActive
+              ? [
+                  BoxShadow(
+                    color: colors.first.withOpacity(0.5),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              item['icon'],
+              color: Colors.white,
+              size: 26,
+              shadows: const [Shadow(color: Colors.black54, blurRadius: 6)],
+            ),
+            // Show the label only for the active item, with a smooth expand
+            AnimatedSize(
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
+              child: isActive
+                  ? Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(
+                        item['label'],
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -153,46 +238,41 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             children: _screens,
           ),
 
-          // Bottom row with 4 icons - no background, just floating icons
+          // Frosted-glass pill menu bar with the 4 items - only visible when open
           if (_isMenuOpen)
             Positioned(
               left: 0,
               right: 0,
               bottom: 90,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 30),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: List.generate(_menuItems.length, (i) {
-                    final item = _menuItems[i];
-                    final bool isActive = _currentIndex == i;
-                    return GestureDetector(
-                      onTap: () => _selectTab(i),
-                      child: Column(
-                        children: [
-                          Icon(
-                            item['icon'],
-                            color: isActive ? Colors.redAccent : Colors.white,
-                            size: 28,
-                            shadows: const [
-                              Shadow(color: Colors.black, blurRadius: 8),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            item['label'],
-                            style: TextStyle(
-                              color: isActive ? Colors.redAccent : Colors.white,
-                              fontSize: 12,
-                              shadows: const [
-                                Shadow(color: Colors.black, blurRadius: 8),
-                              ],
-                            ),
-                          ),
-                        ],
+              child: Center(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.15),
+                          width: 1,
+                        ),
                       ),
-                    );
-                  }),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: List.generate(
+                          _menuItems.length,
+                          (i) => Padding(
+                            // Wider spacing between the items
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            child: _buildMenuItem(i),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),

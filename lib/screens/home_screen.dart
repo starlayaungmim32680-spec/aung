@@ -81,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   return _VideoPostItem(
                     postId: postDoc.id,
+                    userId: post['userId'] ?? '',
                     videoUrl: post['videoUrl'] ?? '',
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
@@ -114,6 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _VideoPostItem extends StatefulWidget {
   final String postId;
+  final String userId;
   final String videoUrl;
   final String caption;
   final String userEmail;
@@ -122,6 +124,7 @@ class _VideoPostItem extends StatefulWidget {
 
   const _VideoPostItem({
     required this.postId,
+    required this.userId,
     required this.videoUrl,
     required this.caption,
     required this.userEmail,
@@ -152,7 +155,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
 
-    final controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
+    final controller =
+        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
     await controller.initialize();
     controller.play();
     controller.addListener(_onVideoProgress);
@@ -224,23 +228,32 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final postRef = FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+    final postRef =
+        FirebaseFirestore.instance.collection('posts').doc(widget.postId);
     final String? currentReaction = widget.reactions[user.uid] as String?;
 
     setState(() => _showReactionPicker = false);
 
     if (currentReaction == type) {
-      // Tapping the same reaction again removes it
       await postRef.update({'reactions.${user.uid}': FieldValue.delete()});
     } else {
       await postRef.update({'reactions.${user.uid}': type});
-      // Trigger the flying emoji animation
       _spawnFlyingEmojis(kReactions[type]!);
     }
   }
 
   void _quickToggleLike() {
     _setReaction('like');
+  }
+
+  // Opens the comments bottom sheet for this post
+  void _openComments() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _CommentsSheet(postId: widget.postId),
+    );
   }
 
   @override
@@ -276,7 +289,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
-
           if (_showPauseIcon)
             const Center(
               child: Icon(
@@ -285,7 +297,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 size: 80,
               ),
             ),
-
           if (_isInitialized && _controller != null)
             Positioned(
               left: 0,
@@ -302,37 +313,16 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
               ),
             ),
-
           Positioned(
             left: 16,
             bottom: 100,
             right: 90,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  widget.userEmail,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  widget.caption,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                  ),
-                ),
-              ],
+            child: _OwnerInfo(
+              userId: widget.userId,
+              fallbackEmail: widget.userEmail,
+              caption: widget.caption,
             ),
           ),
-
-          // Flying emoji floats up from the reaction button area
           ..._flyingEmojis.map((e) {
             return Positioned(
               right: 30,
@@ -344,13 +334,13 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               ),
             );
           }),
-
           if (_showReactionPicker)
             Positioned(
               right: 12,
               bottom: 340,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.85),
                   borderRadius: BorderRadius.circular(30),
@@ -369,13 +359,12 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 ),
               ),
             ),
-
           Positioned(
             right: 12,
             bottom: 280,
             child: Column(
               children: [
-                // Reaction button: tap = like, long press = open picker (no background)
+                // Reaction button (icon only)
                 GestureDetector(
                   onTap: _quickToggleLike,
                   onLongPress: () => setState(() => _showReactionPicker = true),
@@ -394,7 +383,9 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                                   Icons.favorite_border,
                                   color: Colors.white,
                                   size: 36,
-                                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                                  shadows: [
+                                    Shadow(color: Colors.black, blurRadius: 6)
+                                  ],
                                 ),
                         ),
                       ),
@@ -412,13 +403,66 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                   ),
                 ),
                 const SizedBox(height: 22),
-                _buildActionButton(
-                  icon: Icons.mode_comment_outlined,
-                  label: 'Comment',
-                  onTap: () {},
+                // Comment button - circular shape, shows live comment count
+                StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('posts')
+                      .doc(widget.postId)
+                      .collection('comments')
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    final int commentCount =
+                        snapshot.hasData ? snapshot.data!.docs.length : 0;
+                    return GestureDetector(
+                      onTap: _openComments,
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 52,
+                            height: 52,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
+                              ),
+                              border:
+                                  Border.all(color: Colors.white24, width: 1),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.4),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.mode_comment_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '$commentCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              shadows: [
+                                Shadow(color: Colors.black, blurRadius: 6)
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 22),
-                _buildActionButton(
+                // Share button (icon only)
+                _buildIconButton(
                   icon: Icons.send,
                   label: 'Share',
                   onTap: () {},
@@ -432,7 +476,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   }
 
   // Builds an icon-only action button with a label below (no background)
-  Widget _buildActionButton({
+  Widget _buildIconButton({
     required IconData icon,
     required String label,
     required VoidCallback onTap,
@@ -459,6 +503,353 @@ class _VideoPostItemState extends State<_VideoPostItem> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// Bottom sheet that shows comments and lets the user add one
+class _CommentsSheet extends StatefulWidget {
+  final String postId;
+
+  const _CommentsSheet({required this.postId});
+
+  @override
+  State<_CommentsSheet> createState() => _CommentsSheetState();
+}
+
+class _CommentsSheetState extends State<_CommentsSheet> {
+  final TextEditingController _commentController = TextEditingController();
+  bool _isSending = false;
+
+  @override
+  void dispose() {
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendComment() async {
+    final user = FirebaseAuth.instance.currentUser;
+    final String text = _commentController.text.trim();
+    if (user == null || text.isEmpty) return;
+
+    setState(() => _isSending = true);
+
+    // Look up the sender's profile name/photo
+    final profileDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .get();
+    final profile = profileDoc.data();
+    final String displayName =
+        (profile?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? profile!['displayName']
+            : (user.email?.split('@').first ?? 'User');
+    final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+
+    await FirebaseFirestore.instance
+        .collection('posts')
+        .doc(widget.postId)
+        .collection('comments')
+        .add({
+      'userId': user.uid,
+      'displayName': displayName,
+      'photoUrl': photoUrl,
+      'text': text,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    _commentController.clear();
+    if (mounted) setState(() => _isSending = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Push the sheet above the keyboard
+    final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      decoration: const BoxDecoration(
+        color: Color(0xFF161616),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Column(
+        children: [
+          // Grab handle + title
+          const SizedBox(height: 10),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Comments',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Divider(color: Colors.white12, height: 1),
+
+          // Comments list
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('posts')
+                  .doc(widget.postId)
+                  .collection('comments')
+                  .orderBy('createdAt', descending: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.redAccent),
+                  );
+                }
+
+                final comments = snapshot.data?.docs ?? [];
+
+                if (comments.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'No comments yet. Say something!',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: comments.length,
+                  itemBuilder: (context, index) {
+                    final c = comments[index].data() as Map<String, dynamic>;
+                    final String name = c['displayName'] ?? 'User';
+                    final String text = c['text'] ?? '';
+                    final String photoUrl = c['photoUrl'] ?? '';
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CircleAvatar(
+                            radius: 18,
+                            backgroundColor: Colors.grey[800],
+                            backgroundImage: photoUrl.isNotEmpty
+                                ? NetworkImage(photoUrl)
+                                : null,
+                            child: photoUrl.isEmpty
+                                ? Text(
+                                    name.isNotEmpty
+                                        ? name[0].toUpperCase()
+                                        : '?',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  )
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  text,
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+
+          const Divider(color: Colors.white12, height: 1),
+
+          // Comment input row - padded above the phone's bottom navigation bar
+          Padding(
+            padding: EdgeInsets.only(
+              left: 12,
+              right: 12,
+              top: 8,
+              bottom: 8 + MediaQuery.of(context).padding.bottom,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _commentController,
+                    style: const TextStyle(color: Colors.white),
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: 'Add a comment...',
+                      hintStyle: const TextStyle(color: Colors.grey),
+                      filled: true,
+                      fillColor: Colors.grey[900],
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: _isSending ? null : _sendComment,
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
+                      ),
+                    ),
+                    child: _isSending
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Icon(Icons.send, color: Colors.white, size: 20),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Shows the post owner's profile photo and display name (from the users collection)
+class _OwnerInfo extends StatelessWidget {
+  final String userId;
+  final String fallbackEmail;
+  final String caption;
+
+  const _OwnerInfo({
+    required this.userId,
+    required this.fallbackEmail,
+    required this.caption,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: userId.isEmpty
+          ? null
+          : FirebaseFirestore.instance
+              .collection('users')
+              .doc(userId)
+              .snapshots(),
+      builder: (context, snapshot) {
+        final Map<String, dynamic>? profile =
+            snapshot.data?.data() as Map<String, dynamic>?;
+
+        final String displayName =
+            (profile?['displayName'] as String?)?.trim().isNotEmpty == true
+                ? profile!['displayName']
+                : (fallbackEmail.contains('@')
+                    ? fallbackEmail.split('@').first
+                    : fallbackEmail);
+        final String? photoUrl = profile?['photoUrl'] as String?;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                    ),
+                  ),
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.grey[850],
+                    backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                        ? NetworkImage(photoUrl)
+                        : null,
+                    child: (photoUrl == null || photoUrl.isEmpty)
+                        ? Text(
+                            displayName.isNotEmpty
+                                ? displayName[0].toUpperCase()
+                                : '?',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          )
+                        : null,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    displayName,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (caption.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                caption,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 }
