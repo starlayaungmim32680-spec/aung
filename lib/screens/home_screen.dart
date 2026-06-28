@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
+import 'package:share_plus/share_plus.dart';
 import 'notifications_screen.dart';
 
 // Available reaction types and their emojis
@@ -107,7 +108,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ),
                       ),
-                      // Notification bell button at the top-right
                       Positioned(
                         right: 12,
                         top: 0,
@@ -234,7 +234,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     if (mounted) setState(() {});
   }
 
-  // Creates a notification for the video owner (skips notifying yourself)
   Future<void> _createNotification({
     required String type,
     required String text,
@@ -291,6 +290,13 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
   void _quickToggleLike() {
     _setReaction('like');
+  }
+
+  Future<void> _shareVideo() async {
+    final String shareText = widget.caption.isNotEmpty
+        ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
+        : 'Watch this video on Fly: ${widget.videoUrl}';
+    await Share.share(shareText);
   }
 
   void _openComments() {
@@ -511,7 +517,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 _buildIconButton(
                   icon: Icons.send,
                   label: 'Share',
-                  onTap: () {},
+                  onTap: _shareVideo,
                 ),
               ],
             ),
@@ -552,7 +558,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   }
 }
 
-// Bottom sheet that shows comments and lets the user add one
+// Bottom sheet that shows comments, replies, and emoji reactions
 class _CommentsSheet extends StatefulWidget {
   final String postId;
   final String ownerId;
@@ -565,12 +571,44 @@ class _CommentsSheet extends StatefulWidget {
 
 class _CommentsSheetState extends State<_CommentsSheet> {
   final TextEditingController _commentController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
   bool _isSending = false;
+
+  String? _replyToCommentId;
+  String? _replyToName;
 
   @override
   void dispose() {
     _commentController.dispose();
+    _focusNode.dispose();
     super.dispose();
+  }
+
+  Future<Map<String, String>> _getMyProfile(String uid, String? email) async {
+    final doc =
+        await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final data = doc.data();
+    final String name =
+        (data?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? data!['displayName']
+            : (email?.split('@').first ?? 'User');
+    final String photo = (data?['photoUrl'] as String?) ?? '';
+    return {'name': name, 'photo': photo};
+  }
+
+  void _startReply(String commentId, String name) {
+    setState(() {
+      _replyToCommentId = commentId;
+      _replyToName = name;
+    });
+    _focusNode.requestFocus();
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _replyToCommentId = null;
+      _replyToName = null;
+    });
   }
 
   Future<void> _sendComment() async {
@@ -580,49 +618,103 @@ class _CommentsSheetState extends State<_CommentsSheet> {
 
     setState(() => _isSending = true);
 
-    final profileDoc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get();
-    final profile = profileDoc.data();
-    final String displayName =
-        (profile?['displayName'] as String?)?.trim().isNotEmpty == true
-            ? profile!['displayName']
-            : (user.email?.split('@').first ?? 'User');
-    final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+    final profile = await _getMyProfile(user.uid, user.email);
+    final String displayName = profile['name']!;
+    final String photoUrl = profile['photo']!;
 
-    await FirebaseFirestore.instance
+    final commentsRef = FirebaseFirestore.instance
         .collection('posts')
         .doc(widget.postId)
-        .collection('comments')
-        .add({
-      'userId': user.uid,
-      'displayName': displayName,
-      'photoUrl': photoUrl,
-      'text': text,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+        .collection('comments');
 
-    // Notify the post owner about the comment (skip notifying yourself)
-    if (widget.ownerId.isNotEmpty && widget.ownerId != user.uid) {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.ownerId)
-          .collection('notifications')
-          .add({
-        'type': 'comment',
+    if (_replyToCommentId == null) {
+      await commentsRef.add({
+        'userId': user.uid,
+        'displayName': displayName,
+        'photoUrl': photoUrl,
         'text': text,
-        'fromId': user.uid,
-        'fromName': displayName,
-        'fromPhoto': photoUrl,
-        'postId': widget.postId,
-        'seen': false,
+        'reactions': <String, dynamic>{},
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      if (widget.ownerId.isNotEmpty && widget.ownerId != user.uid) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.ownerId)
+            .collection('notifications')
+            .add({
+          'type': 'comment',
+          'text': text,
+          'fromId': user.uid,
+          'fromName': displayName,
+          'fromPhoto': photoUrl,
+          'postId': widget.postId,
+          'seen': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } else {
+      await commentsRef.doc(_replyToCommentId).collection('replies').add({
+        'userId': user.uid,
+        'displayName': displayName,
+        'photoUrl': photoUrl,
+        'text': text,
+        'reactions': <String, dynamic>{},
         'createdAt': FieldValue.serverTimestamp(),
       });
     }
 
     _commentController.clear();
+    _cancelReply();
     if (mounted) setState(() => _isSending = false);
+  }
+
+  // Sets or removes the current user's emoji reaction on a comment/reply
+  Future<void> _setReaction(DocumentReference ref,
+      Map<String, dynamic> reactions, String type) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final String? current = reactions[user.uid] as String?;
+    if (current == type) {
+      await ref.update({'reactions.${user.uid}': FieldValue.delete()});
+    } else {
+      await ref.update({'reactions.${user.uid}': type});
+    }
+  }
+
+  // Opens the emoji picker for a comment/reply reaction
+  void _openReactionPicker(
+      DocumentReference ref, Map<String, dynamic> reactions) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          margin: const EdgeInsets.all(20),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF222222),
+            borderRadius: BorderRadius.circular(40),
+            border: Border.all(color: Colors.white24, width: 1),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: kReactions.entries.map((entry) {
+              final int i = kReactions.keys.toList().indexOf(entry.key);
+              return _AnimatedEmoji(
+                emoji: entry.value,
+                delayMs: i * 60,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _setReaction(ref, reactions, entry.key);
+                },
+              );
+            }).toList(),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -630,7 +722,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
+      height: MediaQuery.of(context).size.height * 0.75,
       decoration: const BoxDecoration(
         color: Color(0xFF161616),
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -688,61 +780,12 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   itemCount: comments.length,
                   itemBuilder: (context, index) {
-                    final c = comments[index].data() as Map<String, dynamic>;
-                    final String name = c['displayName'] ?? 'User';
-                    final String text = c['text'] ?? '';
-                    final String photoUrl = c['photoUrl'] ?? '';
-
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          CircleAvatar(
-                            radius: 18,
-                            backgroundColor: Colors.grey[800],
-                            backgroundImage: photoUrl.isNotEmpty
-                                ? NetworkImage(photoUrl)
-                                : null,
-                            child: photoUrl.isEmpty
-                                ? Text(
-                                    name.isNotEmpty
-                                        ? name[0].toUpperCase()
-                                        : '?',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  )
-                                : null,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  name,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  text,
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
+                    final doc = comments[index];
+                    return _CommentTile(
+                      commentRef: doc.reference,
+                      data: doc.data() as Map<String, dynamic>,
+                      onReply: _startReply,
+                      onReact: _openReactionPicker,
                     );
                   },
                 );
@@ -750,6 +793,26 @@ class _CommentsSheetState extends State<_CommentsSheet> {
             ),
           ),
           const Divider(color: Colors.white12, height: 1),
+          if (_replyToName != null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              color: Colors.white.withOpacity(0.05),
+              child: Row(
+                children: [
+                  Text(
+                    'Replying to $_replyToName',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: _cancelReply,
+                    child:
+                        const Icon(Icons.close, color: Colors.grey, size: 18),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: EdgeInsets.only(
               left: 12,
@@ -762,11 +825,14 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                 Expanded(
                   child: TextField(
                     controller: _commentController,
+                    focusNode: _focusNode,
                     style: const TextStyle(color: Colors.white),
                     minLines: 1,
                     maxLines: 4,
                     decoration: InputDecoration(
-                      hintText: 'Add a comment...',
+                      hintText: _replyToName != null
+                          ? 'Write a reply...'
+                          : 'Add a comment...',
                       hintStyle: const TextStyle(color: Colors.grey),
                       filled: true,
                       fillColor: Colors.grey[900],
@@ -804,6 +870,282 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Shows the distinct emoji reactions present plus the total count
+class _ReactionSummary extends StatelessWidget {
+  final Map<String, dynamic> reactions;
+  final VoidCallback onTap;
+  final double emojiSize;
+
+  const _ReactionSummary({
+    required this.reactions,
+    required this.onTap,
+    this.emojiSize = 16,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Get the distinct reaction types present (e.g. like, haha, angry)
+    final List<String> distinctTypes =
+        reactions.values.map((e) => e.toString()).toSet().toList();
+    final int count = reactions.length;
+
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        children: [
+          if (distinctTypes.isEmpty)
+            Icon(Icons.add_reaction_outlined,
+                color: Colors.grey[500], size: emojiSize + 2)
+          else
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: distinctTypes
+                  .take(3)
+                  .map((type) => Text(
+                        kReactions[type] ?? '',
+                        style: TextStyle(fontSize: emojiSize),
+                      ))
+                  .toList(),
+            ),
+          if (count > 0)
+            Text(
+              '$count',
+              style: TextStyle(color: Colors.grey[500], fontSize: 11),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// A single comment with emoji reactions, a reply button, and its replies
+class _CommentTile extends StatefulWidget {
+  final DocumentReference commentRef;
+  final Map<String, dynamic> data;
+  final void Function(String commentId, String name) onReply;
+  final void Function(DocumentReference ref, Map<String, dynamic> reactions)
+      onReact;
+
+  const _CommentTile({
+    required this.commentRef,
+    required this.data,
+    required this.onReply,
+    required this.onReact,
+  });
+
+  @override
+  State<_CommentTile> createState() => _CommentTileState();
+}
+
+class _CommentTileState extends State<_CommentTile> {
+  bool _showReplies = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final String name = widget.data['displayName'] ?? 'User';
+    final String text = widget.data['text'] ?? '';
+    final String photoUrl = widget.data['photoUrl'] ?? '';
+    final Map<String, dynamic> reactions =
+        (widget.data['reactions'] as Map<String, dynamic>?) ?? {};
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: Colors.grey[800],
+                backgroundImage:
+                    photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                child: photoUrl.isEmpty
+                    ? Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      text,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        GestureDetector(
+                          onTap: () =>
+                              widget.onReply(widget.commentRef.id, name),
+                          child: Text(
+                            'Reply',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        StreamBuilder<QuerySnapshot>(
+                          stream: widget.commentRef
+                              .collection('replies')
+                              .snapshots(),
+                          builder: (context, snapshot) {
+                            final int replyCount = snapshot.hasData
+                                ? snapshot.data!.docs.length
+                                : 0;
+                            if (replyCount == 0) return const SizedBox.shrink();
+                            return GestureDetector(
+                              onTap: () =>
+                                  setState(() => _showReplies = !_showReplies),
+                              child: Text(
+                                _showReplies
+                                    ? 'Hide replies'
+                                    : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              // Emoji reaction button for this comment
+              _ReactionSummary(
+                reactions: reactions,
+                onTap: () => widget.onReact(widget.commentRef, reactions),
+              ),
+            ],
+          ),
+        ),
+        if (_showReplies)
+          StreamBuilder<QuerySnapshot>(
+            stream: widget.commentRef
+                .collection('replies')
+                .orderBy('createdAt', descending: false)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final replies = snapshot.data?.docs ?? [];
+              return Column(
+                children: replies.map((replyDoc) {
+                  return _ReplyTile(
+                    replyRef: replyDoc.reference,
+                    data: replyDoc.data() as Map<String, dynamic>,
+                    onReact: widget.onReact,
+                  );
+                }).toList(),
+              );
+            },
+          ),
+      ],
+    );
+  }
+}
+
+// A single reply (indented) with emoji reactions
+class _ReplyTile extends StatelessWidget {
+  final DocumentReference replyRef;
+  final Map<String, dynamic> data;
+  final void Function(DocumentReference ref, Map<String, dynamic> reactions)
+      onReact;
+
+  const _ReplyTile({
+    required this.replyRef,
+    required this.data,
+    required this.onReact,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final String name = data['displayName'] ?? 'User';
+    final String text = data['text'] ?? '';
+    final String photoUrl = data['photoUrl'] ?? '';
+    final Map<String, dynamic> reactions =
+        (data['reactions'] as Map<String, dynamic>?) ?? {};
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 56, right: 16, top: 6, bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: Colors.grey[800],
+            backgroundImage:
+                photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+            child: photoUrl.isEmpty
+                ? Text(
+                    name.isNotEmpty ? name[0].toUpperCase() : '?',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  )
+                : null,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  text,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          // Emoji reaction button for this reply
+          _ReactionSummary(
+            reactions: reactions,
+            onTap: () => onReact(replyRef, reactions),
+            emojiSize: 14,
           ),
         ],
       ),
