@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
@@ -36,6 +37,20 @@ class FlyApp extends StatelessWidget {
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
+  // Makes sure the logged-in user has a document in the users collection
+  // so they appear in the chat user list
+  Future<void> _ensureUserDoc(User user) async {
+    final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final doc = await docRef.get();
+    if (!doc.exists) {
+      await docRef.set({
+        'displayName': user.email?.split('@').first ?? 'User',
+        'photoUrl': '',
+        'email': user.email,
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -51,7 +66,8 @@ class AuthGate extends StatelessWidget {
         }
 
         if (snapshot.hasData) {
-          // User is already logged in
+          // User is logged in - make sure their profile doc exists
+          _ensureUserDoc(snapshot.data!);
           return const MainNavigationScreen();
         }
 
