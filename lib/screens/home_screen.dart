@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
+import 'notifications_screen.dart';
 
 // Available reaction types and their emojis
 const Map<String, String> kReactions = {
@@ -90,18 +91,29 @@ class _HomeScreenState extends State<HomeScreen> {
                   );
                 },
               ),
-              const SafeArea(
+              SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.only(top: 12),
-                  child: Center(
-                    child: Text(
-                      'Fly',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      const Center(
+                        child: Text(
+                          'Fly',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                    ),
+                      // Notification bell button at the top-right
+                      Positioned(
+                        right: 12,
+                        top: 0,
+                        child: _NotificationBell(),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -143,7 +155,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   bool _hasEnded = false;
   bool _showReactionPicker = false;
 
-  // Holds the currently flying emojis
   final List<_FlyingEmoji> _flyingEmojis = [];
 
   @override
@@ -205,7 +216,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     });
   }
 
-  // Spawns a single flying emoji that floats up and fades out
   void _spawnFlyingEmojis(String emoji) {
     final flyingEmoji = _FlyingEmoji(
       id: DateTime.now().microsecondsSinceEpoch,
@@ -224,6 +234,42 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     if (mounted) setState(() {});
   }
 
+  // Creates a notification for the video owner (skips notifying yourself)
+  Future<void> _createNotification({
+    required String type,
+    required String text,
+  }) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    if (widget.userId.isEmpty || widget.userId == user.uid) return;
+
+    final myProfile = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .get();
+    final data = myProfile.data();
+    final String myName =
+        (data?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? data!['displayName']
+            : (user.email?.split('@').first ?? 'Someone');
+    final String myPhoto = (data?['photoUrl'] as String?) ?? '';
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.userId)
+        .collection('notifications')
+        .add({
+      'type': type,
+      'text': text,
+      'fromId': user.uid,
+      'fromName': myName,
+      'fromPhoto': myPhoto,
+      'postId': widget.postId,
+      'seen': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   Future<void> _setReaction(String type) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -239,6 +285,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     } else {
       await postRef.update({'reactions.${user.uid}': type});
       _spawnFlyingEmojis(kReactions[type]!);
+      _createNotification(type: 'reaction', text: kReactions[type]!);
     }
   }
 
@@ -246,13 +293,15 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     _setReaction('like');
   }
 
-  // Opens the comments bottom sheet for this post
   void _openComments() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
-      builder: (context) => _CommentsSheet(postId: widget.postId),
+      builder: (context) => _CommentsSheet(
+        postId: widget.postId,
+        ownerId: widget.userId,
+      ),
     );
   }
 
@@ -364,7 +413,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             bottom: 280,
             child: Column(
               children: [
-                // Reaction button (icon only)
                 GestureDetector(
                   onTap: _quickToggleLike,
                   onLongPress: () => setState(() => _showReactionPicker = true),
@@ -403,7 +451,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                   ),
                 ),
                 const SizedBox(height: 22),
-                // Comment button - circular shape, shows live comment count
                 StreamBuilder<QuerySnapshot>(
                   stream: FirebaseFirestore.instance
                       .collection('posts')
@@ -461,7 +508,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                   },
                 ),
                 const SizedBox(height: 22),
-                // Share button (icon only)
                 _buildIconButton(
                   icon: Icons.send,
                   label: 'Share',
@@ -475,7 +521,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     );
   }
 
-  // Builds an icon-only action button with a label below (no background)
   Widget _buildIconButton({
     required IconData icon,
     required String label,
@@ -510,8 +555,9 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 // Bottom sheet that shows comments and lets the user add one
 class _CommentsSheet extends StatefulWidget {
   final String postId;
+  final String ownerId;
 
-  const _CommentsSheet({required this.postId});
+  const _CommentsSheet({required this.postId, required this.ownerId});
 
   @override
   State<_CommentsSheet> createState() => _CommentsSheetState();
@@ -534,7 +580,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
 
     setState(() => _isSending = true);
 
-    // Look up the sender's profile name/photo
     final profileDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
@@ -558,13 +603,30 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       'createdAt': FieldValue.serverTimestamp(),
     });
 
+    // Notify the post owner about the comment (skip notifying yourself)
+    if (widget.ownerId.isNotEmpty && widget.ownerId != user.uid) {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.ownerId)
+          .collection('notifications')
+          .add({
+        'type': 'comment',
+        'text': text,
+        'fromId': user.uid,
+        'fromName': displayName,
+        'fromPhoto': photoUrl,
+        'postId': widget.postId,
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+
     _commentController.clear();
     if (mounted) setState(() => _isSending = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Push the sheet above the keyboard
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return Container(
@@ -576,7 +638,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       padding: EdgeInsets.only(bottom: bottomInset),
       child: Column(
         children: [
-          // Grab handle + title
           const SizedBox(height: 10),
           Container(
             width: 40,
@@ -597,8 +658,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
           ),
           const SizedBox(height: 8),
           const Divider(color: Colors.white12, height: 1),
-
-          // Comments list
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
@@ -690,10 +749,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
               },
             ),
           ),
-
           const Divider(color: Colors.white12, height: 1),
-
-          // Comment input row - padded above the phone's bottom navigation bar
           Padding(
             padding: EdgeInsets.only(
               left: 12,
@@ -848,6 +904,73 @@ class _OwnerInfo extends StatelessWidget {
               ),
             ],
           ],
+        );
+      },
+    );
+  }
+}
+
+// Notification bell with a red badge showing the unseen notification count
+class _NotificationBell extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return const SizedBox.shrink();
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('notifications')
+          .where('seen', isEqualTo: false)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final int unseenCount =
+            snapshot.hasData ? snapshot.data!.docs.length : 0;
+
+        return GestureDetector(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const NotificationsScreen(),
+              ),
+            );
+          },
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(
+                Icons.notifications,
+                color: Colors.white,
+                size: 36,
+                shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+              ),
+              if (unseenCount > 0)
+                Positioned(
+                  right: -4,
+                  top: -4,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    constraints:
+                        const BoxConstraints(minWidth: 18, minHeight: 18),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFFF4B6E),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      '$unseenCount',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         );
       },
     );

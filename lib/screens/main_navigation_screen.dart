@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../notification_service.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
 import 'upload_screen.dart';
@@ -21,9 +25,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Position of the draggable button (from bottom-right corner)
   double _buttonRight = 24;
   double _buttonBottom = 24;
-  double _dragDistance = 0; // tracks how far the button moved during a drag
+  double _dragDistance = 0;
 
   late AnimationController _rotationController;
+
+  // Listens for new incoming chat messages to show notifications
+  StreamSubscription<QuerySnapshot>? _chatSubscription;
+  bool _firstSnapshot = true;
 
   final List<Widget> _screens = const [
     HomeScreen(),
@@ -32,7 +40,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     ProfileScreen(),
   ];
 
-  // Each menu item has an icon and its own accent gradient
   final List<Map<String, dynamic>> _menuItems = const [
     {
       'icon': Icons.home_rounded,
@@ -63,11 +70,58 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
+    _listenForNewMessages();
+  }
+
+  // Watches all chats the user is part of and shows a notification
+  // when a new message arrives from someone else
+  void _listenForNewMessages() {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+
+    _chatSubscription = FirebaseFirestore.instance
+        .collection('chats')
+        .where('participants', arrayContains: myId)
+        .snapshots()
+        .listen((snapshot) async {
+      // Skip the very first snapshot (existing chats, not new messages)
+      if (_firstSnapshot) {
+        _firstSnapshot = false;
+        return;
+      }
+
+      for (final change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.modified) {
+          final data = change.doc.data() as Map<String, dynamic>?;
+          if (data == null) continue;
+
+          final String lastSenderId = data['lastSenderId'] ?? '';
+          final String lastMessage = data['lastMessage'] ?? '';
+
+          // Only notify if the message came from the other person
+          if (lastSenderId.isNotEmpty && lastSenderId != myId) {
+            // Look up the sender's name
+            final senderDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(lastSenderId)
+                .get();
+            final senderName =
+                (senderDoc.data()?['displayName'] as String?) ?? 'New message';
+
+            await NotificationService.showMessageNotification(
+              title: senderName,
+              body: lastMessage,
+            );
+          }
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
     _rotationController.dispose();
+    _chatSubscription?.cancel();
     super.dispose();
   }
 
@@ -80,7 +134,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   void _selectTab(int index) {
     setState(() {
       _currentIndex = index;
-      // Menu stays open - does not close when a tab is tapped
     });
   }
 
@@ -94,7 +147,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _buttonBottom -= details.delta.dy;
       _dragDistance += details.delta.distance;
 
-      // Keep the button within screen bounds
       final screenSize = MediaQuery.of(context).size;
       if (_buttonRight < 0) _buttonRight = 0;
       if (_buttonBottom < 0) _buttonBottom = 0;
@@ -106,13 +158,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   void _onPanEnd(DragEndDetails details) {
-    // If the button barely moved, treat it as a tap
     if (_dragDistance < 5) {
       _toggleMenu();
     }
   }
 
-  // Main button with a rotating rainbow-colored ring around it
   Widget _buildMainButton() {
     return Stack(
       alignment: Alignment.center,
@@ -160,7 +210,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  // Builds one menu item. The active item expands into a gradient pill with a label
   Widget _buildMenuItem(int i) {
     final item = _menuItems[i];
     final bool isActive = _currentIndex == i;
@@ -203,7 +252,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               size: 26,
               shadows: const [Shadow(color: Colors.black54, blurRadius: 6)],
             ),
-            // Show the label only for the active item, with a smooth expand
             AnimatedSize(
               duration: const Duration(milliseconds: 280),
               curve: Curves.easeOutCubic,
@@ -237,8 +285,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             index: _currentIndex,
             children: _screens,
           ),
-
-          // Frosted-glass pill menu bar with the 4 items - only visible when open
           if (_isMenuOpen)
             Positioned(
               left: 0,
@@ -265,7 +311,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                         children: List.generate(
                           _menuItems.length,
                           (i) => Padding(
-                            // Wider spacing between the items
                             padding: const EdgeInsets.symmetric(horizontal: 6),
                             child: _buildMenuItem(i),
                           ),
@@ -276,8 +321,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 ),
               ),
             ),
-
-          // Draggable main floating button
           Positioned(
             right: _buttonRight,
             bottom: _buttonBottom,

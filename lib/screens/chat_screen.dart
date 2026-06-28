@@ -221,7 +221,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         .add({
       'senderId': myId,
       'text': text,
-      'seen': false, // not yet read by the recipient
+      'seen': false,
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -229,7 +229,32 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'participants': [myId, widget.otherUserId],
       'lastMessage': text,
       'lastMessageAt': FieldValue.serverTimestamp(),
+      'lastSenderId': myId,
     }, SetOptions(merge: true));
+
+    // Look up my profile, then send a message notification to the other user
+    final myProfile =
+        await FirebaseFirestore.instance.collection('users').doc(myId).get();
+    final myData = myProfile.data();
+    final String myName =
+        (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? myData!['displayName']
+            : 'Someone';
+    final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.otherUserId)
+        .collection('notifications')
+        .add({
+      'type': 'message',
+      'text': text,
+      'fromId': myId,
+      'fromName': myName,
+      'fromPhoto': myPhoto,
+      'seen': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
   }
 
   // Marks all messages sent by the other user as seen (called when I view the chat)
@@ -242,7 +267,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
     for (final doc in messages) {
       final data = doc.data() as Map<String, dynamic>;
-      // Only mark the other user's messages that aren't seen yet
       if (data['senderId'] == widget.otherUserId && data['seen'] != true) {
         batch.update(doc.reference, {'seen': true});
         hasUnseen = true;
@@ -310,7 +334,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
                 final messages = snapshot.data?.docs ?? [];
 
-                // Mark the other user's messages as seen now that I'm viewing them
                 if (messages.isNotEmpty) {
                   _markMessagesAsSeen(messages);
                 }
@@ -384,7 +407,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
-                                  // Open eye = seen, closed eye = not seen yet
                                   seen
                                       ? Icons.visibility
                                       : Icons.visibility_off,

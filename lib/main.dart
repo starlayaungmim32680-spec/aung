@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
+import 'notification_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 
@@ -11,6 +12,8 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  // Set up local notifications and request permission
+  await NotificationService.init();
   runApp(const FlyApp());
 }
 
