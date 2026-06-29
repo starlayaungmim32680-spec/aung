@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:video_player/video_player.dart';
 import 'chat_screen.dart';
 
-// Shows another user's profile: their photo, name, video grid, and a message button
+// Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
   final String userId;
 
@@ -11,6 +12,9 @@ class PublicProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    final bool isMe = myId == userId;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -86,51 +90,78 @@ class PublicProfileScreen extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 16),
-                          // Message button
-                          SizedBox(
-                            width: 200,
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ChatThreadScreen(
-                                      otherUserId: userId,
-                                      otherUserName: displayName,
-                                      otherUserPhoto: photoUrl,
-                                    ),
-                                  ),
-                                );
-                              },
-                              icon: const Icon(Icons.send, size: 18),
-                              label: const Text('Message'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF3A8DFF),
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          Column(
+
+                          // Stats row: posts / followers / following
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(
-                                '$postCount',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                              _StatColumn(label: 'Posts', value: postCount),
+                              _CountStat(
+                                label: 'Followers',
+                                collectionRef: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(userId)
+                                    .collection('followers'),
                               ),
-                              Text(
-                                'Posts',
-                                style: TextStyle(
-                                    color: Colors.grey[500], fontSize: 13),
+                              _CountStat(
+                                label: 'Following',
+                                collectionRef: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(userId)
+                                    .collection('following'),
                               ),
                             ],
                           ),
+                          const SizedBox(height: 18),
+
+                          // Follow + Message buttons (Facebook style, hidden on your own profile)
+                          if (!isMe && myId != null)
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _FollowButton(
+                                    myId: myId,
+                                    otherUserId: userId,
+                                    otherUserName: displayName,
+                                    otherUserPhoto: photoUrl,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              ChatThreadScreen(
+                                            otherUserId: userId,
+                                            otherUserName: displayName,
+                                            otherUserPhoto: photoUrl,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(Icons.message,
+                                        size: 18, color: Colors.white),
+                                    label: const Text('Message',
+                                        style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold)),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF3A3B3C),
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 10),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           const SizedBox(height: 20),
                           const Divider(color: Colors.white12, height: 1),
                         ],
@@ -194,6 +225,180 @@ class PublicProfileScreen extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+}
+
+// A plain stat column (e.g. Posts) with a fixed number
+class _StatColumn extends StatelessWidget {
+  final String label;
+  final int value;
+
+  const _StatColumn({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: [
+          Text(
+            '$value',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// A stat column whose number comes live from a Firestore subcollection count
+class _CountStat extends StatelessWidget {
+  final String label;
+  final CollectionReference collectionRef;
+
+  const _CountStat({required this.label, required this.collectionRef});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: collectionRef.snapshots(),
+      builder: (context, snapshot) {
+        final int count = snapshot.hasData ? snapshot.data!.docs.length : 0;
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              Text(
+                '$count',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                label,
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Facebook-style Follow / Following toggle button
+class _FollowButton extends StatelessWidget {
+  final String myId;
+  final String otherUserId;
+  final String otherUserName;
+  final String otherUserPhoto;
+
+  const _FollowButton({
+    required this.myId,
+    required this.otherUserId,
+    required this.otherUserName,
+    required this.otherUserPhoto,
+  });
+
+  DocumentReference get _myFollowDoc => FirebaseFirestore.instance
+      .collection('users')
+      .doc(otherUserId)
+      .collection('followers')
+      .doc(myId);
+
+  Future<void> _toggleFollow(bool isFollowing) async {
+    final firestore = FirebaseFirestore.instance;
+    final followersDoc = firestore
+        .collection('users')
+        .doc(otherUserId)
+        .collection('followers')
+        .doc(myId);
+    final followingDoc = firestore
+        .collection('users')
+        .doc(myId)
+        .collection('following')
+        .doc(otherUserId);
+
+    if (isFollowing) {
+      final batch = firestore.batch();
+      batch.delete(followersDoc);
+      batch.delete(followingDoc);
+      await batch.commit();
+    } else {
+      final batch = firestore.batch();
+      batch.set(followersDoc, {'createdAt': FieldValue.serverTimestamp()});
+      batch.set(followingDoc, {'createdAt': FieldValue.serverTimestamp()});
+      await batch.commit();
+
+      final myProfile = await firestore.collection('users').doc(myId).get();
+      final myData = myProfile.data();
+      final String myName =
+          (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+              ? myData!['displayName']
+              : 'Someone';
+      final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+      await firestore
+          .collection('users')
+          .doc(otherUserId)
+          .collection('notifications')
+          .add({
+        'type': 'follow',
+        'text': '',
+        'fromId': myId,
+        'fromName': myName,
+        'fromPhoto': myPhoto,
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _myFollowDoc.snapshots(),
+      builder: (context, snapshot) {
+        final bool isFollowing = snapshot.data?.exists ?? false;
+
+        return ElevatedButton.icon(
+          onPressed: () => _toggleFollow(isFollowing),
+          icon: Icon(
+            isFollowing ? Icons.check : Icons.person_add_alt_1,
+            size: 18,
+            color: Colors.white,
+          ),
+          label: Text(
+            isFollowing ? 'Following' : 'Follow',
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          style: ElevatedButton.styleFrom(
+            // Facebook blue when not following, grey when following
+            backgroundColor:
+                isFollowing ? const Color(0xFF3A3B3C) : const Color(0xFF1877F2),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        );
+      },
     );
   }
 }

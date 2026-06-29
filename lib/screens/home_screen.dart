@@ -669,7 +669,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     if (mounted) setState(() => _isSending = false);
   }
 
-  // Sets or removes the current user's emoji reaction on a comment/reply
   Future<void> _setReaction(DocumentReference ref,
       Map<String, dynamic> reactions, String type) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -683,7 +682,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
   }
 
-  // Opens the emoji picker for a comment/reply reaction
   void _openReactionPicker(
       DocumentReference ref, Map<String, dynamic> reactions) {
     showModalBottomSheet(
@@ -891,7 +889,6 @@ class _ReactionSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Get the distinct reaction types present (e.g. like, haha, angry)
     final List<String> distinctTypes =
         reactions.values.map((e) => e.toString()).toSet().toList();
     final int count = reactions.length;
@@ -1046,7 +1043,6 @@ class _CommentTileState extends State<_CommentTile> {
                   ],
                 ),
               ),
-              // Emoji reaction button for this comment
               _ReactionSummary(
                 reactions: reactions,
                 onTap: () => widget.onReact(widget.commentRef, reactions),
@@ -1141,7 +1137,6 @@ class _ReplyTile extends StatelessWidget {
               ],
             ),
           ),
-          // Emoji reaction button for this reply
           _ReactionSummary(
             reactions: reactions,
             onTap: () => onReact(replyRef, reactions),
@@ -1153,7 +1148,7 @@ class _ReplyTile extends StatelessWidget {
   }
 }
 
-// Shows the post owner's profile photo and display name (from the users collection)
+// Shows the post owner's profile photo, display name, follow button, and caption
 class _OwnerInfo extends StatelessWidget {
   final String userId;
   final String fallbackEmail;
@@ -1165,8 +1160,61 @@ class _OwnerInfo extends StatelessWidget {
     required this.caption,
   });
 
+  // Follows or unfollows the video owner (and notifies them when following)
+  Future<void> _toggleFollow(String myId, bool isFollowing) async {
+    final firestore = FirebaseFirestore.instance;
+    final followersDoc = firestore
+        .collection('users')
+        .doc(userId)
+        .collection('followers')
+        .doc(myId);
+    final followingDoc = firestore
+        .collection('users')
+        .doc(myId)
+        .collection('following')
+        .doc(userId);
+
+    if (isFollowing) {
+      // Unfollow - remove both records and stop here
+      final batch = firestore.batch();
+      batch.delete(followersDoc);
+      batch.delete(followingDoc);
+      await batch.commit();
+      return;
+    }
+
+    final batch = firestore.batch();
+    batch.set(followersDoc, {'createdAt': FieldValue.serverTimestamp()});
+    batch.set(followingDoc, {'createdAt': FieldValue.serverTimestamp()});
+    await batch.commit();
+
+    final myProfile = await firestore.collection('users').doc(myId).get();
+    final myData = myProfile.data();
+    final String myName =
+        (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? myData!['displayName']
+            : 'Someone';
+    final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+    await firestore
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .add({
+      'type': 'follow',
+      'text': '',
+      'fromId': myId,
+      'fromName': myName,
+      'fromPhoto': myPhoto,
+      'seen': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+
     return StreamBuilder<DocumentSnapshot>(
       stream: userId.isEmpty
           ? null
@@ -1232,6 +1280,45 @@ class _OwnerInfo extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: 10),
+                // Follow / Following toggle next to the name (hidden on my own videos)
+                if (myId != null && myId != userId && userId.isNotEmpty)
+                  StreamBuilder<DocumentSnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(userId)
+                        .collection('followers')
+                        .doc(myId)
+                        .snapshots(),
+                    builder: (context, followSnap) {
+                      final bool isFollowing = followSnap.data?.exists ?? false;
+                      return GestureDetector(
+                        onTap: () => _toggleFollow(myId, isFollowing),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 5),
+                          decoration: BoxDecoration(
+                            // Red when not following, grey once following
+                            color: isFollowing
+                                ? const Color(0xFF3A3B3C)
+                                : const Color(0xFFFF4B6E),
+                            borderRadius: BorderRadius.circular(6),
+                            border: isFollowing
+                                ? Border.all(color: Colors.white38, width: 1)
+                                : null,
+                          ),
+                          child: Text(
+                            isFollowing ? 'Following' : 'Follow',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
               ],
             ),
             if (caption.isNotEmpty) ...[
