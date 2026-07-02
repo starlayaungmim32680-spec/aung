@@ -21,6 +21,8 @@ dependencies:
   video_editor: ^3.0.0
   share_plus: ^10.1.2
   flutter_local_notifications: ^18.0.1
+  livekit_client: ^2.8.1
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_test:

@@ -9,6 +9,7 @@ import 'home_screen.dart';
 import 'chat_screen.dart';
 import 'upload_screen.dart';
 import 'profile_screen.dart';
+import 'incoming_call_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -22,16 +23,19 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   int _currentIndex = 0;
   bool _isMenuOpen = false;
 
-  // Position of the draggable button (from bottom-right corner)
   double _buttonRight = 24;
   double _buttonBottom = 24;
   double _dragDistance = 0;
 
   late AnimationController _rotationController;
 
-  // Listens for new incoming chat messages to show notifications
   StreamSubscription<QuerySnapshot>? _chatSubscription;
   bool _firstSnapshot = true;
+
+  // Listens for incoming video calls
+  StreamSubscription<QuerySnapshot>? _callSubscription;
+  bool _firstCallSnapshot = true;
+  bool _isShowingIncomingCall = false;
 
   final List<Widget> _screens = const [
     HomeScreen(),
@@ -71,6 +75,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       duration: const Duration(seconds: 3),
     )..repeat();
     _listenForNewMessages();
+    _listenForIncomingCalls();
   }
 
   // Watches all chats the user is part of and shows a notification
@@ -84,7 +89,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         .where('participants', arrayContains: myId)
         .snapshots()
         .listen((snapshot) async {
-      // Skip the very first snapshot (existing chats, not new messages)
       if (_firstSnapshot) {
         _firstSnapshot = false;
         return;
@@ -98,9 +102,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           final String lastSenderId = data['lastSenderId'] ?? '';
           final String lastMessage = data['lastMessage'] ?? '';
 
-          // Only notify if the message came from the other person
           if (lastSenderId.isNotEmpty && lastSenderId != myId) {
-            // Look up the sender's name
             final senderDoc = await FirebaseFirestore.instance
                 .collection('users')
                 .doc(lastSenderId)
@@ -118,10 +120,73 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
+  // Watches for incoming calls where I'm the callee and the call is ringing
+  void _listenForIncomingCalls() {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+
+    _callSubscription = FirebaseFirestore.instance
+        .collection('calls')
+        .where('calleeId', isEqualTo: myId)
+        .where('status', isEqualTo: 'ringing')
+        .snapshots()
+        .listen((snapshot) {
+      // Skip the first snapshot (existing calls, not new ones)
+      if (_firstCallSnapshot) {
+        _firstCallSnapshot = false;
+        return;
+      }
+
+      if (_isShowingIncomingCall) return;
+
+      for (final change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.added ||
+            change.type == DocumentChangeType.modified) {
+          final data = change.doc.data() as Map<String, dynamic>?;
+          if (data == null) continue;
+          if (data['status'] != 'ringing') continue;
+
+          _showIncomingCall(
+            callerName: data['callerName'] ?? 'Someone',
+            callerPhoto: data['callerPhoto'] ?? '',
+            roomName: data['roomName'] ?? '',
+            myId: myId,
+            callRef: change.doc.reference,
+          );
+          break;
+        }
+      }
+    });
+  }
+
+  Future<void> _showIncomingCall({
+    required String callerName,
+    required String callerPhoto,
+    required String roomName,
+    required String myId,
+    required DocumentReference callRef,
+  }) async {
+    _isShowingIncomingCall = true;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => IncomingCallScreen(
+          callerName: callerName,
+          callerPhoto: callerPhoto,
+          roomName: roomName,
+          myId: myId,
+          callRef: callRef,
+        ),
+      ),
+    );
+    _isShowingIncomingCall = false;
+  }
+
   @override
   void dispose() {
     _rotationController.dispose();
     _chatSubscription?.cancel();
+    _callSubscription?.cancel();
     super.dispose();
   }
 

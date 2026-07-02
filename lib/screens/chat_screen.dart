@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'public_profile_screen.dart';
+import 'video_call_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -278,6 +279,47 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     }
   }
 
+  // Starts a video call: creates a call doc so the other user gets an incoming
+  // call notification, then joins the room
+  Future<void> _startVideoCall() async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+
+    // Look up my name/photo so the callee sees who's calling
+    final myProfile =
+        await FirebaseFirestore.instance.collection('users').doc(myId).get();
+    final myData = myProfile.data();
+    final String myName =
+        (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+            ? myData!['displayName']
+            : 'Someone';
+    final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+    // Create/overwrite the call doc for this chat (status: ringing)
+    await FirebaseFirestore.instance.collection('calls').doc(_chatId).set({
+      'callerId': myId,
+      'callerName': myName,
+      'callerPhoto': myPhoto,
+      'calleeId': widget.otherUserId,
+      'roomName': _chatId,
+      'status': 'ringing',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    if (!mounted) return;
+
+    // Caller joins the room and waits for the other person
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoCallScreen(
+          roomName: _chatId,
+          myName: myId,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final myId = FirebaseAuth.instance.currentUser?.uid;
@@ -314,6 +356,13 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             ),
           ],
         ),
+        actions: [
+          // Video call button
+          IconButton(
+            icon: const Icon(Icons.videocam, color: Colors.white),
+            onPressed: _startVideoCall,
+          ),
+        ],
       ),
       body: Column(
         children: [
