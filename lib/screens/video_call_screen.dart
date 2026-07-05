@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 // LiveKit connection details for the Fly project
@@ -32,19 +34,39 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   bool _micEnabled = true;
   bool _cameraEnabled = false;
-  bool _isFrontCamera = true; // tracks which camera is active
+  bool _isFrontCamera = true;
 
   LocalVideoTrack? _localVideoTrack;
   VideoTrack? _remoteVideoTrack;
   String? _remoteName;
 
+  // Watches the call doc so that when one side ends, both sides hang up
+  StreamSubscription<DocumentSnapshot>? _callStatusSub;
+  bool _hangingUp = false;
+
   @override
   void initState() {
     super.initState();
     _connect();
+    _listenForCallEnd();
   }
 
-  // Fetches connection details (server URL + token) from the LiveKit sandbox
+  // The shared call doc for this room (chatId == roomName)
+  DocumentReference get _callRef =>
+      FirebaseFirestore.instance.collection('calls').doc(widget.roomName);
+
+  // If the call doc becomes 'ended' or 'declined', leave the call automatically
+  void _listenForCallEnd() {
+    _callStatusSub = _callRef.snapshots().listen((doc) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) return;
+      final status = data['status'] as String?;
+      if (status == 'ended' || status == 'declined') {
+        _leaveCall();
+      }
+    });
+  }
+
   Future<Map<String, String>?> _fetchConnectionDetails() async {
     try {
       final uri = Uri.parse(
@@ -98,12 +120,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
       await room.connect(details['url']!, details['token']!);
 
-      // Start with camera off - users turn it on when they want
       await room.localParticipant?.setCameraEnabled(false);
       await room.localParticipant?.setMicrophoneEnabled(true);
 
-      final localPub =
-          room.localParticipant?.videoTrackPublications.firstOrNull;
+      final localPub = room.localParticipant?.videoTrackPublications.firstOrNull;
 
       setState(() {
         _room = room;
@@ -134,7 +154,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         _refreshRemote();
       })
       ..on<ParticipantDisconnectedEvent>((event) {
-        _refreshRemote();
+        // The other person left - end the call for me too
+        _endCall();
       });
   }
 
@@ -146,8 +167,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     String? remoteName;
 
     for (final participant in room.remoteParticipants.values) {
-      remoteName =
-          participant.name.isNotEmpty ? participant.name : participant.identity;
+      remoteName = participant.name.isNotEmpty
+          ? participant.name
+          : participant.identity;
       for (final pub in participant.videoTrackPublications) {
         if (pub.track != null) {
           remoteTrack = pub.track as VideoTrack;
@@ -186,7 +208,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     });
   }
 
-  // Switches between the front and back camera
   Future<void> _switchCamera() async {
     final track = _localVideoTrack;
     if (track == null) return;
@@ -198,13 +219,27 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     } catch (_) {}
   }
 
-  Future<void> _hangUp() async {
+  // Called when I press the hang-up button: tell the other side too
+  Future<void> _endCall() async {
+    if (_hangingUp) return;
+    _hangingUp = true;
+    // Mark the shared call as ended so the other side also leaves
+    try {
+      await _callRef.update({'status': 'ended'});
+    } catch (_) {}
+    await _leaveCall();
+  }
+
+  // Leaves the room and closes the screen (no doc write - used when told to end)
+  Future<void> _leaveCall() async {
+    if (!mounted) return;
     await _room?.disconnect();
     if (mounted) Navigator.pop(context);
   }
 
   @override
   void dispose() {
+    _callStatusSub?.cancel();
     _listener?.dispose();
     _room?.disconnect();
     _room?.dispose();
@@ -221,8 +256,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
             Positioned.fill(
               child: _buildRemoteView(),
             ),
-
-            // My own camera preview - small box top-right
             Positioned(
               top: 16,
               right: 16,
@@ -243,8 +276,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                       ),
               ),
             ),
-
-            // Switch-camera button top-left (only useful when camera is on)
             if (_cameraEnabled && !_connecting && _error == null)
               Positioned(
                 top: 16,
@@ -264,7 +295,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                   ),
                 ),
               ),
-
             Positioned(
               left: 0,
               right: 0,
@@ -365,7 +395,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           icon: Icons.call_end,
           color: Colors.red,
           size: 64,
-          onTap: _hangUp,
+          onTap: _endCall,
         ),
         const SizedBox(width: 20),
         _ControlButton(
