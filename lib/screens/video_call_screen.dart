@@ -9,15 +9,20 @@ import 'package:livekit_client/livekit_client.dart';
 const String kLiveKitUrl = 'wss://fly-iv33xo63.livekit.cloud';
 const String kSandboxId = 'fly-fu1yvy';
 
-// A one-on-one video call screen powered by LiveKit
+// A one-on-one call powered by LiveKit. Starts as a voice call
+// (camera off) - users turn on video only if they want.
 class VideoCallScreen extends StatefulWidget {
   final String roomName;
   final String myName;
+  final String? otherName;
+  final String? otherPhoto;
 
   const VideoCallScreen({
     super.key,
     required this.roomName,
     required this.myName,
+    this.otherName,
+    this.otherPhoto,
   });
 
   @override
@@ -39,8 +44,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   LocalVideoTrack? _localVideoTrack;
   VideoTrack? _remoteVideoTrack;
   String? _remoteName;
+  bool _remoteJoined = false;
 
-  // Watches the call doc so that when one side ends, both sides hang up
   StreamSubscription<DocumentSnapshot>? _callStatusSub;
   bool _hangingUp = false;
 
@@ -51,11 +56,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _listenForCallEnd();
   }
 
-  // The shared call doc for this room (chatId == roomName)
   DocumentReference get _callRef =>
       FirebaseFirestore.instance.collection('calls').doc(widget.roomName);
 
-  // If the call doc becomes 'ended' or 'declined', leave the call automatically
   void _listenForCallEnd() {
     _callStatusSub = _callRef.snapshots().listen((doc) {
       final data = doc.data() as Map<String, dynamic>?;
@@ -120,15 +123,13 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
       await room.connect(details['url']!, details['token']!);
 
+      // Start as a voice call - camera off, mic on
       await room.localParticipant?.setCameraEnabled(false);
       await room.localParticipant?.setMicrophoneEnabled(true);
-
-      final localPub = room.localParticipant?.videoTrackPublications.firstOrNull;
 
       setState(() {
         _room = room;
         _listener = listener;
-        _localVideoTrack = localPub?.track as LocalVideoTrack?;
         _connecting = false;
       });
 
@@ -165,11 +166,11 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
     VideoTrack? remoteTrack;
     String? remoteName;
+    final bool joined = room.remoteParticipants.isNotEmpty;
 
     for (final participant in room.remoteParticipants.values) {
-      remoteName = participant.name.isNotEmpty
-          ? participant.name
-          : participant.identity;
+      remoteName =
+          participant.name.isNotEmpty ? participant.name : participant.identity;
       for (final pub in participant.videoTrackPublications) {
         if (pub.track != null) {
           remoteTrack = pub.track as VideoTrack;
@@ -183,6 +184,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       setState(() {
         _remoteVideoTrack = remoteTrack;
         _remoteName = remoteName;
+        _remoteJoined = joined;
       });
     }
   }
@@ -219,18 +221,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     } catch (_) {}
   }
 
-  // Called when I press the hang-up button: tell the other side too
   Future<void> _endCall() async {
     if (_hangingUp) return;
     _hangingUp = true;
-    // Mark the shared call as ended so the other side also leaves
     try {
       await _callRef.update({'status': 'ended'});
     } catch (_) {}
     await _leaveCall();
   }
 
-  // Leaves the room and closes the screen (no doc write - used when told to end)
   Future<void> _leaveCall() async {
     if (!mounted) return;
     await _room?.disconnect();
@@ -249,33 +248,33 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF0E0E0E),
       body: SafeArea(
         child: Stack(
           children: [
             Positioned.fill(
               child: _buildRemoteView(),
             ),
-            Positioned(
-              top: 16,
-              right: 16,
-              child: Container(
-                width: 110,
-                height: 160,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white24, width: 1),
-                  color: Colors.grey[900],
+
+            // My own camera preview - only shown when my camera is on
+            if (_cameraEnabled && _localVideoTrack != null)
+              Positioned(
+                top: 16,
+                right: 16,
+                child: Container(
+                  width: 110,
+                  height: 160,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white24, width: 1),
+                    color: Colors.grey[900],
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: VideoTrackRenderer(_localVideoTrack!),
                 ),
-                clipBehavior: Clip.antiAlias,
-                child: (_localVideoTrack != null && _cameraEnabled)
-                    ? VideoTrackRenderer(_localVideoTrack!)
-                    : const Center(
-                        child: Icon(Icons.videocam_off,
-                            color: Colors.white38, size: 30),
-                      ),
               ),
-            ),
+
+            // Switch-camera button (only when my camera is on)
             if (_cameraEnabled && !_connecting && _error == null)
               Positioned(
                 top: 16,
@@ -295,6 +294,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                   ),
                 ),
               ),
+
             Positioned(
               left: 0,
               right: 0,
@@ -362,19 +362,56 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       );
     }
 
+    // The other person turned their camera on - show their video
     if (_remoteVideoTrack != null) {
       return VideoTrackRenderer(_remoteVideoTrack!);
     }
+
+    // Voice-call style: show the other person's avatar + name
+    final String name = widget.otherName ?? _remoteName ?? 'Calling';
+    final String photo = widget.otherPhoto ?? '';
 
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const CircularProgressIndicator(color: Colors.white24),
-          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+              ),
+            ),
+            child: CircleAvatar(
+              radius: 60,
+              backgroundColor: Colors.grey[850],
+              backgroundImage: photo.isNotEmpty ? NetworkImage(photo) : null,
+              child: photo.isEmpty
+                  ? Text(
+                      name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 44,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    )
+                  : null,
+            ),
+          ),
+          const SizedBox(height: 24),
           Text(
-            'Waiting for ${_remoteName ?? "the other person"} to join...',
-            style: const TextStyle(color: Colors.white70),
+            name,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _remoteJoined ? 'In call' : 'Ringing...',
+            style: const TextStyle(color: Colors.white60, fontSize: 15),
           ),
         ],
       ),

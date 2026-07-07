@@ -215,6 +215,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   bool _isRecording = false;
   String? _recordPath;
   bool _hasText = false;
+  StreamSubscription? _recorderSub;
+  final ValueNotifier<List<double>> _waveBars = ValueNotifier<List<double>>([]);
+
+  // Typing / recording activity indicator (WhatsApp-style)
+  Timer? _typingTimer;
+  String? _currentActivity;
 
   @override
   void initState() {
@@ -225,6 +231,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       if (has != _hasText) {
         setState(() => _hasText = has);
       }
+      _onTyping(has);
     });
   }
 
@@ -239,6 +246,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   Future<void> _initRecorder() async {
     try {
       await _recorder.openRecorder();
+      await _recorder
+          .setSubscriptionDuration(const Duration(milliseconds: 100));
       _recorderReady = true;
     } catch (e) {
       _showError('Recorder init failed: $e');
@@ -251,10 +260,48 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     return '${ids[0]}_${ids[1]}';
   }
 
+  // Writes my current activity (typing/recording/idle) to a separate
+  // subcollection so it doesn't disturb the main chat doc or notifications
+  Future<void> _setActivity(String? status) async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+    final normalized = status ?? 'idle';
+    if (_currentActivity == normalized) return;
+    _currentActivity = normalized;
+    try {
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(_chatId)
+          .collection('activity')
+          .doc(myId)
+          .set({
+        'status': normalized,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  // Called on each keystroke - shows "typing" then auto-clears after a pause
+  void _onTyping(bool has) {
+    _typingTimer?.cancel();
+    if (has) {
+      _setActivity('typing');
+      _typingTimer = Timer(const Duration(seconds: 4), () {
+        _setActivity(null);
+      });
+    } else {
+      _setActivity(null);
+    }
+  }
+
   @override
   void dispose() {
+    _typingTimer?.cancel();
+    _setActivity(null);
     _messageController.dispose();
     _scrollController.dispose();
+    _recorderSub?.cancel();
+    _waveBars.dispose();
     if (_recorderReady) _recorder.closeRecorder();
     super.dispose();
   }
@@ -300,6 +347,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     if (myId == null || text.isEmpty) return;
 
     _messageController.clear();
+    _setActivity(null);
 
     await FirebaseFirestore.instance
         .collection('chats')
@@ -406,6 +454,23 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       final path =
           '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.$ext';
       await _recorder.startRecorder(toFile: path, codec: chosenCodec);
+
+      // Tell the other person I'm recording audio
+      _setActivity('recording');
+
+      // Listen to the recorder's volume to draw live waveform bars.
+      _waveBars.value = [];
+      _recorderSub = _recorder.onProgress!.listen((event) {
+        final double db = event.decibels ?? 0;
+        double level = (db / 60).clamp(0.0, 1.0);
+        if (level < 0.1) level = 0.1;
+        final updated = List<double>.from(_waveBars.value)..add(level);
+        if (updated.length > 40) {
+          updated.removeAt(0);
+        }
+        _waveBars.value = updated;
+      });
+
       setState(() {
         _isRecording = true;
         _recordPath = path;
@@ -423,6 +488,9 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     } catch (e) {
       _showError('Stop recording failed: $e');
     }
+    await _recorderSub?.cancel();
+    _recorderSub = null;
+    _setActivity(null);
     setState(() => _isRecording = false);
 
     final myId = FirebaseAuth.instance.currentUser?.uid;
@@ -485,7 +553,50 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     try {
       await _recorder.stopRecorder();
     } catch (_) {}
+    await _recorderSub?.cancel();
+    _recorderSub = null;
+    _setActivity(null);
     setState(() => _isRecording = false);
+  }
+
+  // Deletes a message (only your own). Long-press a bubble to trigger this.
+  Future<void> _deleteMessage(String messageId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Delete message?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This message will be removed for everyone.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(_chatId)
+          .collection('messages')
+          .doc(messageId)
+          .delete();
+    } catch (e) {
+      _showError('Delete failed: $e');
+    }
   }
 
   void _viewImage(String url) {
@@ -559,6 +670,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         builder: (context) => VideoCallScreen(
           roomName: _chatId,
           myName: myId,
+          otherName: widget.otherUserName,
+          otherPhoto: widget.otherUserPhoto,
         ),
       ),
     );
@@ -594,9 +707,43 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   : null,
             ),
             const SizedBox(width: 10),
-            Text(
-              widget.otherUserName,
-              style: const TextStyle(color: Colors.white, fontSize: 16),
+            // Name + live activity status (typing / recording)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.otherUserName,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                StreamBuilder<DocumentSnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('chats')
+                      .doc(_chatId)
+                      .collection('activity')
+                      .doc(widget.otherUserId)
+                      .snapshots(),
+                  builder: (context, snap) {
+                    final data = snap.data?.data() as Map<String, dynamic>?;
+                    final status = data?['status'] as String?;
+                    String? label;
+                    if (status == 'typing') {
+                      label = 'typing...';
+                    } else if (status == 'recording') {
+                      label = 'recording audio...';
+                    }
+                    if (label == null) return const SizedBox.shrink();
+                    return Text(
+                      label,
+                      style: const TextStyle(
+                        color: Color(0xFF24D17E),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    );
+                  },
+                ),
+              ],
             ),
           ],
         ),
@@ -646,6 +793,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   itemCount: messages.length,
                   itemBuilder: (context, index) {
                     final msg = messages[index].data() as Map<String, dynamic>;
+                    final String messageId = messages[index].id;
                     final bool isMine = msg['senderId'] == myId;
                     final String type = msg['type'] ?? 'text';
                     final String text = msg['text'] ?? '';
@@ -730,7 +878,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                             alignment: isMine
                                 ? Alignment.centerRight
                                 : Alignment.centerLeft,
-                            child: bubble,
+                            child: GestureDetector(
+                              onLongPress: isMine
+                                  ? () => _deleteMessage(messageId)
+                                  : null,
+                              child: bubble,
+                            ),
                           ),
                         ),
                         if (isMine)
@@ -796,9 +949,33 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                 children: [
                   const Icon(Icons.mic, color: Colors.redAccent, size: 20),
                   const SizedBox(width: 8),
-                  const Text('Recording... release to send',
-                      style: TextStyle(color: Colors.white)),
-                  const Spacer(),
+                  Expanded(
+                    child: SizedBox(
+                      height: 34,
+                      child: ValueListenableBuilder<List<double>>(
+                        valueListenable: _waveBars,
+                        builder: (context, bars, _) {
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: bars.map((level) {
+                              return Container(
+                                width: 3,
+                                height: 34 * level,
+                                margin:
+                                    const EdgeInsets.symmetric(horizontal: 1),
+                                decoration: BoxDecoration(
+                                  color: Colors.redAccent,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              );
+                            }).toList(),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   GestureDetector(
                     onTap: _cancelRecording,
                     child: const Text('Cancel',

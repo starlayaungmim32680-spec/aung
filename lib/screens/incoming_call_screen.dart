@@ -51,7 +51,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     _vibrateTimer = null;
   }
 
-  // Plays a looping ringtone generated in code (no audio file needed)
   Future<void> _startRingtone() async {
     try {
       final bytes = _generateRingtoneWav();
@@ -66,12 +65,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     } catch (_) {}
   }
 
-  // Builds a WAV byte buffer for one ring cycle: a warble tone then silence.
-  // Played on loop, this sounds like a classic phone ring.
   Uint8List _generateRingtoneWav() {
     const int sampleRate = 44100;
-    const double ringDur = 1.2; // seconds of ringing
-    const double silenceDur = 1.4; // seconds of gap
+    const double ringDur = 1.2;
+    const double silenceDur = 1.4;
     final int ringSamples = (sampleRate * ringDur).round();
     final int silenceSamples = (sampleRate * silenceDur).round();
     final int totalSamples = ringSamples + silenceSamples;
@@ -96,22 +93,20 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       offset += 2;
     }
 
-    // WAV header (16-bit mono PCM)
     writeString('RIFF');
     writeUint32(36 + dataSize);
     writeString('WAVE');
     writeString('fmt ');
     writeUint32(16);
-    writeUint16(1); // PCM
-    writeUint16(1); // mono
+    writeUint16(1);
+    writeUint16(1);
     writeUint32(sampleRate);
-    writeUint32(sampleRate * 2); // byte rate
-    writeUint16(2); // block align
-    writeUint16(16); // bits per sample
+    writeUint32(sampleRate * 2);
+    writeUint16(2);
+    writeUint16(16);
     writeString('data');
     writeUint32(dataSize);
 
-    // Ring: warble between two tones for a phone-ring feel
     for (int i = 0; i < ringSamples; i++) {
       final double t = i / sampleRate;
       final bool high = ((t * 25).floor() % 2) == 0;
@@ -126,7 +121,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       data.setInt16(offset, s, Endian.little);
       offset += 2;
     }
-    // Silence gap
     for (int i = 0; i < silenceSamples; i++) {
       data.setInt16(offset, 0, Endian.little);
       offset += 2;
@@ -148,6 +142,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
         builder: (context) => VideoCallScreen(
           roomName: widget.roomName,
           myName: widget.myId,
+          otherName: widget.callerName,
+          otherPhoto: widget.callerPhoto,
         ),
       ),
     );
@@ -216,7 +212,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Incoming video call...',
+              'Incoming call...',
               style: TextStyle(color: Colors.white60, fontSize: 15),
             ),
             const Spacer(flex: 3),
@@ -256,7 +252,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                             color: Color(0xFF24D17E),
                             shape: BoxShape.circle,
                           ),
-                          child: const Icon(Icons.videocam,
+                          child: const Icon(Icons.call,
                               color: Colors.white, size: 32),
                         ),
                       ),

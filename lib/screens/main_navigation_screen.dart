@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../notification_service.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
@@ -32,10 +34,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   StreamSubscription<QuerySnapshot>? _chatSubscription;
   bool _firstSnapshot = true;
 
-  // Listens for incoming video calls
+  // Incoming call listener
   StreamSubscription<QuerySnapshot>? _callSubscription;
   bool _firstCallSnapshot = true;
   bool _isShowingIncomingCall = false;
+
+  // Message notification sound (generated in code, no audio file)
+  final AudioPlayer _dingPlayer = AudioPlayer();
+  Uint8List? _dingBytes;
 
   final List<Widget> _screens = const [
     HomeScreen(),
@@ -78,8 +84,85 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _listenForIncomingCalls();
   }
 
-  // Watches all chats the user is part of and shows a notification
-  // when a new message arrives from someone else
+  // Builds a short "ding" notification sound as a WAV byte buffer
+  Uint8List _generateDingWav() {
+    const int sampleRate = 44100;
+    // Two short ascending tones for a pleasant notification chime
+    final segments = <List<double>>[
+      [784.0, 0.09], // G5
+      [1046.5, 0.20], // C6
+    ];
+    int totalSamples = 0;
+    for (final s in segments) {
+      totalSamples += (sampleRate * s[1]).round();
+    }
+    final int dataSize = totalSamples * 2;
+
+    final ByteData data = ByteData(44 + dataSize);
+    int offset = 0;
+
+    void writeString(String s) {
+      for (int i = 0; i < s.length; i++) {
+        data.setUint8(offset++, s.codeUnitAt(i));
+      }
+    }
+
+    void writeUint32(int v) {
+      data.setUint32(offset, v, Endian.little);
+      offset += 4;
+    }
+
+    void writeUint16(int v) {
+      data.setUint16(offset, v, Endian.little);
+      offset += 2;
+    }
+
+    writeString('RIFF');
+    writeUint32(36 + dataSize);
+    writeString('WAVE');
+    writeString('fmt ');
+    writeUint32(16);
+    writeUint16(1);
+    writeUint16(1);
+    writeUint32(sampleRate);
+    writeUint32(sampleRate * 2);
+    writeUint16(2);
+    writeUint16(16);
+    writeString('data');
+    writeUint32(dataSize);
+
+    for (final s in segments) {
+      final double freq = s[0];
+      final double dur = s[1];
+      final int n = (sampleRate * dur).round();
+      for (int i = 0; i < n; i++) {
+        final double t = i / sampleRate;
+        double amp = 0.5;
+        const double fade = 0.012;
+        if (t < fade) amp *= t / fade;
+        if (t > dur - fade) amp *= (dur - t) / fade;
+        int v = (sin(2 * pi * freq * t) * amp * 32767).round();
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        data.setInt16(offset, v, Endian.little);
+        offset += 2;
+      }
+    }
+
+    return data.buffer.asUint8List();
+  }
+
+  // Plays the notification ding
+  Future<void> _playDing() async {
+    try {
+      _dingBytes ??= _generateDingWav();
+      await _dingPlayer.stop();
+      await _dingPlayer.play(BytesSource(_dingBytes!));
+    } catch (_) {}
+  }
+
+  // Watches all chats and shows a notification + sound when a new
+  // message arrives from someone else
   void _listenForNewMessages() {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -103,6 +186,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           final String lastMessage = data['lastMessage'] ?? '';
 
           if (lastSenderId.isNotEmpty && lastSenderId != myId) {
+            // Play the in-app notification sound
+            _playDing();
+
             final senderDoc = await FirebaseFirestore.instance
                 .collection('users')
                 .doc(lastSenderId)
@@ -120,7 +206,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
-  // Watches for incoming calls where I'm the callee and the call is ringing
+  // Watches for incoming calls where I'm the callee and status is ringing
   void _listenForIncomingCalls() {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -131,7 +217,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         .where('status', isEqualTo: 'ringing')
         .snapshots()
         .listen((snapshot) {
-      // Skip the first snapshot (existing calls, not new ones)
       if (_firstCallSnapshot) {
         _firstCallSnapshot = false;
         return;
@@ -187,6 +272,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _rotationController.dispose();
     _chatSubscription?.cancel();
     _callSubscription?.cancel();
+    _dingPlayer.dispose();
     super.dispose();
   }
 
@@ -215,10 +301,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final screenSize = MediaQuery.of(context).size;
       if (_buttonRight < 0) _buttonRight = 0;
       if (_buttonBottom < 0) _buttonBottom = 0;
-      if (_buttonRight > screenSize.width - 56)
+      if (_buttonRight > screenSize.width - 56) {
         _buttonRight = screenSize.width - 56;
-      if (_buttonBottom > screenSize.height - 56)
+      }
+      if (_buttonBottom > screenSize.height - 56) {
         _buttonBottom = screenSize.height - 56;
+      }
     });
   }
 
