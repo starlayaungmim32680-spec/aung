@@ -9,8 +9,17 @@ import 'package:livekit_client/livekit_client.dart';
 const String kLiveKitUrl = 'wss://fly-iv33xo63.livekit.cloud';
 const String kSandboxId = 'fly-fu1yvy';
 
-// A one-on-one call powered by LiveKit. Starts as a voice call
-// (camera off) - users turn on video only if they want.
+// Colors available for drawing on the call
+const List<int> kDrawColors = [
+  0xFFFFEB3B, // yellow
+  0xFFFF5252, // red
+  0xFF18FFFF, // cyan
+  0xFF69F0AE, // green
+  0xFFFFFFFF, // white
+];
+
+// A one-on-one call powered by LiveKit. Starts as a voice call (camera off).
+// Includes a shared drawing layer synced over LiveKit data channel.
 class VideoCallScreen extends StatefulWidget {
   final String roomName;
   final String myName;
@@ -48,6 +57,14 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   StreamSubscription<DocumentSnapshot>? _callStatusSub;
   bool _hangingUp = false;
+
+  // Drawing state
+  bool _drawMode = false;
+  Color _drawColor = const Color(0xFFFFEB3B);
+  final List<_DrawStroke> _strokes = [];
+  _DrawStroke? _activeLocal;
+  _DrawStroke? _activeRemote;
+  Offset? _lastLocalPixel;
 
   @override
   void initState() {
@@ -123,7 +140,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
       await room.connect(details['url']!, details['token']!);
 
-      // Start as a voice call - camera off, mic on
       await room.localParticipant?.setCameraEnabled(false);
       await room.localParticipant?.setMicrophoneEnabled(true);
 
@@ -155,8 +171,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         _refreshRemote();
       })
       ..on<ParticipantDisconnectedEvent>((event) {
-        // The other person left - end the call for me too
         _endCall();
+      })
+      // Receive the other person's drawing strokes
+      ..on<DataReceivedEvent>((event) {
+        try {
+          final msg =
+              jsonDecode(utf8.decode(event.data)) as Map<String, dynamic>;
+          _handleRemoteData(msg);
+        } catch (_) {}
       });
   }
 
@@ -188,6 +211,106 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       });
     }
   }
+
+  // ---- Drawing: sending ----
+
+  Future<void> _sendDraw(double x, double y, bool start) async {
+    final lp = _room?.localParticipant;
+    if (lp == null) return;
+    final msg = <String, dynamic>{
+      't': 'd',
+      'x': x,
+      'y': y,
+      's': start,
+      if (start) 'c': _drawColor.value,
+    };
+    try {
+      await lp.publishData(utf8.encode(jsonEncode(msg)));
+    } catch (_) {}
+  }
+
+  Future<void> _sendClear() async {
+    setState(() {
+      _strokes.clear();
+      _activeLocal = null;
+      _activeRemote = null;
+    });
+    final lp = _room?.localParticipant;
+    if (lp == null) return;
+    try {
+      await lp.publishData(utf8.encode(jsonEncode({'t': 'clear'})));
+    } catch (_) {}
+  }
+
+  void _onDrawStart(Offset pos, Size size) {
+    final nx = pos.dx / size.width;
+    final ny = pos.dy / size.height;
+    final stroke = _DrawStroke(_drawColor)..points.add(Offset(nx, ny));
+    setState(() {
+      _strokes.add(stroke);
+      _activeLocal = stroke;
+      _lastLocalPixel = pos;
+    });
+    _sendDraw(nx, ny, true);
+  }
+
+  void _onDrawUpdate(Offset pos, Size size) {
+    final active = _activeLocal;
+    if (active == null) return;
+    // Skip tiny movements to reduce network traffic
+    if (_lastLocalPixel != null && (pos - _lastLocalPixel!).distance < 3.0) {
+      return;
+    }
+    _lastLocalPixel = pos;
+    final nx = pos.dx / size.width;
+    final ny = pos.dy / size.height;
+    setState(() {
+      active.points.add(Offset(nx, ny));
+    });
+    _sendDraw(nx, ny, false);
+  }
+
+  void _onDrawEnd() {
+    _activeLocal = null;
+    _lastLocalPixel = null;
+  }
+
+  // ---- Drawing: receiving ----
+
+  void _handleRemoteData(Map<String, dynamic> msg) {
+    if (!mounted) return;
+    final t = msg['t'];
+    if (t == 'clear') {
+      setState(() {
+        _strokes.clear();
+        _activeLocal = null;
+        _activeRemote = null;
+      });
+      return;
+    }
+    if (t == 'd') {
+      final double x = (msg['x'] as num).toDouble();
+      final double y = (msg['y'] as num).toDouble();
+      final bool start = msg['s'] == true;
+      if (start) {
+        final int c = (msg['c'] as num?)?.toInt() ?? 0xFFFFFFFF;
+        final stroke = _DrawStroke(Color(c))..points.add(Offset(x, y));
+        setState(() {
+          _strokes.add(stroke);
+          _activeRemote = stroke;
+        });
+      } else {
+        final active = _activeRemote;
+        if (active != null) {
+          setState(() {
+            active.points.add(Offset(x, y));
+          });
+        }
+      }
+    }
+  }
+
+  // ---- Call controls ----
 
   Future<void> _toggleMic() async {
     final lp = _room?.localParticipant;
@@ -256,7 +379,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
               child: _buildRemoteView(),
             ),
 
-            // My own camera preview - only shown when my camera is on
+            // My own camera preview - only when my camera is on
             if (_cameraEnabled && _localVideoTrack != null)
               Positioned(
                 top: 16,
@@ -273,6 +396,29 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                   child: VideoTrackRenderer(_localVideoTrack!),
                 ),
               ),
+
+            // Drawing layer - always shows strokes; captures touch in draw mode
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: !_drawMode,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final size =
+                        Size(constraints.maxWidth, constraints.maxHeight);
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: (d) => _onDrawStart(d.localPosition, size),
+                      onPanUpdate: (d) => _onDrawUpdate(d.localPosition, size),
+                      onPanEnd: (d) => _onDrawEnd(),
+                      child: CustomPaint(
+                        painter: _DrawPainter(_strokes),
+                        size: Size.infinite,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
 
             // Switch-camera button (only when my camera is on)
             if (_cameraEnabled && !_connecting && _error == null)
@@ -295,6 +441,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                 ),
               ),
 
+            // Draw toolbar (colors + clear) - shown when in draw mode
+            if (_drawMode && _error == null)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 110,
+                child: Center(child: _buildDrawToolbar()),
+              ),
+
             Positioned(
               left: 0,
               right: 0,
@@ -303,6 +458,57 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildDrawToolbar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.6),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: Colors.white24, width: 1),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ...kDrawColors.map((c) {
+            final bool selected = _drawColor.value == c;
+            return GestureDetector(
+              onTap: () => setState(() => _drawColor = Color(c)),
+              child: Container(
+                width: 28,
+                height: 28,
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  color: Color(c),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: selected ? Colors.white : Colors.transparent,
+                    width: 2.5,
+                  ),
+                ),
+              ),
+            );
+          }),
+          const SizedBox(width: 6),
+          Container(width: 1, height: 24, color: Colors.white24),
+          const SizedBox(width: 6),
+          GestureDetector(
+            onTap: _sendClear,
+            child: Container(
+              width: 36,
+              height: 36,
+              decoration: const BoxDecoration(
+                color: Colors.white12,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.delete_outline,
+                  color: Colors.white, size: 20),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -362,12 +568,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       );
     }
 
-    // The other person turned their camera on - show their video
     if (_remoteVideoTrack != null) {
       return VideoTrackRenderer(_remoteVideoTrack!);
     }
 
-    // Voice-call style: show the other person's avatar + name
     final String name = widget.otherName ?? _remoteName ?? 'Calling';
     final String photo = widget.otherPhoto ?? '';
 
@@ -427,18 +631,25 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           color: _micEnabled ? Colors.white24 : Colors.redAccent,
           onTap: _toggleMic,
         ),
-        const SizedBox(width: 20),
+        const SizedBox(width: 16),
         _ControlButton(
           icon: Icons.call_end,
           color: Colors.red,
-          size: 64,
+          size: 62,
           onTap: _endCall,
         ),
-        const SizedBox(width: 20),
+        const SizedBox(width: 16),
         _ControlButton(
           icon: _cameraEnabled ? Icons.videocam : Icons.videocam_off,
           color: _cameraEnabled ? Colors.white24 : Colors.redAccent,
           onTap: _toggleCamera,
+        ),
+        const SizedBox(width: 16),
+        // Draw toggle
+        _ControlButton(
+          icon: Icons.edit,
+          color: _drawMode ? const Color(0xFF24D17E) : Colors.white24,
+          onTap: () => setState(() => _drawMode = !_drawMode),
         ),
       ],
     );
@@ -455,7 +666,7 @@ class _ControlButton extends StatelessWidget {
     required this.icon,
     required this.color,
     required this.onTap,
-    this.size = 56,
+    this.size = 54,
   });
 
   @override
@@ -473,4 +684,52 @@ class _ControlButton extends StatelessWidget {
       ),
     );
   }
+}
+
+// One drawn line: a list of normalized (0-1) points and a color
+class _DrawStroke {
+  final Color color;
+  final List<Offset> points = [];
+  _DrawStroke(this.color);
+}
+
+// Paints all strokes (local + remote) over the call
+class _DrawPainter extends CustomPainter {
+  final List<_DrawStroke> strokes;
+  _DrawPainter(this.strokes);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final stroke in strokes) {
+      if (stroke.points.isEmpty) continue;
+      final paint = Paint()
+        ..color = stroke.color
+        ..strokeWidth = 4.0
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+
+      if (stroke.points.length == 1) {
+        final p = stroke.points.first;
+        canvas.drawCircle(
+          Offset(p.dx * size.width, p.dy * size.height),
+          2.0,
+          Paint()..color = stroke.color,
+        );
+        continue;
+      }
+
+      final path = Path();
+      final first = stroke.points.first;
+      path.moveTo(first.dx * size.width, first.dy * size.height);
+      for (int i = 1; i < stroke.points.length; i++) {
+        final p = stroke.points[i];
+        path.lineTo(p.dx * size.width, p.dy * size.height);
+      }
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DrawPainter oldDelegate) => true;
 }
