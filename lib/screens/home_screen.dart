@@ -88,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
                     reactions: reactions,
+                    videoType: (post['videoType'] as String?) ?? 'short',
                     onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
@@ -132,6 +133,7 @@ class _VideoPostItem extends StatefulWidget {
   final String caption;
   final String userEmail;
   final Map<String, dynamic> reactions;
+  final String videoType;
   final VoidCallback onVideoEnd;
 
   const _VideoPostItem({
@@ -141,6 +143,7 @@ class _VideoPostItem extends StatefulWidget {
     required this.caption,
     required this.userEmail,
     required this.reactions,
+    required this.videoType,
     required this.onVideoEnd,
   });
 
@@ -151,9 +154,13 @@ class _VideoPostItem extends StatefulWidget {
 class _VideoPostItemState extends State<_VideoPostItem> {
   VideoPlayerController? _controller;
   bool _isInitialized = false;
-  bool _showPauseIcon = false;
   bool _hasEnded = false;
   bool _showReactionPicker = false;
+
+  // Controls visibility is a notifier so toggling it rebuilds ONLY the overlay,
+  // not the whole video item (avoids flicker on every tap).
+  final ValueNotifier<bool> _controlsVisible = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _muted = ValueNotifier<bool>(false);
 
   final List<_FlyingEmoji> _flyingEmojis = [];
 
@@ -161,6 +168,25 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   void initState() {
     super.initState();
     _initializeVideo();
+    _recordView();
+  }
+
+  // Records that the current user viewed this post (counted once per user).
+  Future<void> _recordView() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || widget.postId.isEmpty) return;
+
+    final postRef =
+        FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+    final viewRef = postRef.collection('views').doc(user.uid);
+    try {
+      final snap = await viewRef.get();
+      if (!snap.exists) {
+        await viewRef.set({'createdAt': FieldValue.serverTimestamp()});
+      }
+    } catch (_) {
+      // Ignore view-tracking errors so playback is never affected.
+    }
   }
 
   Future<void> _initializeVideo() async {
@@ -203,17 +229,61 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     _togglePlayPause();
   }
 
+  // Skips forward/backward by [seconds]; keeps the controls visible
+  void _seekBy(int seconds) {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    Duration target = c.value.position + Duration(seconds: seconds);
+    if (target < Duration.zero) target = Duration.zero;
+    if (target > c.value.duration) target = c.value.duration;
+    c.seekTo(target);
+    _controlsVisible.value = true;
+  }
+
+  // Playing -> pause and show the 3 controls; Paused -> play and hide them
   void _togglePlayPause() {
-    if (_controller == null) return;
-    setState(() {
-      if (_controller!.value.isPlaying) {
-        _controller!.pause();
-        _showPauseIcon = true;
-      } else {
-        _controller!.play();
-        _showPauseIcon = false;
-      }
-    });
+    final c = _controller;
+    if (c == null) return;
+    if (c.value.isPlaying) {
+      c.pause();
+      _controlsVisible.value = true;
+    } else {
+      c.play();
+      _controlsVisible.value = false;
+    }
+  }
+
+  void _toggleMute() {
+    _muted.value = !_muted.value;
+    _controller?.setVolume(_muted.value ? 0.0 : 1.0);
+  }
+
+  // Formats a duration as m:ss (e.g. 0:08, 1:23)
+  String _fmtDuration(Duration d) {
+    final int minutes = d.inMinutes;
+    final int seconds = d.inSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  // A single circular media-control button
+  Widget _circleControl({
+    required IconData icon,
+    required double diameter,
+    required double iconSize,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: diameter,
+        height: diameter,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.black.withOpacity(0.45),
+        ),
+        child: Icon(icon, color: Colors.white, size: iconSize),
+      ),
+    );
   }
 
   void _spawnFlyingEmojis(String emoji) {
@@ -299,6 +369,46 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     await Share.share(shareText);
   }
 
+  // Stream of the current user's "saved" doc for this post (exists = saved)
+  Stream<DocumentSnapshot>? _savedStream() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || widget.postId.isEmpty) return null;
+    return FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('saved')
+        .doc(widget.postId)
+        .snapshots();
+  }
+
+  // Saves or unsaves this post to the current user's bookmark list
+  Future<void> _toggleSave(bool isSaved) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || widget.postId.isEmpty) return;
+
+    final ref = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('saved')
+        .doc(widget.postId);
+    try {
+      if (isSaved) {
+        await ref.delete();
+      } else {
+        await ref.set({
+          'postId': widget.postId,
+          'ownerId': widget.userId,
+          'videoUrl': widget.videoUrl,
+          'caption': widget.caption,
+          'videoType': widget.videoType,
+          'savedAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (_) {
+      // Ignore save errors so the UI is never blocked.
+    }
+  }
+
   void _openComments() {
     showModalBottomSheet(
       context: context,
@@ -315,6 +425,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   void dispose() {
     _controller?.removeListener(_onVideoProgress);
     _controller?.dispose();
+    _controlsVisible.dispose();
+    _muted.dispose();
     super.dispose();
   }
 
@@ -323,7 +435,6 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final user = FirebaseAuth.instance.currentUser;
     final String? myReaction =
         user != null ? widget.reactions[user.uid] as String? : null;
-    final int reactionCount = widget.reactions.length;
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -332,42 +443,175 @@ class _VideoPostItemState extends State<_VideoPostItem> {
         fit: StackFit.expand,
         children: [
           if (_isInitialized && _controller != null)
-            FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: _controller!.value.size.width,
-                height: _controller!.value.size.height,
-                child: VideoPlayer(_controller!),
-              ),
-            )
+            // Short videos fill the screen (TikTok style); long/landscape
+            // videos keep their natural aspect ratio, centered with black bars.
+            widget.videoType == 'long'
+                ? Center(
+                    child: AspectRatio(
+                      aspectRatio: _controller!.value.aspectRatio,
+                      child: VideoPlayer(_controller!),
+                    ),
+                  )
+                : FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width: _controller!.value.size.width,
+                      height: _controller!.value.size.height,
+                      child: VideoPlayer(_controller!),
+                    ),
+                  )
           else
             const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             ),
-          if (_showPauseIcon)
-            const Center(
-              child: Icon(
-                Icons.play_arrow,
-                color: Colors.white70,
-                size: 80,
-              ),
-            ),
-          if (_isInitialized && _controller != null)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: VideoProgressIndicator(
-                _controller!,
-                allowScrubbing: true,
-                colors: const VideoProgressColors(
-                  playedColor: Colors.redAccent,
-                  bufferedColor: Colors.white24,
-                  backgroundColor: Colors.white10,
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-              ),
-            ),
+
+          // Tap-to-reveal media controls: rewind 10s / play-pause / forward 10s.
+          // No full-screen dim (each button has its own dark circle) so toggling
+          // the controls never flickers the like button / profile behind them.
+          ValueListenableBuilder<bool>(
+            valueListenable: _controlsVisible,
+            builder: (context, visible, _) {
+              final c = _controller;
+              if (!visible || !_isInitialized || c == null) {
+                return const SizedBox.shrink();
+              }
+              final double bottomInset = MediaQuery.of(context).padding.bottom;
+              return Stack(
+                children: [
+                  Positioned.fill(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _circleControl(
+                          icon: Icons.replay_10,
+                          diameter: 58,
+                          iconSize: 30,
+                          onTap: () => _seekBy(-10),
+                        ),
+                        _circleControl(
+                          icon: c.value.isPlaying
+                              ? Icons.pause
+                              : Icons.play_arrow,
+                          diameter: 74,
+                          iconSize: 44,
+                          onTap: _togglePlayPause,
+                        ),
+                        _circleControl(
+                          icon: Icons.forward_10,
+                          diameter: 58,
+                          iconSize: 30,
+                          onTap: () => _seekBy(10),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Bottom control bar: time / duration, scrub slider, mute
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 4 + bottomInset,
+                    child: ValueListenableBuilder<VideoPlayerValue>(
+                      valueListenable: c,
+                      builder: (context, value, __) {
+                        final Duration pos = value.position;
+                        final Duration dur = value.duration;
+                        final double maxMs = dur.inMilliseconds <= 0
+                            ? 1.0
+                            : dur.inMilliseconds.toDouble();
+                        double curMs = pos.inMilliseconds.toDouble();
+                        if (curMs < 0) curMs = 0;
+                        if (curMs > maxMs) curMs = maxMs;
+
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    _fmtDuration(pos),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      shadows: [
+                                        Shadow(
+                                            color: Colors.black, blurRadius: 6)
+                                      ],
+                                    ),
+                                  ),
+                                  Text(
+                                    ' / ${_fmtDuration(dur)}',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                      shadows: [
+                                        Shadow(
+                                            color: Colors.black, blurRadius: 6)
+                                      ],
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  ValueListenableBuilder<bool>(
+                                    valueListenable: _muted,
+                                    builder: (context, muted, ___) {
+                                      return GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: _toggleMute,
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(4),
+                                          child: Icon(
+                                            muted
+                                                ? Icons.volume_off_rounded
+                                                : Icons.volume_up_rounded,
+                                            color: Colors.white,
+                                            size: 24,
+                                            shadows: const [
+                                              Shadow(
+                                                  color: Colors.black,
+                                                  blurRadius: 6)
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                            SliderTheme(
+                              data: SliderThemeData(
+                                trackHeight: 3,
+                                activeTrackColor: Colors.white,
+                                inactiveTrackColor: Colors.white30,
+                                thumbColor: Colors.white,
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 14),
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 7),
+                              ),
+                              child: Slider(
+                                value: curMs,
+                                min: 0,
+                                max: maxMs,
+                                onChanged: (v) {
+                                  c.seekTo(Duration(milliseconds: v.toInt()));
+                                },
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+
           Positioned(
             left: 16,
             bottom: 100,
@@ -376,8 +620,10 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               userId: widget.userId,
               fallbackEmail: widget.userEmail,
               caption: widget.caption,
+              postId: widget.postId,
             ),
           ),
+
           ..._flyingEmojis.map((e) {
             return Positioned(
               right: 30,
@@ -389,6 +635,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               ),
             );
           }),
+
           if (_showReactionPicker)
             Positioned(
               right: 12,
@@ -414,6 +661,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 ),
               ),
             ),
+
           Positioned(
             right: 12,
             bottom: 280,
@@ -422,134 +670,71 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 GestureDetector(
                   onTap: _quickToggleLike,
                   onLongPress: () => setState(() => _showReactionPicker = true),
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        width: 44,
-                        height: 44,
-                        child: Center(
-                          child: myReaction != null
-                              ? _PopInEmoji(
-                                  key: ValueKey(myReaction),
-                                  emoji: kReactions[myReaction]!,
-                                )
-                              : const Icon(
-                                  Icons.favorite_border,
-                                  color: Colors.white,
-                                  size: 36,
-                                  shadows: [
-                                    Shadow(color: Colors.black, blurRadius: 6)
-                                  ],
-                                ),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '$reactionCount',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                        ),
-                      ),
-                    ],
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Center(
+                      child: myReaction != null
+                          ? _PopInEmoji(
+                              key: ValueKey(myReaction),
+                              emoji: kReactions[myReaction]!,
+                            )
+                          : const Icon(
+                              Icons.thumb_up_alt_outlined,
+                              color: Colors.white,
+                              size: 34,
+                              shadows: [
+                                Shadow(color: Colors.black, blurRadius: 8)
+                              ],
+                            ),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 22),
-                StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('posts')
-                      .doc(widget.postId)
-                      .collection('comments')
-                      .snapshots(),
+                const SizedBox(height: 20),
+                // Comment
+                GestureDetector(
+                  onTap: _openComments,
+                  child: const Icon(
+                    Icons.mode_comment_outlined,
+                    color: Colors.white,
+                    size: 32,
+                    shadows: [Shadow(color: Colors.black, blurRadius: 8)],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // Share
+                GestureDetector(
+                  onTap: _shareVideo,
+                  child: Transform.flip(
+                    flipX: true,
+                    child: const Icon(
+                      Icons.reply,
+                      color: Colors.white,
+                      size: 34,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 8)],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                // Save / bookmark
+                StreamBuilder<DocumentSnapshot>(
+                  stream: _savedStream(),
                   builder: (context, snapshot) {
-                    final int commentCount =
-                        snapshot.hasData ? snapshot.data!.docs.length : 0;
+                    final bool isSaved = snapshot.data?.exists ?? false;
                     return GestureDetector(
-                      onTap: _openComments,
-                      child: Column(
-                        children: [
-                          Container(
-                            width: 52,
-                            height: 52,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              gradient: const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
-                              ),
-                              border:
-                                  Border.all(color: Colors.white24, width: 1),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.4),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: const Icon(
-                              Icons.mode_comment_rounded,
-                              color: Colors.white,
-                              size: 26,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '$commentCount',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              shadows: [
-                                Shadow(color: Colors.black, blurRadius: 6)
-                              ],
-                            ),
-                          ),
+                      onTap: () => _toggleSave(isSaved),
+                      child: Icon(
+                        isSaved ? Icons.bookmark : Icons.bookmark_border,
+                        color: Colors.white,
+                        size: 32,
+                        shadows: const [
+                          Shadow(color: Colors.black, blurRadius: 8)
                         ],
                       ),
                     );
                   },
                 ),
-                const SizedBox(height: 22),
-                _buildIconButton(
-                  icon: Icons.send,
-                  label: 'Share',
-                  onTap: _shareVideo,
-                ),
               ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildIconButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Icon(
-            icon,
-            color: Colors.white,
-            size: 36,
-            shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              shadows: [Shadow(color: Colors.black, blurRadius: 6)],
             ),
           ),
         ],
@@ -1153,11 +1338,13 @@ class _OwnerInfo extends StatelessWidget {
   final String userId;
   final String fallbackEmail;
   final String caption;
+  final String postId;
 
   const _OwnerInfo({
     required this.userId,
     required this.fallbackEmail,
     required this.caption,
+    required this.postId,
   });
 
   // Follows or unfollows the video owner (and notifies them when following)
@@ -1330,6 +1517,41 @@ class _OwnerInfo extends StatelessWidget {
                   fontSize: 14,
                   shadows: [Shadow(color: Colors.black, blurRadius: 6)],
                 ),
+              ),
+            ],
+            // View count below the video (unique viewers)
+            if (postId.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('posts')
+                    .doc(postId)
+                    .collection('views')
+                    .snapshots(),
+                builder: (context, viewSnap) {
+                  final int viewCount =
+                      viewSnap.hasData ? viewSnap.data!.docs.length : 0;
+                  return Row(
+                    children: [
+                      const Icon(
+                        Icons.remove_red_eye,
+                        color: Colors.white,
+                        size: 16,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        viewCount == 1 ? '1 view' : '$viewCount views',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ],
           ],
