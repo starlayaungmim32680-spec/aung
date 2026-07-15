@@ -7,6 +7,7 @@ import 'package:video_player/video_player.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'login_screen.dart';
+import 'home_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -20,6 +21,76 @@ class ProfileScreen extends StatelessWidget {
         (route) => false,
       );
     }
+  }
+
+  // Confirms and deletes one of the user's own posts
+  Future<void> _confirmDelete(BuildContext context, String postId) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title:
+            const Text('Delete video?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently remove this video.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('posts')
+            .doc(postId)
+            .delete();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Video deleted')),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Delete failed: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  // A single stat column (value on top, label below)
+  Widget _profileStat(String value, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            label,
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -143,20 +214,34 @@ class ProfileScreen extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 20),
-                          Column(
+                          // Stats: Posts / Followers / Following
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(
-                                '$postCount',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                              _profileStat('$postCount', 'Posts'),
+                              StreamBuilder<QuerySnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(user?.uid ?? 'none')
+                                    .collection('followers')
+                                    .snapshots(),
+                                builder: (context, snap) {
+                                  final int c =
+                                      snap.hasData ? snap.data!.docs.length : 0;
+                                  return _profileStat('$c', 'Followers');
+                                },
                               ),
-                              Text(
-                                'Posts',
-                                style: TextStyle(
-                                    color: Colors.grey[500], fontSize: 13),
+                              StreamBuilder<QuerySnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(user?.uid ?? 'none')
+                                    .collection('following')
+                                    .snapshots(),
+                                builder: (context, snap) {
+                                  final int c =
+                                      snap.hasData ? snap.data!.docs.length : 0;
+                                  return _profileStat('$c', 'Following');
+                                },
                               ),
                             ],
                           ),
@@ -208,9 +293,27 @@ class ProfileScreen extends StatelessWidget {
                           (context, index) {
                             final post = snapshot.data!.docs[index].data()
                                 as Map<String, dynamic>;
-                            return _VideoThumbnail(
-                              videoUrl: post['videoUrl'] ?? '',
-                              caption: post['caption'] ?? '',
+                            return GestureDetector(
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => UserVideoFeedScreen(
+                                      userId: user?.uid ?? '',
+                                      initialIndex: index,
+                                    ),
+                                  ),
+                                );
+                              },
+                              onLongPress: () => _confirmDelete(
+                                context,
+                                snapshot.data!.docs[index].id,
+                              ),
+                              child: _VideoThumbnail(
+                                videoUrl: post['videoUrl'] ?? '',
+                                caption: post['caption'] ?? '',
+                                postId: snapshot.data!.docs[index].id,
+                              ),
                             );
                           },
                           childCount: postCount,
@@ -444,8 +547,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 class _VideoThumbnail extends StatefulWidget {
   final String videoUrl;
   final String caption;
+  final String postId;
 
-  const _VideoThumbnail({required this.videoUrl, required this.caption});
+  const _VideoThumbnail({
+    required this.videoUrl,
+    required this.caption,
+    required this.postId,
+  });
 
   @override
   State<_VideoThumbnail> createState() => _VideoThumbnailState();
@@ -491,6 +599,7 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
           if (_isInitialized && _controller != null)
             FittedBox(
               fit: BoxFit.cover,
+              clipBehavior: Clip.hardEdge,
               child: SizedBox(
                 width: _controller!.value.size.width,
                 height: _controller!.value.size.height,
@@ -502,29 +611,51 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
               child: Icon(Icons.play_circle_outline,
                   color: Colors.white30, size: 30),
             ),
-          const Positioned(
-            top: 6,
-            right: 6,
-            child: Icon(Icons.play_arrow, color: Colors.white, size: 18),
-          ),
-          if (widget.caption.isNotEmpty)
-            Positioned(
-              left: 4,
-              right: 4,
-              bottom: 4,
-              child: Text(
-                widget.caption,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                ),
-              ),
+          // TikTok-style view count (bottom-left)
+          Positioned(
+            left: 6,
+            bottom: 6,
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('posts')
+                  .doc(widget.postId)
+                  .collection('views')
+                  .snapshots(),
+              builder: (context, snap) {
+                final int views = snap.hasData ? snap.data!.docs.length : 0;
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.play_arrow,
+                      color: Colors.white,
+                      size: 16,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      _fmtCount(views),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
+          ),
         ],
       ),
     );
   }
+}
+
+// Formats view counts like 1200 -> "1.2K"
+String _fmtCount(int n) {
+  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+  if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+  return '$n';
 }

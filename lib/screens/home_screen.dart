@@ -5,6 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'notifications_screen.dart';
+import 'public_profile_screen.dart';
+import 'story_screen.dart';
 
 // Available reaction types and their emojis
 const Map<String, String> kReactions = {
@@ -94,27 +96,141 @@ class _HomeScreenState extends State<HomeScreen> {
                 },
               ),
               SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      const Center(
-                        child: Text(
-                          'Fly',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const Center(
+                            child: Text(
+                              'Fly',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
-                        ),
+                          Positioned(
+                            right: 12,
+                            top: 0,
+                            child: _NotificationBell(),
+                          ),
+                        ],
                       ),
-                      Positioned(
-                        right: 12,
-                        top: 0,
-                        child: _NotificationBell(),
+                    ),
+                    const StoriesBar(),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// Full-screen, swipeable viewer of a single user's videos (opened from a
+// profile grid). Reuses _VideoPostItem so like/comment/share/save all work.
+class UserVideoFeedScreen extends StatefulWidget {
+  final String userId;
+  final int initialIndex;
+
+  const UserVideoFeedScreen({
+    super.key,
+    required this.userId,
+    this.initialIndex = 0,
+  });
+
+  @override
+  State<UserVideoFeedScreen> createState() => _UserVideoFeedScreenState();
+}
+
+class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
+  late final PageController _pageController =
+      PageController(initialPage: widget.initialIndex);
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _goToNextVideo(int totalCount) {
+    final int? currentPage = _pageController.page?.round();
+    if (currentPage != null && currentPage < totalCount - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: StreamBuilder<QuerySnapshot>(
+        // Same query as the profile grid (no orderBy) so indexes line up
+        stream: FirebaseFirestore.instance
+            .collection('posts')
+            .where('userId', isEqualTo: widget.userId)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.redAccent),
+            );
+          }
+
+          final posts = snapshot.data?.docs ?? [];
+          if (posts.isEmpty) {
+            return const Center(
+              child: Text('No videos', style: TextStyle(color: Colors.grey)),
+            );
+          }
+
+          return Stack(
+            children: [
+              PageView.builder(
+                controller: _pageController,
+                scrollDirection: Axis.vertical,
+                itemCount: posts.length,
+                itemBuilder: (context, index) {
+                  final postDoc = posts[index];
+                  final post = postDoc.data() as Map<String, dynamic>;
+                  final Map<String, dynamic> reactions =
+                      (post['reactions'] as Map<String, dynamic>?) ?? {};
+
+                  return _VideoPostItem(
+                    postId: postDoc.id,
+                    userId: post['userId'] ?? '',
+                    videoUrl: post['videoUrl'] ?? '',
+                    caption: post['caption'] ?? '',
+                    userEmail: post['userEmail'] ?? 'Unknown user',
+                    reactions: reactions,
+                    videoType: (post['videoType'] as String?) ?? 'short',
+                    onVideoEnd: () => _goToNextVideo(posts.length),
+                  );
+                },
+              ),
+              SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.4),
+                        shape: BoxShape.circle,
                       ),
-                    ],
+                      child: const Icon(Icons.arrow_back, color: Colors.white),
+                    ),
                   ),
                 ),
               ),
@@ -363,40 +479,52 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   }
 
   Future<void> _shareVideo() async {
+    // Record the share so it can be counted (one per user, idempotent)
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null && widget.postId.isNotEmpty) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.postId)
+            .collection('shares')
+            .doc(user.uid)
+            .set({'createdAt': FieldValue.serverTimestamp()});
+      } catch (_) {
+        // Ignore share-tracking errors
+      }
+    }
+
     final String shareText = widget.caption.isNotEmpty
         ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
         : 'Watch this video on Fly: ${widget.videoUrl}';
     await Share.share(shareText);
   }
 
-  // Stream of the current user's "saved" doc for this post (exists = saved)
-  Stream<DocumentSnapshot>? _savedStream() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null || widget.postId.isEmpty) return null;
+  // Live count of a post subcollection (comments / shares / saves)
+  Stream<QuerySnapshot> _postSubStream(String sub) {
     return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('saved')
+        .collection('posts')
         .doc(widget.postId)
+        .collection(sub)
         .snapshots();
   }
 
-  // Saves or unsaves this post to the current user's bookmark list
+  // Saves or unsaves this post (stored per-post so the total can be counted)
   Future<void> _toggleSave(bool isSaved) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || widget.postId.isEmpty) return;
 
     final ref = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('saved')
-        .doc(widget.postId);
+        .collection('posts')
+        .doc(widget.postId)
+        .collection('saves')
+        .doc(user.uid);
     try {
       if (isSaved) {
         await ref.delete();
       } else {
         await ref.set({
-          'postId': widget.postId,
+          'uid': user.uid,
           'ownerId': widget.userId,
           'videoUrl': widget.videoUrl,
           'caption': widget.caption,
@@ -407,6 +535,29 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     } catch (_) {
       // Ignore save errors so the UI is never blocked.
     }
+  }
+
+  // Formats counts like 17300 -> "17.3K", 2400000 -> "2.4M"
+  String _formatCount(int n) {
+    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+    return '$n';
+  }
+
+  // Small count text shown under each action icon
+  Widget _countLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+        ),
+      ),
+    );
   }
 
   void _openComments() {
@@ -667,68 +818,109 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             bottom: 280,
             child: Column(
               children: [
+                // Like (long-press for reactions)
                 GestureDetector(
                   onTap: _quickToggleLike,
                   onLongPress: () => setState(() => _showReactionPicker = true),
-                  child: SizedBox(
-                    width: 40,
-                    height: 40,
-                    child: Center(
-                      child: myReaction != null
-                          ? _PopInEmoji(
-                              key: ValueKey(myReaction),
-                              emoji: kReactions[myReaction]!,
-                            )
-                          : const Icon(
-                              Icons.thumb_up_alt_outlined,
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        width: 40,
+                        height: 40,
+                        child: Center(
+                          child: myReaction != null
+                              ? _PopInEmoji(
+                                  key: ValueKey(myReaction),
+                                  emoji: kReactions[myReaction]!,
+                                )
+                              : const Icon(
+                                  Icons.thumb_up_alt_outlined,
+                                  color: Colors.white,
+                                  size: 34,
+                                  shadows: [
+                                    Shadow(color: Colors.black, blurRadius: 8)
+                                  ],
+                                ),
+                        ),
+                      ),
+                      _countLabel(_formatCount(widget.reactions.length)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // Comment
+                StreamBuilder<QuerySnapshot>(
+                  stream: _postSubStream('comments'),
+                  builder: (context, snap) {
+                    final int count = snap.hasData ? snap.data!.docs.length : 0;
+                    return GestureDetector(
+                      onTap: _openComments,
+                      child: Column(
+                        children: [
+                          const Icon(
+                            Icons.mode_comment_outlined,
+                            color: Colors.white,
+                            size: 32,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 8)
+                            ],
+                          ),
+                          _countLabel(_formatCount(count)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 16),
+                // Share
+                StreamBuilder<QuerySnapshot>(
+                  stream: _postSubStream('shares'),
+                  builder: (context, snap) {
+                    final int count = snap.hasData ? snap.data!.docs.length : 0;
+                    return GestureDetector(
+                      onTap: _shareVideo,
+                      child: Column(
+                        children: [
+                          Transform.flip(
+                            flipX: true,
+                            child: const Icon(
+                              Icons.reply,
                               color: Colors.white,
                               size: 34,
                               shadows: [
                                 Shadow(color: Colors.black, blurRadius: 8)
                               ],
                             ),
-                    ),
-                  ),
+                          ),
+                          _countLabel(_formatCount(count)),
+                        ],
+                      ),
+                    );
+                  },
                 ),
-                const SizedBox(height: 20),
-                // Comment
-                GestureDetector(
-                  onTap: _openComments,
-                  child: const Icon(
-                    Icons.mode_comment_outlined,
-                    color: Colors.white,
-                    size: 32,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 8)],
-                  ),
-                ),
-                const SizedBox(height: 20),
-                // Share
-                GestureDetector(
-                  onTap: _shareVideo,
-                  child: Transform.flip(
-                    flipX: true,
-                    child: const Icon(
-                      Icons.reply,
-                      color: Colors.white,
-                      size: 34,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 8)],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
                 // Save / bookmark
-                StreamBuilder<DocumentSnapshot>(
-                  stream: _savedStream(),
-                  builder: (context, snapshot) {
-                    final bool isSaved = snapshot.data?.exists ?? false;
+                StreamBuilder<QuerySnapshot>(
+                  stream: _postSubStream('saves'),
+                  builder: (context, snap) {
+                    final myId = FirebaseAuth.instance.currentUser?.uid;
+                    final docs = snap.hasData ? snap.data!.docs : const [];
+                    final int count = docs.length;
+                    final bool isSaved =
+                        myId != null && docs.any((d) => d.id == myId);
                     return GestureDetector(
                       onTap: () => _toggleSave(isSaved),
-                      child: Icon(
-                        isSaved ? Icons.bookmark : Icons.bookmark_border,
-                        color: Colors.white,
-                        size: 32,
-                        shadows: const [
-                          Shadow(color: Colors.black, blurRadius: 8)
+                      child: Column(
+                        children: [
+                          Icon(
+                            isSaved ? Icons.bookmark : Icons.bookmark_border,
+                            color: Colors.white,
+                            size: 32,
+                            shadows: const [
+                              Shadow(color: Colors.black, blurRadius: 8)
+                            ],
+                          ),
+                          _countLabel(_formatCount(count)),
                         ],
                       ),
                     );
@@ -1398,6 +1590,17 @@ class _OwnerInfo extends StatelessWidget {
     });
   }
 
+  // Opens the tapped user's public profile
+  void _openProfile(BuildContext context) {
+    if (userId.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PublicProfileScreen(userId: userId),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final myId = FirebaseAuth.instance.currentUser?.uid;
@@ -1426,44 +1629,50 @@ class _OwnerInfo extends StatelessWidget {
           children: [
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                GestureDetector(
+                  onTap: () => _openProfile(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                      ),
                     ),
-                  ),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundColor: Colors.grey[850],
-                    backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
-                        ? NetworkImage(photoUrl)
-                        : null,
-                    child: (photoUrl == null || photoUrl.isEmpty)
-                        ? Text(
-                            displayName.isNotEmpty
-                                ? displayName[0].toUpperCase()
-                                : '?',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          )
-                        : null,
+                    child: CircleAvatar(
+                      radius: 18,
+                      backgroundColor: Colors.grey[850],
+                      backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                          ? NetworkImage(photoUrl)
+                          : null,
+                      child: (photoUrl == null || photoUrl.isEmpty)
+                          ? Text(
+                              displayName.isNotEmpty
+                                  ? displayName[0].toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            )
+                          : null,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Flexible(
-                  child: Text(
-                    displayName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                  child: GestureDetector(
+                    onTap: () => _openProfile(context),
+                    child: Text(
+                      displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      ),
                     ),
                   ),
                 ),

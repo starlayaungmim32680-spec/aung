@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:video_player/video_player.dart';
 import 'chat_screen.dart';
+import 'home_screen.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -210,9 +211,23 @@ class PublicProfileScreen extends StatelessWidget {
                           (context, index) {
                             final post = snapshot.data!.docs[index].data()
                                 as Map<String, dynamic>;
-                            return _VideoThumbnail(
-                              videoUrl: post['videoUrl'] ?? '',
-                              caption: post['caption'] ?? '',
+                            return GestureDetector(
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => UserVideoFeedScreen(
+                                      userId: userId,
+                                      initialIndex: index,
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: _VideoThumbnail(
+                                videoUrl: post['videoUrl'] ?? '',
+                                caption: post['caption'] ?? '',
+                                postId: snapshot.data!.docs[index].id,
+                              ),
                             );
                           },
                           childCount: postCount,
@@ -407,8 +422,13 @@ class _FollowButton extends StatelessWidget {
 class _VideoThumbnail extends StatefulWidget {
   final String videoUrl;
   final String caption;
+  final String postId;
 
-  const _VideoThumbnail({required this.videoUrl, required this.caption});
+  const _VideoThumbnail({
+    required this.videoUrl,
+    required this.caption,
+    required this.postId,
+  });
 
   @override
   State<_VideoThumbnail> createState() => _VideoThumbnailState();
@@ -454,6 +474,7 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
           if (_isInitialized && _controller != null)
             FittedBox(
               fit: BoxFit.cover,
+              clipBehavior: Clip.hardEdge,
               child: SizedBox(
                 width: _controller!.value.size.width,
                 height: _controller!.value.size.height,
@@ -465,29 +486,51 @@ class _VideoThumbnailState extends State<_VideoThumbnail> {
               child: Icon(Icons.play_circle_outline,
                   color: Colors.white30, size: 30),
             ),
-          const Positioned(
-            top: 6,
-            right: 6,
-            child: Icon(Icons.play_arrow, color: Colors.white, size: 18),
-          ),
-          if (widget.caption.isNotEmpty)
-            Positioned(
-              left: 4,
-              right: 4,
-              bottom: 4,
-              child: Text(
-                widget.caption,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                ),
-              ),
+          // TikTok-style view count (bottom-left)
+          Positioned(
+            left: 6,
+            bottom: 6,
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('posts')
+                  .doc(widget.postId)
+                  .collection('views')
+                  .snapshots(),
+              builder: (context, snap) {
+                final int views = snap.hasData ? snap.data!.docs.length : 0;
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.play_arrow,
+                      color: Colors.white,
+                      size: 16,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      _fmtCount(views),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
+          ),
         ],
       ),
     );
   }
+}
+
+// Formats view counts like 1200 -> "1.2K"
+String _fmtCount(int n) {
+  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+  if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
+  return '$n';
 }
