@@ -181,7 +181,7 @@ class StoriesBar extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             children: [
-              // "Create Story" card
+              // "Create Story" card (shows my own profile photo, Facebook-style)
               _CreateStoryCard(onTap: () => addStory(context)),
               // One big card per user with an active story
               ...userIds.map((uid) {
@@ -230,13 +230,17 @@ String _videoThumbUrl(String videoUrl) {
   return u;
 }
 
-// Facebook-style "Create Story" card
+// Facebook-style "Create Story" card: shows the current user's own profile
+// photo filling the card, with a "+" badge overlapping the bottom of the
+// photo (matching how Facebook/Instagram show your own avatar on this card).
 class _CreateStoryCard extends StatelessWidget {
   final VoidCallback onTap;
   const _CreateStoryCard({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -247,31 +251,83 @@ class _CreateStoryCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
         ),
         clipBehavior: Clip.hardEdge,
-        child: Column(
-          children: [
-            Expanded(
-              child: Container(
-                width: double.infinity,
-                color: Colors.grey[850],
-                child: const Icon(Icons.add_circle,
-                    color: Color(0xFFFF4B6E), size: 34),
-              ),
-            ),
-            Container(
-              height: 46,
-              width: double.infinity,
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: const Text(
-                'Create Story',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600),
-              ),
-            ),
-          ],
+        child: StreamBuilder<DocumentSnapshot>(
+          stream: myId == null
+              ? null
+              : FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(myId)
+                  .snapshots(),
+          builder: (context, snapshot) {
+            final Map<String, dynamic>? profile =
+                snapshot.data?.data() as Map<String, dynamic>?;
+            final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+
+            return Column(
+              children: [
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    clipBehavior: Clip.none,
+                    children: [
+                      // My own profile photo as the card's background
+                      if (photoUrl.isNotEmpty)
+                        CachedNetworkImage(
+                          imageUrl: photoUrl,
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) =>
+                              Container(color: Colors.grey[850]),
+                          errorWidget: (_, __, ___) =>
+                              Container(color: Colors.grey[850]),
+                        )
+                      else
+                        Container(
+                          color: Colors.grey[850],
+                          child: const Icon(Icons.person,
+                              color: Colors.white38, size: 40),
+                        ),
+                      // "+" badge overlapping the seam between photo and label
+                      Positioned(
+                        bottom: -14,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: const Color(0xFFFF4B6E),
+                              border: Border.all(
+                                color: Colors.grey[900]!,
+                                width: 3,
+                              ),
+                            ),
+                            child: const Icon(Icons.add,
+                                color: Colors.white, size: 18),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  height: 46,
+                  width: double.infinity,
+                  alignment: Alignment.center,
+                  padding: const EdgeInsets.only(left: 4, right: 4, top: 14),
+                  child: const Text(
+                    'Create Story',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );

@@ -83,7 +83,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   final Map<String, dynamic> reactions =
                       (post['reactions'] as Map<String, dynamic>?) ?? {};
 
+                  // key: ValueKey(postDoc.id) stops Flutter from reusing a
+                  // _VideoPostItem's State for a different post when the list
+                  // reorders/scrolls, which was causing stale like/comment
+                  // counts to show up on the wrong post.
                   return _VideoPostItem(
+                    key: ValueKey(postDoc.id),
                     postId: postDoc.id,
                     userId: post['userId'] ?? '',
                     videoUrl: post['videoUrl'] ?? '',
@@ -206,6 +211,7 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                       (post['reactions'] as Map<String, dynamic>?) ?? {};
 
                   return _VideoPostItem(
+                    key: ValueKey(postDoc.id),
                     postId: postDoc.id,
                     userId: post['userId'] ?? '',
                     videoUrl: post['videoUrl'] ?? '',
@@ -253,6 +259,7 @@ class _VideoPostItem extends StatefulWidget {
   final VoidCallback onVideoEnd;
 
   const _VideoPostItem({
+    super.key,
     required this.postId,
     required this.userId,
     required this.videoUrl,
@@ -455,13 +462,18 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     });
   }
 
-  Future<void> _setReaction(String type) async {
+  // Toggles a reaction. [currentReactions] must be the FRESHEST reactions map
+  // available (from the live post-document stream, not a value cached from
+  // when this widget was first built) so the like/unlike decision below is
+  // always correct, even if several taps happen quickly.
+  Future<void> _setReaction(
+      String type, Map<String, dynamic> currentReactions) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     final postRef =
         FirebaseFirestore.instance.collection('posts').doc(widget.postId);
-    final String? currentReaction = widget.reactions[user.uid] as String?;
+    final String? currentReaction = currentReactions[user.uid] as String?;
 
     setState(() => _showReactionPicker = false);
 
@@ -474,8 +486,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     }
   }
 
-  void _quickToggleLike() {
-    _setReaction('like');
+  void _quickToggleLike(Map<String, dynamic> currentReactions) {
+    _setReaction('like', currentReactions);
   }
 
   Future<void> _shareVideo() async {
@@ -584,353 +596,417 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    final String? myReaction =
-        user != null ? widget.reactions[user.uid] as String? : null;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: _handleScreenTap,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (_isInitialized && _controller != null)
-            // Short videos fill the screen (TikTok style); long/landscape
-            // videos keep their natural aspect ratio, centered with black bars.
-            widget.videoType == 'long'
-                ? Center(
-                    child: AspectRatio(
-                      aspectRatio: _controller!.value.aspectRatio,
-                      child: VideoPlayer(_controller!),
-                    ),
-                  )
-                : FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      width: _controller!.value.size.width,
-                      height: _controller!.value.size.height,
-                      child: VideoPlayer(_controller!),
-                    ),
-                  )
-          else
-            const Center(
-              child: CircularProgressIndicator(color: Colors.redAccent),
-            ),
+    // The whole post item now listens directly to its own Firestore document.
+    // This is what keeps the like count and my-reaction state ALWAYS in sync
+    // with the database, instead of depending on the parent post-list
+    // snapshot (which could be a tick behind and made counts look wrong or
+    // jump around, and made double-tapping like feel unreliable).
+    return StreamBuilder<DocumentSnapshot>(
+      stream: widget.postId.isEmpty
+          ? null
+          : FirebaseFirestore.instance
+              .collection('posts')
+              .doc(widget.postId)
+              .snapshots(),
+      builder: (context, postSnap) {
+        final Map<String, dynamic>? livePostData =
+            (postSnap.data?.data()) as Map<String, dynamic>?;
+        // Fall back to the reactions passed in from the list while the
+        // document stream is still loading its first snapshot.
+        final Map<String, dynamic> liveReactions =
+            (livePostData?['reactions'] as Map<String, dynamic>?) ??
+                widget.reactions;
+        final String? myReaction =
+            user != null ? liveReactions[user.uid] as String? : null;
 
-          // Tap-to-reveal media controls: rewind 10s / play-pause / forward 10s.
-          // No full-screen dim (each button has its own dark circle) so toggling
-          // the controls never flickers the like button / profile behind them.
-          ValueListenableBuilder<bool>(
-            valueListenable: _controlsVisible,
-            builder: (context, visible, _) {
-              final c = _controller;
-              if (!visible || !_isInitialized || c == null) {
-                return const SizedBox.shrink();
-              }
-              final double bottomInset = MediaQuery.of(context).padding.bottom;
-              return Stack(
-                children: [
-                  Positioned.fill(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _circleControl(
-                          icon: Icons.replay_10,
-                          diameter: 58,
-                          iconSize: 30,
-                          onTap: () => _seekBy(-10),
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _handleScreenTap,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_isInitialized && _controller != null)
+                // Short videos fill the screen (TikTok style); long/landscape
+                // videos keep their natural aspect ratio, centered with black bars.
+                widget.videoType == 'long'
+                    ? Center(
+                        child: AspectRatio(
+                          aspectRatio: _controller!.value.aspectRatio,
+                          child: VideoPlayer(_controller!),
                         ),
-                        _circleControl(
-                          icon: c.value.isPlaying
-                              ? Icons.pause
-                              : Icons.play_arrow,
-                          diameter: 74,
-                          iconSize: 44,
-                          onTap: _togglePlayPause,
+                      )
+                    : FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: _controller!.value.size.width,
+                          height: _controller!.value.size.height,
+                          child: VideoPlayer(_controller!),
                         ),
-                        _circleControl(
-                          icon: Icons.forward_10,
-                          diameter: 58,
-                          iconSize: 30,
-                          onTap: () => _seekBy(10),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Bottom control bar: time / duration, scrub slider, mute
-                  Positioned(
-                    left: 8,
-                    right: 8,
-                    bottom: 4 + bottomInset,
-                    child: ValueListenableBuilder<VideoPlayerValue>(
-                      valueListenable: c,
-                      builder: (context, value, __) {
-                        final Duration pos = value.position;
-                        final Duration dur = value.duration;
-                        final double maxMs = dur.inMilliseconds <= 0
-                            ? 1.0
-                            : dur.inMilliseconds.toDouble();
-                        double curMs = pos.inMilliseconds.toDouble();
-                        if (curMs < 0) curMs = 0;
-                        if (curMs > maxMs) curMs = maxMs;
+                      )
+              else
+                const Center(
+                  child: CircularProgressIndicator(color: Colors.redAccent),
+                ),
 
-                        return Column(
-                          mainAxisSize: MainAxisSize.min,
+              // Tap-to-reveal media controls: rewind 10s / play-pause / forward 10s.
+              // No full-screen dim (each button has its own dark circle) so toggling
+              // the controls never flickers the like button / profile behind them.
+              ValueListenableBuilder<bool>(
+                valueListenable: _controlsVisible,
+                builder: (context, visible, _) {
+                  final c = _controller;
+                  if (!visible || !_isInitialized || c == null) {
+                    return const SizedBox.shrink();
+                  }
+                  final double bottomInset =
+                      MediaQuery.of(context).padding.bottom;
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 8),
-                              child: Row(
-                                children: [
-                                  Text(
-                                    _fmtDuration(pos),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                      shadows: [
-                                        Shadow(
-                                            color: Colors.black, blurRadius: 6)
-                                      ],
-                                    ),
-                                  ),
-                                  Text(
-                                    ' / ${_fmtDuration(dur)}',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                      shadows: [
-                                        Shadow(
-                                            color: Colors.black, blurRadius: 6)
-                                      ],
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  ValueListenableBuilder<bool>(
-                                    valueListenable: _muted,
-                                    builder: (context, muted, ___) {
-                                      return GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onTap: _toggleMute,
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(4),
-                                          child: Icon(
-                                            muted
-                                                ? Icons.volume_off_rounded
-                                                : Icons.volume_up_rounded,
-                                            color: Colors.white,
-                                            size: 24,
-                                            shadows: const [
-                                              Shadow(
-                                                  color: Colors.black,
-                                                  blurRadius: 6)
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ],
-                              ),
+                            _circleControl(
+                              icon: Icons.replay_10,
+                              diameter: 58,
+                              iconSize: 30,
+                              onTap: () => _seekBy(-10),
                             ),
-                            SliderTheme(
-                              data: SliderThemeData(
-                                trackHeight: 3,
-                                activeTrackColor: Colors.white,
-                                inactiveTrackColor: Colors.white30,
-                                thumbColor: Colors.white,
-                                overlayShape: const RoundSliderOverlayShape(
-                                    overlayRadius: 14),
-                                thumbShape: const RoundSliderThumbShape(
-                                    enabledThumbRadius: 7),
-                              ),
-                              child: Slider(
-                                value: curMs,
-                                min: 0,
-                                max: maxMs,
-                                onChanged: (v) {
-                                  c.seekTo(Duration(milliseconds: v.toInt()));
-                                },
-                              ),
+                            _circleControl(
+                              icon: c.value.isPlaying
+                                  ? Icons.pause
+                                  : Icons.play_arrow,
+                              diameter: 74,
+                              iconSize: 44,
+                              onTap: _togglePlayPause,
+                            ),
+                            _circleControl(
+                              icon: Icons.forward_10,
+                              diameter: 58,
+                              iconSize: 30,
+                              onTap: () => _seekBy(10),
                             ),
                           ],
+                        ),
+                      ),
+                      // Bottom control bar: time / duration, scrub slider, mute
+                      Positioned(
+                        left: 8,
+                        right: 8,
+                        bottom: 4 + bottomInset,
+                        child: ValueListenableBuilder<VideoPlayerValue>(
+                          valueListenable: c,
+                          builder: (context, value, __) {
+                            final Duration pos = value.position;
+                            final Duration dur = value.duration;
+                            final double maxMs = dur.inMilliseconds <= 0
+                                ? 1.0
+                                : dur.inMilliseconds.toDouble();
+                            double curMs = pos.inMilliseconds.toDouble();
+                            if (curMs < 0) curMs = 0;
+                            if (curMs > maxMs) curMs = maxMs;
+
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 8),
+                                  child: Row(
+                                    children: [
+                                      Text(
+                                        _fmtDuration(pos),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          shadows: [
+                                            Shadow(
+                                                color: Colors.black,
+                                                blurRadius: 6)
+                                          ],
+                                        ),
+                                      ),
+                                      Text(
+                                        ' / ${_fmtDuration(dur)}',
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          shadows: [
+                                            Shadow(
+                                                color: Colors.black,
+                                                blurRadius: 6)
+                                          ],
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      ValueListenableBuilder<bool>(
+                                        valueListenable: _muted,
+                                        builder: (context, muted, ___) {
+                                          return GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: _toggleMute,
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(4),
+                                              child: Icon(
+                                                muted
+                                                    ? Icons.volume_off_rounded
+                                                    : Icons.volume_up_rounded,
+                                                color: Colors.white,
+                                                size: 24,
+                                                shadows: const [
+                                                  Shadow(
+                                                      color: Colors.black,
+                                                      blurRadius: 6)
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                SliderTheme(
+                                  data: SliderThemeData(
+                                    trackHeight: 3,
+                                    activeTrackColor: Colors.white,
+                                    inactiveTrackColor: Colors.white30,
+                                    thumbColor: Colors.white,
+                                    overlayShape: const RoundSliderOverlayShape(
+                                        overlayRadius: 14),
+                                    thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 7),
+                                  ),
+                                  child: Slider(
+                                    value: curMs,
+                                    min: 0,
+                                    max: maxMs,
+                                    onChanged: (v) {
+                                      c.seekTo(
+                                          Duration(milliseconds: v.toInt()));
+                                    },
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              Positioned(
+                left: 16,
+                bottom: 100,
+                right: 90,
+                child: _OwnerInfo(
+                  userId: widget.userId,
+                  fallbackEmail: widget.userEmail,
+                  caption: widget.caption,
+                  postId: widget.postId,
+                ),
+              ),
+
+              ..._flyingEmojis.map((e) {
+                return Positioned(
+                  right: 30,
+                  bottom: 300,
+                  child: _FlyingEmojiWidget(
+                    key: ValueKey(e.id),
+                    data: e,
+                    onComplete: () => _removeFlyingEmoji(e.id),
+                  ),
+                );
+              }),
+
+              if (_showReactionPicker)
+                Positioned(
+                  right: 12,
+                  bottom: 340,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.85),
+                      borderRadius: BorderRadius.circular(30),
+                      border: Border.all(color: Colors.white24, width: 1),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: kReactions.entries.map((entry) {
+                        final int i =
+                            kReactions.keys.toList().indexOf(entry.key);
+                        return _AnimatedEmoji(
+                          emoji: entry.value,
+                          delayMs: i * 90,
+                          onTap: () => _setReaction(entry.key, liveReactions),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+
+              Positioned(
+                right: 12,
+                bottom: 280,
+                child: Column(
+                  children: [
+                    // Like (long-press for reactions)
+                    GestureDetector(
+                      onTap: () => _quickToggleLike(liveReactions),
+                      onLongPress: () =>
+                          setState(() => _showReactionPicker = true),
+                      child: Column(
+                        children: [
+                          SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: Center(
+                              child: myReaction != null
+                                  ? _PopInEmoji(
+                                      key: ValueKey(myReaction),
+                                      emoji: kReactions[myReaction]!,
+                                    )
+                                  : const Icon(
+                                      Icons.favorite,
+                                      color: Colors.white,
+                                      size: 34,
+                                      shadows: [
+                                        Shadow(
+                                            color: Colors.black, blurRadius: 8)
+                                      ],
+                                    ),
+                            ),
+                          ),
+                          _countLabel(_formatCount(liveReactions.length)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Comment
+                    StreamBuilder<QuerySnapshot>(
+                      stream: _postSubStream('comments'),
+                      builder: (context, snap) {
+                        final int count =
+                            snap.hasData ? snap.data!.docs.length : 0;
+                        return GestureDetector(
+                          onTap: _openComments,
+                          child: Column(
+                            children: [
+                              SizedBox(
+                                width: 34,
+                                height: 34,
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.chat_bubble,
+                                      color: Colors.white,
+                                      size: 34,
+                                      shadows: [
+                                        Shadow(
+                                            color: Colors.black, blurRadius: 8)
+                                      ],
+                                    ),
+                                    // Three dots centered inside the bubble,
+                                    // nudged up slightly to clear the tail.
+                                    Padding(
+                                      padding: const EdgeInsets.only(bottom: 4),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: List.generate(3, (i) {
+                                          return Container(
+                                            width: 4,
+                                            height: 4,
+                                            margin: const EdgeInsets.symmetric(
+                                                horizontal: 1.2),
+                                            decoration: const BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: Colors.black87,
+                                            ),
+                                          );
+                                        }),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              _countLabel(_formatCount(count)),
+                            ],
+                          ),
                         );
                       },
                     ),
-                  ),
-                ],
-              );
-            },
-          ),
-
-          Positioned(
-            left: 16,
-            bottom: 100,
-            right: 90,
-            child: _OwnerInfo(
-              userId: widget.userId,
-              fallbackEmail: widget.userEmail,
-              caption: widget.caption,
-              postId: widget.postId,
-            ),
-          ),
-
-          ..._flyingEmojis.map((e) {
-            return Positioned(
-              right: 30,
-              bottom: 300,
-              child: _FlyingEmojiWidget(
-                key: ValueKey(e.id),
-                data: e,
-                onComplete: () => _removeFlyingEmoji(e.id),
-              ),
-            );
-          }),
-
-          if (_showReactionPicker)
-            Positioned(
-              right: 12,
-              bottom: 340,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.85),
-                  borderRadius: BorderRadius.circular(30),
-                  border: Border.all(color: Colors.white24, width: 1),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: kReactions.entries.map((entry) {
-                    final int i = kReactions.keys.toList().indexOf(entry.key);
-                    return _AnimatedEmoji(
-                      emoji: entry.value,
-                      delayMs: i * 90,
-                      onTap: () => _setReaction(entry.key),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ),
-
-          Positioned(
-            right: 12,
-            bottom: 280,
-            child: Column(
-              children: [
-                // Like (long-press for reactions)
-                GestureDetector(
-                  onTap: _quickToggleLike,
-                  onLongPress: () => setState(() => _showReactionPicker = true),
-                  child: Column(
-                    children: [
-                      SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Center(
-                          child: myReaction != null
-                              ? _PopInEmoji(
-                                  key: ValueKey(myReaction),
-                                  emoji: kReactions[myReaction]!,
-                                )
-                              : const Icon(
-                                  Icons.thumb_up_alt_outlined,
+                    const SizedBox(height: 16),
+                    // Share
+                    StreamBuilder<QuerySnapshot>(
+                      stream: _postSubStream('shares'),
+                      builder: (context, snap) {
+                        final int count =
+                            snap.hasData ? snap.data!.docs.length : 0;
+                        return GestureDetector(
+                          onTap: _shareVideo,
+                          child: Column(
+                            children: [
+                              Transform.flip(
+                                flipX: true,
+                                child: const Icon(
+                                  Icons.reply,
                                   color: Colors.white,
                                   size: 34,
                                   shadows: [
                                     Shadow(color: Colors.black, blurRadius: 8)
                                   ],
                                 ),
-                        ),
-                      ),
-                      _countLabel(_formatCount(widget.reactions.length)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Comment
-                StreamBuilder<QuerySnapshot>(
-                  stream: _postSubStream('comments'),
-                  builder: (context, snap) {
-                    final int count = snap.hasData ? snap.data!.docs.length : 0;
-                    return GestureDetector(
-                      onTap: _openComments,
-                      child: Column(
-                        children: [
-                          const Icon(
-                            Icons.mode_comment_outlined,
-                            color: Colors.white,
-                            size: 32,
-                            shadows: [
-                              Shadow(color: Colors.black, blurRadius: 8)
+                              ),
+                              _countLabel(_formatCount(count)),
                             ],
                           ),
-                          _countLabel(_formatCount(count)),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                // Share
-                StreamBuilder<QuerySnapshot>(
-                  stream: _postSubStream('shares'),
-                  builder: (context, snap) {
-                    final int count = snap.hasData ? snap.data!.docs.length : 0;
-                    return GestureDetector(
-                      onTap: _shareVideo,
-                      child: Column(
-                        children: [
-                          Transform.flip(
-                            flipX: true,
-                            child: const Icon(
-                              Icons.reply,
-                              color: Colors.white,
-                              size: 34,
-                              shadows: [
-                                Shadow(color: Colors.black, blurRadius: 8)
-                              ],
-                            ),
-                          ),
-                          _countLabel(_formatCount(count)),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                // Save / bookmark
-                StreamBuilder<QuerySnapshot>(
-                  stream: _postSubStream('saves'),
-                  builder: (context, snap) {
-                    final myId = FirebaseAuth.instance.currentUser?.uid;
-                    final docs = snap.hasData ? snap.data!.docs : const [];
-                    final int count = docs.length;
-                    final bool isSaved =
-                        myId != null && docs.any((d) => d.id == myId);
-                    return GestureDetector(
-                      onTap: () => _toggleSave(isSaved),
-                      child: Column(
-                        children: [
-                          Icon(
-                            isSaved ? Icons.bookmark : Icons.bookmark_border,
-                            color: Colors.white,
-                            size: 32,
-                            shadows: const [
-                              Shadow(color: Colors.black, blurRadius: 8)
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    // Save / bookmark
+                    StreamBuilder<QuerySnapshot>(
+                      stream: _postSubStream('saves'),
+                      builder: (context, snap) {
+                        final myId = FirebaseAuth.instance.currentUser?.uid;
+                        final docs = snap.hasData ? snap.data!.docs : const [];
+                        final int count = docs.length;
+                        final bool isSaved =
+                            myId != null && docs.any((d) => d.id == myId);
+                        return GestureDetector(
+                          onTap: () => _toggleSave(isSaved),
+                          child: Column(
+                            children: [
+                              Icon(
+                                isSaved
+                                    ? Icons.bookmark
+                                    : Icons.bookmark_border,
+                                color: Colors.white,
+                                size: 32,
+                                shadows: const [
+                                  Shadow(color: Colors.black, blurRadius: 8)
+                                ],
+                              ),
+                              _countLabel(_formatCount(count)),
                             ],
                           ),
-                          _countLabel(_formatCount(count)),
-                        ],
-                      ),
-                    );
-                  },
+                        );
+                      },
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

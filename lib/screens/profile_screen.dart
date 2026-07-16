@@ -29,8 +29,8 @@ class ProfileScreen extends StatelessWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
-        title:
-            const Text('Delete video?', style: TextStyle(color: Colors.white)),
+        title: const Text('Delete video?',
+            style: TextStyle(color: Colors.white)),
         content: const Text(
           'This will permanently remove this video.',
           style: TextStyle(color: Colors.white70),
@@ -42,8 +42,8 @@ class ProfileScreen extends StatelessWidget {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child:
-                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.redAccent)),
           ),
         ],
       ),
@@ -121,10 +121,12 @@ class ProfileScreen extends StatelessWidget {
               profileSnapshot.data?.data() as Map<String, dynamic>?;
 
           // Use saved name, or fall back to the part before "@" in the email
-          final String displayName =
-              (profile?['displayName'] as String?)?.trim().isNotEmpty == true
-                  ? profile!['displayName']
-                  : (email.contains('@') ? email.split('@').first : email);
+          final String displayName = (profile?['displayName'] as String?)
+                  ?.trim()
+                  .isNotEmpty ==
+              true
+              ? profile!['displayName']
+              : (email.contains('@') ? email.split('@').first : email);
           final String? photoUrl = profile?['photoUrl'] as String?;
 
           return StreamBuilder<QuerySnapshot>(
@@ -155,10 +157,9 @@ class ProfileScreen extends StatelessWidget {
                             child: CircleAvatar(
                               radius: 44,
                               backgroundColor: Colors.grey[850],
-                              backgroundImage:
-                                  (photoUrl != null && photoUrl.isNotEmpty)
-                                      ? NetworkImage(photoUrl)
-                                      : null,
+                              backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                                  ? NetworkImage(photoUrl)
+                                  : null,
                               child: (photoUrl == null || photoUrl.isEmpty)
                                   ? Text(
                                       displayName.isNotEmpty
@@ -185,8 +186,7 @@ class ProfileScreen extends StatelessWidget {
                           const SizedBox(height: 4),
                           Text(
                             email,
-                            style: TextStyle(
-                                color: Colors.grey[500], fontSize: 13),
+                            style: TextStyle(color: Colors.grey[500], fontSize: 13),
                           ),
                           const SizedBox(height: 16),
                           // Edit profile button
@@ -202,8 +202,7 @@ class ProfileScreen extends StatelessWidget {
                                 ),
                               );
                             },
-                            icon: const Icon(Icons.edit,
-                                size: 16, color: Colors.white),
+                            icon: const Icon(Icons.edit, size: 16, color: Colors.white),
                             label: const Text('Edit Profile',
                                 style: TextStyle(color: Colors.white)),
                             style: OutlinedButton.styleFrom(
@@ -226,8 +225,9 @@ class ProfileScreen extends StatelessWidget {
                                     .collection('followers')
                                     .snapshots(),
                                 builder: (context, snap) {
-                                  final int c =
-                                      snap.hasData ? snap.data!.docs.length : 0;
+                                  final int c = snap.hasData
+                                      ? snap.data!.docs.length
+                                      : 0;
                                   return _profileStat('$c', 'Followers');
                                 },
                               ),
@@ -238,8 +238,9 @@ class ProfileScreen extends StatelessWidget {
                                     .collection('following')
                                     .snapshots(),
                                 builder: (context, snap) {
-                                  final int c =
-                                      snap.hasData ? snap.data!.docs.length : 0;
+                                  final int c = snap.hasData
+                                      ? snap.data!.docs.length
+                                      : 0;
                                   return _profileStat('$c', 'Following');
                                 },
                               ),
@@ -251,12 +252,12 @@ class ProfileScreen extends StatelessWidget {
                       ),
                     ),
                   ),
+
                   if (snapshot.connectionState == ConnectionState.waiting)
                     const SliverFillRemaining(
                       hasScrollBody: false,
                       child: Center(
-                        child:
-                            CircularProgressIndicator(color: Colors.redAccent),
+                        child: CircularProgressIndicator(color: Colors.redAccent),
                       ),
                     )
                   else if (postCount == 0)
@@ -271,8 +272,7 @@ class ProfileScreen extends StatelessWidget {
                             const SizedBox(height: 12),
                             Text(
                               'No posts yet',
-                              style: TextStyle(
-                                  color: Colors.grey[600], fontSize: 15),
+                              style: TextStyle(color: Colors.grey[600], fontSize: 15),
                             ),
                           ],
                         ),
@@ -367,14 +367,75 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
-  Future<void> _pickImage() async {
+  // Shows a bottom sheet so the user can choose Camera or Gallery
+  Future<void> _showImageSourceSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[700],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                leading: const Icon(Icons.camera_alt, color: Colors.white),
+                title: const Text('Take Photo',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.camera);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library, color: Colors.white),
+                title: const Text('Choose from Gallery',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.gallery);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
     final ImagePicker picker = ImagePicker();
-    final XFile? picked = await picker.pickImage(source: ImageSource.gallery);
-    if (picked != null) {
-      final bytes = await picked.readAsBytes();
-      setState(() {
-        _pickedImageBytes = bytes;
-      });
+    try {
+      final XFile? picked = await picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        preferredCameraDevice: CameraDevice.front,
+      );
+      if (picked != null) {
+        final bytes = await picked.readAsBytes();
+        setState(() {
+          _pickedImageBytes = bytes;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not get photo: $e')),
+        );
+      }
     }
   }
 
@@ -385,8 +446,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
     final request = http.MultipartRequest('POST', uploadUrl)
       ..fields['upload_preset'] = _uploadPreset
-      ..files.add(
-          http.MultipartFile.fromBytes('file', bytes, filename: 'profile.jpg'));
+      ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: 'profile.jpg'));
 
     final streamedResponse = await request.send();
     final responseBody = await streamedResponse.stream.bytesToString();
@@ -443,8 +503,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title:
-            const Text('Edit Profile', style: TextStyle(color: Colors.white)),
+        title: const Text('Edit Profile', style: TextStyle(color: Colors.white)),
         actions: [
           TextButton(
             onPressed: _isSaving ? null : _saveProfile,
@@ -460,9 +519,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            // Tappable avatar to pick a new photo
+            // Tappable avatar to pick a new photo (opens Camera / Gallery sheet)
             GestureDetector(
-              onTap: _isSaving ? null : _pickImage,
+              onTap: _isSaving ? null : _showImageSourceSheet,
               child: Stack(
                 alignment: Alignment.bottomRight,
                 children: [
@@ -483,8 +542,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                               ? NetworkImage(widget.currentPhotoUrl!)
                               : null) as ImageProvider?,
                       child: (!hasNewImage && !hasExistingImage)
-                          ? const Icon(Icons.person,
-                              color: Colors.white, size: 50)
+                          ? const Icon(Icons.person, color: Colors.white, size: 50)
                           : null,
                     ),
                   ),
@@ -494,8 +552,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       shape: BoxShape.circle,
                       color: Colors.redAccent,
                     ),
-                    child: const Icon(Icons.camera_alt,
-                        color: Colors.white, size: 18),
+                    child: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
                   ),
                 ],
               ),
