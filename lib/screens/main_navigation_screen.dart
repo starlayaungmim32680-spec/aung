@@ -316,50 +316,110 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
+  // Accent color for the glowing glass button (teal/cyan)
+  static const Color _glowColor = Color(0xFF2EF2C7);
+
   Widget _buildMainButton() {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        AnimatedBuilder(
-          animation: _rotationController,
-          builder: (context, child) {
-            return Transform.rotate(
-              angle: _rotationController.value * 2 * pi,
-              child: Container(
-                width: 56,
-                height: 56,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: SweepGradient(
-                    colors: [
-                      Colors.red,
-                      Colors.orange,
-                      Colors.yellow,
-                      Colors.green,
-                      Colors.blue,
-                      Colors.purple,
-                      Colors.red,
-                    ],
-                  ),
-                ),
+    return Container(
+      width: 56,
+      height: 56,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        // Dark frosted-glass look
+        color: const Color(0xFF1B1F22).withOpacity(0.85),
+        border: Border.all(
+          color: _glowColor.withOpacity(0.25),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _glowColor.withOpacity(0.35),
+            blurRadius: 18,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: Center(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              transitionBuilder: (child, anim) => ScaleTransition(
+                scale: anim,
+                child: FadeTransition(opacity: anim, child: child),
               ),
-            );
-          },
-        ),
-        Container(
-          width: 46,
-          height: 46,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.black,
-          ),
-          child: Icon(
-            _isMenuOpen ? Icons.close : Icons.menu,
-            color: Colors.white,
-            size: 24,
+              child: _isMenuOpen ? _buildCloseIcon() : _buildOrbitIcon(),
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  // Glowing close (X) icon shown when the menu is open
+  Widget _buildCloseIcon() {
+    return Icon(
+      Icons.close_rounded,
+      key: const ValueKey('close'),
+      color: _glowColor,
+      size: 26,
+      shadows: [
+        Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 14),
       ],
+    );
+  }
+
+  // Rotating orbit rings with a sparkle in the center, shown when the menu
+  // is closed
+  Widget _buildOrbitIcon() {
+    return SizedBox(
+      key: const ValueKey('orbit'),
+      width: 30,
+      height: 30,
+      child: AnimatedBuilder(
+        animation: _rotationController,
+        builder: (context, child) {
+          final double t = _rotationController.value;
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              _orbitRing(angle: t * 2 * pi, squeeze: 1.0),
+              _orbitRing(angle: -t * 2 * pi + pi / 3, squeeze: 0.45),
+              Icon(
+                Icons.auto_awesome_rounded,
+                color: _glowColor,
+                size: 13,
+                shadows: [
+                  Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 10),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // A single elliptical orbit ring: a circle rotated and squeezed on one
+  // axis so it reads as an ellipse crossing the center
+  Widget _orbitRing({required double angle, required double squeeze}) {
+    return Transform.rotate(
+      angle: angle,
+      child: Transform.scale(
+        scaleX: squeeze,
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: _glowColor.withOpacity(0.9),
+              width: 1.6,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

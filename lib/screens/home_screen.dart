@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -275,9 +276,14 @@ class _VideoPostItem extends StatefulWidget {
 }
 
 class _VideoPostItemState extends State<_VideoPostItem> {
+  // How many times a video replays on its own before we auto-advance to
+  // the next one. The user can still swipe away manually at any time.
+  static const int _maxLoopsBeforeAutoSkip = 3;
+
   VideoPlayerController? _controller;
   bool _isInitialized = false;
-  bool _hasEnded = false;
+  bool _endTriggered = false;
+  int _loopCount = 0;
   bool _showReactionPicker = false;
 
   // Controls visibility is a notifier so toggling it rebuilds ONLY the overlay,
@@ -336,11 +342,26 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     final position = controller.value.position;
     final duration = controller.value.duration;
 
-    if (!_hasEnded &&
+    if (!_endTriggered &&
         duration.inMilliseconds > 0 &&
         position.inMilliseconds >= duration.inMilliseconds - 200) {
-      _hasEnded = true;
-      widget.onVideoEnd();
+      _endTriggered = true;
+      _loopCount++;
+
+      if (_loopCount >= _maxLoopsBeforeAutoSkip) {
+        // Watched the same video 3 times in a row without the user
+        // swiping away themselves — move on to the next one.
+        widget.onVideoEnd();
+      } else {
+        // Replay it for another loop.
+        controller.seekTo(Duration.zero);
+        controller.play();
+        // Give the seek a moment to land before watching for the end
+        // again, so the same loop isn't counted twice.
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted) _endTriggered = false;
+        });
+      }
     }
   }
 
@@ -828,25 +849,32 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 Positioned(
                   right: 12,
                   bottom: 340,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(30),
-                      border: Border.all(color: Colors.white24, width: 1),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: kReactions.entries.map((entry) {
-                        final int i =
-                            kReactions.keys.toList().indexOf(entry.key);
-                        return _AnimatedEmoji(
-                          emoji: entry.value,
-                          delayMs: i * 90,
-                          onTap: () => _setReaction(entry.key, liveReactions),
-                        );
-                      }).toList(),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(30),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(30),
+                          border: Border.all(color: Colors.white24, width: 1),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: kReactions.entries.map((entry) {
+                            final int i =
+                                kReactions.keys.toList().indexOf(entry.key);
+                            return _AnimatedEmoji(
+                              emoji: entry.value,
+                              delayMs: i * 90,
+                              onTap: () =>
+                                  _setReaction(entry.key, liveReactions),
+                            );
+                          }).toList(),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -867,20 +895,26 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                             width: 40,
                             height: 40,
                             child: Center(
-                              child: myReaction != null
-                                  ? _PopInEmoji(
-                                      key: ValueKey(myReaction),
-                                      emoji: kReactions[myReaction]!,
+                              child: myReaction == 'like'
+                                  ? const _PopInLikeBadge(
+                                      key: ValueKey('like'),
+                                      diameter: 40,
                                     )
-                                  : const Icon(
-                                      Icons.favorite,
-                                      color: Colors.white,
-                                      size: 34,
-                                      shadows: [
-                                        Shadow(
-                                            color: Colors.black, blurRadius: 8)
-                                      ],
-                                    ),
+                                  : myReaction != null
+                                      ? _PopInEmoji(
+                                          key: ValueKey(myReaction),
+                                          emoji: kReactions[myReaction]!,
+                                        )
+                                      : const Icon(
+                                          Icons.favorite,
+                                          color: Colors.white,
+                                          size: 34,
+                                          shadows: [
+                                            Shadow(
+                                                color: Colors.black,
+                                                blurRadius: 8)
+                                          ],
+                                        ),
                             ),
                           ),
                           _countLabel(_formatCount(liveReactions.length)),
@@ -898,44 +932,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                           onTap: _openComments,
                           child: Column(
                             children: [
-                              SizedBox(
-                                width: 34,
-                                height: 34,
-                                child: Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    const Icon(
-                                      Icons.chat_bubble,
-                                      color: Colors.white,
-                                      size: 34,
-                                      shadows: [
-                                        Shadow(
-                                            color: Colors.black, blurRadius: 8)
-                                      ],
-                                    ),
-                                    // Three dots centered inside the bubble,
-                                    // nudged up slightly to clear the tail.
-                                    Padding(
-                                      padding: const EdgeInsets.only(bottom: 4),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: List.generate(3, (i) {
-                                          return Container(
-                                            width: 4,
-                                            height: 4,
-                                            margin: const EdgeInsets.symmetric(
-                                                horizontal: 1.2),
-                                            decoration: const BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              color: Colors.black87,
-                                            ),
-                                          );
-                                        }),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                              const _CommentBubbleIcon(size: 28),
                               _countLabel(_formatCount(count)),
                             ],
                           ),
@@ -1913,6 +1910,79 @@ class _NotificationBell extends StatelessWidget {
   }
 }
 
+// A round speech-bubble icon: a circular outline with a small pointed tail,
+// matching the reference design (rather than Material's rectangular
+// chat_bubble_outline icon).
+class _CommentBubbleIcon extends StatelessWidget {
+  final double size;
+  final Color color;
+  final double strokeWidth;
+
+  const _CommentBubbleIcon({
+    this.size = 28,
+    this.color = Colors.white,
+    this.strokeWidth = 2.4,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size + 6,
+      height: size + 8,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            top: 0,
+            left: 3,
+            child: Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: color, width: strokeWidth),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black38, blurRadius: 6),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            left: 0,
+            bottom: 0,
+            child: CustomPaint(
+              size: const Size(10, 9),
+              painter: _CommentTailPainter(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// The small pointed tail attached at the bottom-left of _CommentBubbleIcon
+class _CommentTailPainter extends CustomPainter {
+  final Color color;
+
+  _CommentTailPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()..color = color;
+    final Path path = Path()
+      ..moveTo(size.width, 0)
+      ..lineTo(0, size.height)
+      ..lineTo(size.width * 0.8, size.height * 0.4)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CommentTailPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
 // Data describing a single flying emoji's path
 class _FlyingEmoji {
   final int id;
@@ -2124,6 +2194,72 @@ class _PopInEmojiState extends State<_PopInEmoji>
       child: Text(
         widget.emoji,
         style: const TextStyle(fontSize: 32),
+      ),
+    );
+  }
+}
+
+// Same pop-in animation as _PopInEmoji, but renders the "liked" state as a
+// round blue-gradient badge with a white thumb-up icon inside (Facebook
+// Reels style), instead of a bare emoji or icon.
+class _PopInLikeBadge extends StatefulWidget {
+  final double diameter;
+
+  const _PopInLikeBadge({super.key, this.diameter = 40});
+
+  @override
+  State<_PopInLikeBadge> createState() => _PopInLikeBadgeState();
+}
+
+class _PopInLikeBadgeState extends State<_PopInLikeBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+    _scale = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
+    _controller.forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: Container(
+        width: widget.diameter,
+        height: widget.diameter,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF1565C0).withOpacity(0.5),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Icon(
+          Icons.thumb_up_alt,
+          color: Colors.white,
+          size: widget.diameter * 0.5,
+        ),
       ),
     );
   }
