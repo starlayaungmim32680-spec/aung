@@ -12,6 +12,7 @@ import 'chat_screen.dart';
 import 'upload_screen.dart';
 import 'profile_screen.dart';
 import 'incoming_call_screen.dart';
+import 'live_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -70,6 +71,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       'icon': Icons.person_rounded,
       'label': 'Profile',
       'colors': [Color(0xFF9C4DFF), Color(0xFF6A1B9A)],
+    },
+    {
+      'icon': Icons.podcasts_rounded,
+      'label': 'Live',
+      'colors': [Color(0xFFFF3B30), Color(0xFFB71C1C)],
+      'action': 'live',
     },
   ];
 
@@ -288,6 +295,61 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     });
   }
 
+  // Prompts for an optional stream title, then opens the go-live screen
+  Future<void> _startLiveFlow() async {
+    final TextEditingController controller = TextEditingController();
+    final String? title = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Go Live', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          maxLength: 60,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Give your stream a title... (optional)',
+            hintStyle: TextStyle(color: Colors.grey),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white24),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.redAccent),
+            ),
+            counterStyle: TextStyle(color: Colors.grey),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Go Live',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (title == null) return; // Cancelled
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => GoLiveScreen(title: title)),
+    );
+  }
+
+  // Scales button/icon/text sizes to the screen width so the menu feels
+  // right-sized on small phones and large phones alike (baseline ~390dp,
+  // clamped so nothing gets comically tiny or huge).
+  double _uiScale(BuildContext context) {
+    final double width = MediaQuery.of(context).size.width;
+    return (width / 390).clamp(0.85, 1.2);
+  }
+
   void _onPanStart(DragStartDetails details) {
     _dragDistance = 0;
   }
@@ -299,14 +361,18 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       _dragDistance += details.delta.distance;
 
       final screenSize = MediaQuery.of(context).size;
-      if (_buttonRight < 0) _buttonRight = 0;
-      if (_buttonBottom < 0) _buttonBottom = 0;
-      if (_buttonRight > screenSize.width - 56) {
-        _buttonRight = screenSize.width - 56;
-      }
-      if (_buttonBottom > screenSize.height - 56) {
-        _buttonBottom = screenSize.height - 56;
-      }
+      final safePadding = MediaQuery.of(context).padding;
+      final double buttonSize = 56 * _uiScale(context);
+
+      final double minRight = safePadding.left;
+      final double minBottom = safePadding.bottom;
+      final double maxRight = screenSize.width - buttonSize - safePadding.right;
+      final double maxBottom = screenSize.height - buttonSize - safePadding.top;
+
+      if (_buttonRight < minRight) _buttonRight = minRight;
+      if (_buttonBottom < minBottom) _buttonBottom = minBottom;
+      if (_buttonRight > maxRight) _buttonRight = maxRight;
+      if (_buttonBottom > maxBottom) _buttonBottom = maxBottom;
     });
   }
 
@@ -319,10 +385,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Accent color for the glowing glass button (teal/cyan)
   static const Color _glowColor = Color(0xFF2EF2C7);
 
-  Widget _buildMainButton() {
+  Widget _buildMainButton(BuildContext context) {
+    final double scale = _uiScale(context);
+    final double size = 56 * scale;
     return Container(
-      width: 56,
-      height: 56,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         // Dark frosted-glass look
@@ -349,7 +417,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 scale: anim,
                 child: FadeTransition(opacity: anim, child: child),
               ),
-              child: _isMenuOpen ? _buildCloseIcon() : _buildOrbitIcon(),
+              child:
+                  _isMenuOpen ? _buildCloseIcon(scale) : _buildOrbitIcon(scale),
             ),
           ),
         ),
@@ -358,12 +427,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   // Glowing close (X) icon shown when the menu is open
-  Widget _buildCloseIcon() {
+  Widget _buildCloseIcon(double scale) {
     return Icon(
       Icons.close_rounded,
       key: const ValueKey('close'),
       color: _glowColor,
-      size: 26,
+      size: 26 * scale,
       shadows: [
         Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 14),
       ],
@@ -372,11 +441,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   // Rotating orbit rings with a sparkle in the center, shown when the menu
   // is closed
-  Widget _buildOrbitIcon() {
+  Widget _buildOrbitIcon(double scale) {
     return SizedBox(
       key: const ValueKey('orbit'),
-      width: 30,
-      height: 30,
+      width: 30 * scale,
+      height: 30 * scale,
       child: AnimatedBuilder(
         animation: _rotationController,
         builder: (context, child) {
@@ -384,12 +453,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           return Stack(
             alignment: Alignment.center,
             children: [
-              _orbitRing(angle: t * 2 * pi, squeeze: 1.0),
-              _orbitRing(angle: -t * 2 * pi + pi / 3, squeeze: 0.45),
+              _orbitRing(angle: t * 2 * pi, squeeze: 1.0, scale: scale),
+              _orbitRing(
+                  angle: -t * 2 * pi + pi / 3, squeeze: 0.45, scale: scale),
               Icon(
                 Icons.auto_awesome_rounded,
                 color: _glowColor,
-                size: 13,
+                size: 13 * scale,
                 shadows: [
                   Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 10),
                 ],
@@ -403,14 +473,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   // A single elliptical orbit ring: a circle rotated and squeezed on one
   // axis so it reads as an ellipse crossing the center
-  Widget _orbitRing({required double angle, required double squeeze}) {
+  Widget _orbitRing(
+      {required double angle, required double squeeze, required double scale}) {
     return Transform.rotate(
       angle: angle,
       child: Transform.scale(
         scaleX: squeeze,
         child: Container(
-          width: 28,
-          height: 28,
+          width: 28 * scale,
+          height: 28 * scale,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
@@ -427,15 +498,22 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     final item = _menuItems[i];
     final bool isActive = _currentIndex == i;
     final List<Color> colors = (item['colors'] as List).cast<Color>();
+    final double scale = _uiScale(context);
 
     return GestureDetector(
-      onTap: () => _selectTab(i),
+      onTap: () {
+        if (item['action'] == 'live') {
+          _startLiveFlow();
+        } else {
+          _selectTab(i);
+        }
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
         padding: EdgeInsets.symmetric(
-          horizontal: isActive ? 18 : 14,
-          vertical: 12,
+          horizontal: (isActive ? 18 : 14) * scale,
+          vertical: 12 * scale,
         ),
         decoration: BoxDecoration(
           gradient: isActive
@@ -462,7 +540,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             Icon(
               item['icon'],
               color: Colors.white,
-              size: 26,
+              size: 26 * scale,
               shadows: const [Shadow(color: Colors.black54, blurRadius: 6)],
             ),
             AnimatedSize(
@@ -470,12 +548,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               curve: Curves.easeOutCubic,
               child: isActive
                   ? Padding(
-                      padding: const EdgeInsets.only(left: 8),
+                      padding: EdgeInsets.only(left: 8 * scale),
                       child: Text(
                         item['label'],
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
-                          fontSize: 14,
+                          fontSize: 14 * scale,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -502,33 +580,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             Positioned(
               left: 0,
               right: 0,
-              bottom: 90,
-              child: Center(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(28),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(28),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.15),
-                          width: 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: List.generate(
-                          _menuItems.length,
-                          (i) => Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            child: _buildMenuItem(i),
-                          ),
-                        ),
-                      ),
+              bottom: 90 * _uiScale(context),
+              child: SizedBox(
+                height: 64 * _uiScale(context),
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  children: List.generate(
+                    _menuItems.length,
+                    (i) => Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: _buildMenuItem(i),
                     ),
                   ),
                 ),
@@ -541,7 +603,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               onPanStart: _onPanStart,
               onPanUpdate: _onPanUpdate,
               onPanEnd: _onPanEnd,
-              child: _buildMainButton(),
+              child: _buildMainButton(context),
             ),
           ),
         ],

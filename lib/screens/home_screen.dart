@@ -8,6 +8,8 @@ import 'package:share_plus/share_plus.dart';
 import 'notifications_screen.dart';
 import 'public_profile_screen.dart';
 import 'story_screen.dart';
+import 'search_screen.dart';
+import 'live_screen.dart';
 
 // Available reaction types and their emojis
 const Map<String, String> kReactions = {
@@ -55,88 +57,196 @@ class _HomeScreenState extends State<HomeScreen> {
             .orderBy('createdAt', descending: true)
             .snapshots(),
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(
-              child: CircularProgressIndicator(color: Colors.redAccent),
-            );
-          }
+          return StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('reposts')
+                .orderBy('createdAt', descending: true)
+                .snapshots(),
+            builder: (context, repostSnapshot) {
+              final bool isLoading =
+                  snapshot.connectionState == ConnectionState.waiting ||
+                      repostSnapshot.connectionState == ConnectionState.waiting;
 
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return const Center(
-              child: Text(
-                'No posts yet. Be the first to upload!',
-                style: TextStyle(color: Colors.grey),
-              ),
-            );
-          }
+              if (isLoading) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.redAccent),
+                );
+              }
 
-          final posts = snapshot.data!.docs;
+              final ownDocs = snapshot.data?.docs ?? [];
+              final repostDocs = repostSnapshot.data?.docs ?? [];
 
-          return Stack(
-            children: [
-              PageView.builder(
-                controller: _pageController,
-                scrollDirection: Axis.vertical,
-                itemCount: posts.length,
-                itemBuilder: (context, index) {
-                  final postDoc = posts[index];
-                  final post = postDoc.data() as Map<String, dynamic>;
-                  final Map<String, dynamic> reactions =
-                      (post['reactions'] as Map<String, dynamic>?) ?? {};
+              // Combine original posts with shared videos (reposts) into
+              // one newest-first feed, so a video someone shares shows up
+              // at home for their followers/friends to see too.
+              final List<_FeedItem> feedItems = [
+                ...ownDocs.map((d) => _FeedItem.post(d)),
+                ...repostDocs.map((d) => _FeedItem.repost(d)),
+              ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-                  // key: ValueKey(postDoc.id) stops Flutter from reusing a
-                  // _VideoPostItem's State for a different post when the list
-                  // reorders/scrolls, which was causing stale like/comment
-                  // counts to show up on the wrong post.
-                  return _VideoPostItem(
-                    key: ValueKey(postDoc.id),
-                    postId: postDoc.id,
-                    userId: post['userId'] ?? '',
-                    videoUrl: post['videoUrl'] ?? '',
-                    caption: post['caption'] ?? '',
-                    userEmail: post['userEmail'] ?? 'Unknown user',
-                    reactions: reactions,
-                    videoType: (post['videoType'] as String?) ?? 'short',
-                    onVideoEnd: () => _goToNextVideo(posts.length),
-                  );
-                },
-              ),
-              SafeArea(
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          const Center(
-                            child: Text(
-                              'Fly',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
+              if (feedItems.isEmpty) {
+                return const Center(
+                  child: Text(
+                    'No posts yet. Be the first to upload!',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                );
+              }
+
+              return Stack(
+                children: [
+                  PageView.builder(
+                    controller: _pageController,
+                    scrollDirection: Axis.vertical,
+                    itemCount: feedItems.length,
+                    itemBuilder: (context, index) {
+                      final item = feedItems[index];
+
+                      // key includes the doc id (post id for own posts,
+                      // repost id for reposts) so Flutter doesn't reuse a
+                      // _VideoPostItem's State for a different feed entry,
+                      // even when the same video appears twice (once as
+                      // someone's original post, once as a repost).
+                      return _VideoPostItem(
+                        key: ValueKey(item.feedKey),
+                        postId: item.postId,
+                        userId: item.originalUserId,
+                        videoUrl: item.videoUrl,
+                        caption: item.caption,
+                        userEmail: item.userEmail,
+                        reactions: item.reactions,
+                        videoType: item.videoType,
+                        onVideoEnd: () => _goToNextVideo(feedItems.length),
+                        repostNote: item.isRepost ? item.note : null,
+                        repostByName: item.isRepost ? item.sharedByName : null,
+                        repostByUserId:
+                            item.isRepost ? item.sharedByUserId : null,
+                        repostByPhoto:
+                            item.isRepost ? item.sharedByPhoto : null,
+                      );
+                    },
+                  ),
+                  SafeArea(
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              const Center(
+                                child: Text(
+                                  'Fly',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
-                            ),
+                              Positioned(
+                                left: 12,
+                                top: 0,
+                                child: GestureDetector(
+                                  onTap: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const SearchScreen(),
+                                    ),
+                                  ),
+                                  child: const Icon(Icons.search,
+                                      color: Colors.white, size: 26),
+                                ),
+                              ),
+                              Positioned(
+                                right: 12,
+                                top: 0,
+                                child: _NotificationBell(),
+                              ),
+                            ],
                           ),
-                          Positioned(
-                            right: 12,
-                            top: 0,
-                            child: _NotificationBell(),
-                          ),
-                        ],
-                      ),
+                        ),
+                        const StoriesBar(),
+                        const LiveBadgeBar(),
+                      ],
                     ),
-                    const StoriesBar(),
-                  ],
-                ),
-              ),
-            ],
+                  ),
+                ],
+              );
+            },
           );
         },
       ),
     );
   }
+}
+
+// One entry in the home feed: either an original post, or a video someone
+// shared (repost). postId/originalUserId always point at the actual
+// video/post so likes, comments, and views stay attributed to the
+// original - only the note/sharedByName differ for a repost.
+class _FeedItem {
+  final String feedKey;
+  final String postId;
+  final String videoUrl;
+  final String caption;
+  final String userEmail;
+  final String videoType;
+  final String originalUserId;
+  final Map<String, dynamic> reactions;
+  final bool isRepost;
+  final DateTime createdAt;
+  final String? note;
+  final String? sharedByName;
+  final String? sharedByUserId;
+  final String? sharedByPhoto;
+
+  _FeedItem.post(QueryDocumentSnapshot doc)
+      : feedKey = 'post_${doc.id}',
+        postId = doc.id,
+        videoUrl = (doc.data() as Map<String, dynamic>)['videoUrl'] ?? '',
+        caption = (doc.data() as Map<String, dynamic>)['caption'] ?? '',
+        userEmail =
+            (doc.data() as Map<String, dynamic>)['userEmail'] ?? 'Unknown user',
+        videoType =
+            (doc.data() as Map<String, dynamic>)['videoType'] ?? 'short',
+        originalUserId = (doc.data() as Map<String, dynamic>)['userId'] ?? '',
+        reactions = ((doc.data() as Map<String, dynamic>)['reactions']
+                as Map<String, dynamic>?) ??
+            {},
+        isRepost = false,
+        createdAt =
+            ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)
+                    ?.toDate() ??
+                DateTime.now(),
+        note = null,
+        sharedByName = null,
+        sharedByUserId = null,
+        sharedByPhoto = null;
+
+  _FeedItem.repost(QueryDocumentSnapshot doc)
+      : feedKey = 'repost_${doc.id}',
+        postId = (doc.data() as Map<String, dynamic>)['originalPostId'] ?? '',
+        videoUrl = (doc.data() as Map<String, dynamic>)['videoUrl'] ?? '',
+        caption = (doc.data() as Map<String, dynamic>)['caption'] ?? '',
+        userEmail = (doc.data() as Map<String, dynamic>)['userEmail'] ?? '',
+        videoType =
+            (doc.data() as Map<String, dynamic>)['videoType'] ?? 'short',
+        originalUserId =
+            (doc.data() as Map<String, dynamic>)['originalUserId'] ?? '',
+        reactions = const {},
+        isRepost = true,
+        createdAt =
+            ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)
+                    ?.toDate() ??
+                DateTime.now(),
+        note = (doc.data() as Map<String, dynamic>)['note'] as String?,
+        sharedByName =
+            (doc.data() as Map<String, dynamic>)['sharedByName'] as String?,
+        sharedByUserId =
+            (doc.data() as Map<String, dynamic>)['sharedBy'] as String?,
+        sharedByPhoto =
+            (doc.data() as Map<String, dynamic>)['sharedByPhoto'] as String?;
 }
 
 // Full-screen, swipeable viewer of a single user's videos (opened from a
@@ -249,6 +359,80 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
   }
 }
 
+// Plays a single video full-screen. Used for reposts on a profile grid,
+// where we want to open just the one shared video rather than paging
+// through a whole user's feed.
+class SingleVideoScreen extends StatelessWidget {
+  final String postId;
+  final String userId;
+  final String videoUrl;
+  final String caption;
+  final String userEmail;
+  final String videoType;
+  final String? repostNote;
+  final String? repostByName;
+  final String? repostByUserId;
+  final String? repostByPhoto;
+
+  const SingleVideoScreen({
+    super.key,
+    required this.postId,
+    required this.userId,
+    required this.videoUrl,
+    required this.caption,
+    required this.userEmail,
+    this.videoType = 'short',
+    this.repostNote,
+    this.repostByName,
+    this.repostByUserId,
+    this.repostByPhoto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          _VideoPostItem(
+            key: ValueKey(postId),
+            postId: postId,
+            userId: userId,
+            videoUrl: videoUrl,
+            caption: caption,
+            userEmail: userEmail,
+            reactions: const {},
+            videoType: videoType,
+            repostNote: repostNote,
+            repostByName: repostByName,
+            repostByUserId: repostByUserId,
+            repostByPhoto: repostByPhoto,
+            // Nothing to auto-advance to - this is a single video screen.
+            onVideoEnd: () {},
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.4),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.arrow_back, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _VideoPostItem extends StatefulWidget {
   final String postId;
   final String userId;
@@ -258,6 +442,12 @@ class _VideoPostItem extends StatefulWidget {
   final Map<String, dynamic> reactions;
   final String videoType;
   final VoidCallback onVideoEnd;
+  // When this video is being shown as a repost, these carry the sharer's
+  // own note and name so it can be displayed on top of the video.
+  final String? repostNote;
+  final String? repostByName;
+  final String? repostByUserId;
+  final String? repostByPhoto;
 
   const _VideoPostItem({
     super.key,
@@ -269,6 +459,10 @@ class _VideoPostItem extends StatefulWidget {
     required this.reactions,
     required this.videoType,
     required this.onVideoEnd,
+    this.repostNote,
+    this.repostByName,
+    this.repostByUserId,
+    this.repostByPhoto,
   });
 
   @override
@@ -511,7 +705,53 @@ class _VideoPostItemState extends State<_VideoPostItem> {
     _setReaction('like', currentReactions);
   }
 
+  // Shows a small dialog so the sharer can add their own words on top of
+  // the video before sharing. Returns null if they cancelled, or the note
+  // text (possibly empty) if they tapped Share.
+  Future<String?> _showShareNoteDialog() async {
+    final TextEditingController controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Share video', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          maxLines: 3,
+          maxLength: 150,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Add your own words... (optional)',
+            hintStyle: TextStyle(color: Colors.grey),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white24),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.redAccent),
+            ),
+            counterStyle: TextStyle(color: Colors.grey),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child:
+                const Text('Share', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _shareVideo() async {
+    final String? note = await _showShareNoteDialog();
+    if (note == null) return; // User cancelled the dialog
+
     // Record the share so it can be counted (one per user, idempotent)
     final user = FirebaseAuth.instance.currentUser;
     if (user != null && widget.postId.isNotEmpty) {
@@ -525,11 +765,58 @@ class _VideoPostItemState extends State<_VideoPostItem> {
       } catch (_) {
         // Ignore share-tracking errors
       }
+
+      // Look up the sharer's own display name + photo so their account is
+      // clearly visible ("<name> shared this") wherever the repost appears.
+      String sharedByName = widget.userEmail;
+      String sharedByPhoto = '';
+      try {
+        final myProfile = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        final data = myProfile.data();
+        sharedByName =
+            (data?['displayName'] as String?)?.trim().isNotEmpty == true
+                ? data!['displayName']
+                : (user.email?.split('@').first ?? 'Someone');
+        sharedByPhoto = (data?['photoUrl'] as String?) ?? '';
+      } catch (_) {
+        // Keep the fallback name above
+      }
+
+      // Also save this as a "repost" on the sharer's own profile, so
+      // anyone visiting their profile can see the video they shared -
+      // along with the note they wrote on top of it.
+      // Doc id is uid_postId so re-sharing the same video is idempotent
+      // (just refreshes the timestamp) instead of creating duplicates.
+      try {
+        await FirebaseFirestore.instance
+            .collection('reposts')
+            .doc('${user.uid}_${widget.postId}')
+            .set({
+          'sharedBy': user.uid,
+          'sharedByName': sharedByName,
+          'sharedByPhoto': sharedByPhoto,
+          'originalPostId': widget.postId,
+          'originalUserId': widget.userId,
+          'videoUrl': widget.videoUrl,
+          'caption': widget.caption,
+          'videoType': widget.videoType,
+          'userEmail': widget.userEmail,
+          'note': note,
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      } catch (_) {
+        // Ignore repost-tracking errors
+      }
     }
 
-    final String shareText = widget.caption.isNotEmpty
-        ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
-        : 'Watch this video on Fly: ${widget.videoUrl}';
+    final String shareText = note.isNotEmpty
+        ? '$note\n\nWatch on Fly: ${widget.videoUrl}'
+        : widget.caption.isNotEmpty
+            ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
+            : 'Watch this video on Fly: ${widget.videoUrl}';
     await Share.share(shareText);
   }
 
@@ -825,11 +1112,113 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                 left: 16,
                 bottom: 100,
                 right: 90,
-                child: _OwnerInfo(
-                  userId: widget.userId,
-                  fallbackEmail: widget.userEmail,
-                  caption: widget.caption,
-                  postId: widget.postId,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // When this video is a repost, show who shared it
+                    // right above the original owner's own info/caption.
+                    if (widget.repostByName != null &&
+                        widget.repostByName!.isNotEmpty)
+                      GestureDetector(
+                        onTap: () {
+                          if (widget.repostByUserId == null ||
+                              widget.repostByUserId!.isEmpty) {
+                            return;
+                          }
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => PublicProfileScreen(
+                                userId: widget.repostByUserId!,
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.55),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 14,
+                                backgroundColor: Colors.grey[850],
+                                backgroundImage:
+                                    (widget.repostByPhoto != null &&
+                                            widget.repostByPhoto!.isNotEmpty)
+                                        ? NetworkImage(widget.repostByPhoto!)
+                                        : null,
+                                child: (widget.repostByPhoto == null ||
+                                        widget.repostByPhoto!.isEmpty)
+                                    ? Text(
+                                        widget.repostByName!.isNotEmpty
+                                            ? widget.repostByName![0]
+                                                .toUpperCase()
+                                            : '?',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      )
+                                    : null,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.repeat_rounded,
+                                            color: Colors.white70, size: 13),
+                                        const SizedBox(width: 4),
+                                        Flexible(
+                                          child: Text(
+                                            '${widget.repostByName} shared this',
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    if (widget.repostNote != null &&
+                                        widget.repostNote!.isNotEmpty) ...[
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        widget.repostNote!,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    _OwnerInfo(
+                      userId: widget.userId,
+                      fallbackEmail: widget.userEmail,
+                      caption: widget.caption,
+                      postId: widget.postId,
+                    ),
+                  ],
                 ),
               ),
 
