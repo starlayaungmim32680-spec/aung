@@ -93,40 +93,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
 
-              return Stack(
+              return Column(
                 children: [
-                  PageView.builder(
-                    controller: _pageController,
-                    scrollDirection: Axis.vertical,
-                    itemCount: feedItems.length,
-                    itemBuilder: (context, index) {
-                      final item = feedItems[index];
-
-                      // key includes the doc id (post id for own posts,
-                      // repost id for reposts) so Flutter doesn't reuse a
-                      // _VideoPostItem's State for a different feed entry,
-                      // even when the same video appears twice (once as
-                      // someone's original post, once as a repost).
-                      return _VideoPostItem(
-                        key: ValueKey(item.feedKey),
-                        postId: item.postId,
-                        userId: item.originalUserId,
-                        videoUrl: item.videoUrl,
-                        caption: item.caption,
-                        userEmail: item.userEmail,
-                        reactions: item.reactions,
-                        videoType: item.videoType,
-                        onVideoEnd: () => _goToNextVideo(feedItems.length),
-                        repostNote: item.isRepost ? item.note : null,
-                        repostByName: item.isRepost ? item.sharedByName : null,
-                        repostByUserId:
-                            item.isRepost ? item.sharedByUserId : null,
-                        repostByPhoto:
-                            item.isRepost ? item.sharedByPhoto : null,
-                      );
-                    },
-                  ),
                   SafeArea(
+                    bottom: false,
                     child: Column(
                       children: [
                         Padding(
@@ -169,6 +139,196 @@ class _HomeScreenState extends State<HomeScreen> {
                         const StoriesBar(),
                         const LiveBadgeBar(),
                       ],
+                    ),
+                  ),
+                  Expanded(
+                    child: SafeArea(
+                      top: false,
+                      child: PageView.builder(
+                        controller: _pageController,
+                        scrollDirection: Axis.vertical,
+                        itemCount: feedItems.length,
+                        itemBuilder: (context, index) {
+                          final item = feedItems[index];
+
+                          // key includes the doc id (post id for own posts,
+                          // repost id for reposts) so Flutter doesn't reuse a
+                          // _VideoPostItem's State for a different feed entry,
+                          // even when the same video appears twice (once as
+                          // someone's original post, once as a repost).
+                          return _VideoPostItem(
+                            key: ValueKey(item.feedKey),
+                            postId: item.postId,
+                            userId: item.originalUserId,
+                            videoUrl: item.videoUrl,
+                            caption: item.caption,
+                            userEmail: item.userEmail,
+                            reactions: item.reactions,
+                            videoType: item.videoType,
+                            onVideoEnd: () => _goToNextVideo(feedItems.length),
+                            repostNote: item.isRepost ? item.note : null,
+                            repostByName:
+                                item.isRepost ? item.sharedByName : null,
+                            repostByUserId:
+                                item.isRepost ? item.sharedByUserId : null,
+                            repostByPhoto:
+                                item.isRepost ? item.sharedByPhoto : null,
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+// Facebook Reels-style screen: same vertical full-screen video feed as
+// Home, but filtered to short videos only (videoType == 'short') - no
+// landscape videos, no stories/search/live bar clutter.
+class ShortsScreen extends StatefulWidget {
+  const ShortsScreen({super.key});
+
+  @override
+  State<ShortsScreen> createState() => _ShortsScreenState();
+}
+
+class _ShortsScreenState extends State<ShortsScreen> {
+  final PageController _pageController = PageController();
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _goToNextVideo(int totalCount) {
+    final int? currentPage = _pageController.page?.round();
+    if (currentPage != null && currentPage < totalCount - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('posts')
+            .where('videoType', isEqualTo: 'short')
+            .orderBy('createdAt', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          return StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('reposts')
+                .where('videoType', isEqualTo: 'short')
+                .orderBy('createdAt', descending: true)
+                .snapshots(),
+            builder: (context, repostSnapshot) {
+              final bool isLoading =
+                  snapshot.connectionState == ConnectionState.waiting ||
+                      repostSnapshot.connectionState == ConnectionState.waiting;
+
+              if (isLoading) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.redAccent),
+                );
+              }
+
+              // Show the actual error (e.g. "missing composite index")
+              // instead of silently falling through to "no reels yet",
+              // which was hiding the real problem.
+              if (snapshot.hasError || repostSnapshot.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Text(
+                      'Could not load reels:\n'
+                      '${snapshot.error ?? repostSnapshot.error}',
+                      style: const TextStyle(color: Colors.redAccent),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                );
+              }
+
+              final ownDocs = snapshot.data?.docs ?? [];
+              final repostDocs = repostSnapshot.data?.docs ?? [];
+
+              final List<_FeedItem> feedItems = [
+                ...ownDocs.map((d) => _FeedItem.post(d)),
+                ...repostDocs.map((d) => _FeedItem.repost(d)),
+              ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+              if (feedItems.isEmpty) {
+                return const Center(
+                  child: Text(
+                    'No reels yet. Upload a short video!',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                );
+              }
+
+              return Stack(
+                children: [
+                  SafeArea(
+                    top: false,
+                    child: PageView.builder(
+                      controller: _pageController,
+                      scrollDirection: Axis.vertical,
+                      itemCount: feedItems.length,
+                      itemBuilder: (context, index) {
+                        final item = feedItems[index];
+                        return _VideoPostItem(
+                          key: ValueKey(item.feedKey),
+                          postId: item.postId,
+                          userId: item.originalUserId,
+                          videoUrl: item.videoUrl,
+                          caption: item.caption,
+                          userEmail: item.userEmail,
+                          reactions: item.reactions,
+                          videoType: item.videoType,
+                          onVideoEnd: () => _goToNextVideo(feedItems.length),
+                          repostNote: item.isRepost ? item.note : null,
+                          repostByName:
+                              item.isRepost ? item.sharedByName : null,
+                          repostByUserId:
+                              item.isRepost ? item.sharedByUserId : null,
+                          repostByPhoto:
+                              item.isRepost ? item.sharedByPhoto : null,
+                        );
+                      },
+                    ),
+                  ),
+                  SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Center(
+                        child: Text(
+                          'Reels',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withOpacity(0.6),
+                                blurRadius: 6,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -394,21 +554,24 @@ class SingleVideoScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          _VideoPostItem(
-            key: ValueKey(postId),
-            postId: postId,
-            userId: userId,
-            videoUrl: videoUrl,
-            caption: caption,
-            userEmail: userEmail,
-            reactions: const {},
-            videoType: videoType,
-            repostNote: repostNote,
-            repostByName: repostByName,
-            repostByUserId: repostByUserId,
-            repostByPhoto: repostByPhoto,
-            // Nothing to auto-advance to - this is a single video screen.
-            onVideoEnd: () {},
+          SafeArea(
+            top: false,
+            child: _VideoPostItem(
+              key: ValueKey(postId),
+              postId: postId,
+              userId: userId,
+              videoUrl: videoUrl,
+              caption: caption,
+              userEmail: userEmail,
+              reactions: const {},
+              videoType: videoType,
+              repostNote: repostNote,
+              repostByName: repostByName,
+              repostByUserId: repostByUserId,
+              repostByPhoto: repostByPhoto,
+              // Nothing to auto-advance to - this is a single video screen.
+              onVideoEnd: () {},
+            ),
           ),
           SafeArea(
             child: Padding(
@@ -935,23 +1098,16 @@ class _VideoPostItemState extends State<_VideoPostItem> {
             fit: StackFit.expand,
             children: [
               if (_isInitialized && _controller != null)
-                // Short videos fill the screen (TikTok style); long/landscape
-                // videos keep their natural aspect ratio, centered with black bars.
-                widget.videoType == 'long'
-                    ? Center(
-                        child: AspectRatio(
-                          aspectRatio: _controller!.value.aspectRatio,
-                          child: VideoPlayer(_controller!),
-                        ),
-                      )
-                    : FittedBox(
-                        fit: BoxFit.cover,
-                        child: SizedBox(
-                          width: _controller!.value.size.width,
-                          height: _controller!.value.size.height,
-                          child: VideoPlayer(_controller!),
-                        ),
-                      )
+                // Show the video at its real aspect ratio, centered with
+                // black bars if the container doesn't match exactly -
+                // never cropped, so it always looks like what was
+                // originally uploaded.
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: _controller!.value.aspectRatio,
+                    child: VideoPlayer(_controller!),
+                  ),
+                )
               else
                 const Center(
                   child: CircularProgressIndicator(color: Colors.redAccent),

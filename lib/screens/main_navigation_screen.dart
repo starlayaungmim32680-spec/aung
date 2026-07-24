@@ -27,7 +27,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   bool _isMenuOpen = false;
 
   double _buttonRight = 24;
-  double _buttonBottom = 24;
+  double _buttonBottom = 90;
   double _dragDistance = 0;
 
   late AnimationController _rotationController;
@@ -46,6 +46,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   final List<Widget> _screens = const [
     HomeScreen(),
+    ShortsScreen(),
     ChatScreen(),
     UploadScreen(),
     ProfileScreen(),
@@ -56,6 +57,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       'icon': Icons.home_rounded,
       'label': 'Home',
       'colors': [Color(0xFFFF4B6E), Color(0xFFD32F4F)],
+    },
+    {
+      'icon': Icons.theaters_rounded,
+      'label': 'Reels',
+      'colors': [Color(0xFFFF7A3D), Color(0xFFE64A19)],
     },
     {
       'icon': Icons.chat_bubble_rounded,
@@ -364,10 +370,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       final safePadding = MediaQuery.of(context).padding;
       final double buttonSize = 56 * _uiScale(context);
 
+      // Free to move anywhere on screen (including over the video), only
+      // kept clear of the notch/status bar and system nav bar.
       final double minRight = safePadding.left;
-      final double minBottom = safePadding.bottom;
+      const double minBottom = 0;
       final double maxRight = screenSize.width - buttonSize - safePadding.right;
-      final double maxBottom = screenSize.height - buttonSize - safePadding.top;
+      final double maxBottom =
+          screenSize.height - buttonSize - safePadding.top - safePadding.bottom;
 
       if (_buttonRight < minRight) _buttonRight = minRight;
       if (_buttonBottom < minBottom) _buttonBottom = minBottom;
@@ -568,6 +577,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   @override
   Widget build(BuildContext context) {
+    final double scale = _uiScale(context);
+    final double bottomSafe = MediaQuery.of(context).padding.bottom;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -576,13 +588,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             index: _currentIndex,
             children: _screens,
           ),
+          // Small menu pills (Home/Reels/Chat/Upload/Profile/Live) - always
+          // fixed at the very bottom, regardless of where the big button is.
           if (_isMenuOpen)
             Positioned(
               left: 0,
               right: 0,
-              bottom: 90 * _uiScale(context),
+              bottom: 8 + bottomSafe,
               child: SizedBox(
-                height: 64 * _uiScale(context),
+                height: 64 * scale,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -596,9 +610,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 ),
               ),
             ),
+          // Big orbit button - free to be dragged anywhere on screen,
+          // including up over the video.
           Positioned(
             right: _buttonRight,
-            bottom: _buttonBottom,
+            bottom: _buttonBottom + bottomSafe,
             child: GestureDetector(
               onPanStart: _onPanStart,
               onPanUpdate: _onPanUpdate,
