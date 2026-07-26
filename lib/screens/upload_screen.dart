@@ -10,7 +10,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 
 class UploadScreen extends StatefulWidget {
-  const UploadScreen({super.key});
+  // When opened from a sound page via "Use this sound", these carry the
+  // sound to lay over the new video instead of its own audio.
+  final String? presetSoundId;
+  final String? presetSoundTitle;
+  final String? presetSoundOwnerName;
+  final String? presetSoundSourceUrl;
+
+  const UploadScreen({
+    super.key,
+    this.presetSoundId,
+    this.presetSoundTitle,
+    this.presetSoundOwnerName,
+    this.presetSoundSourceUrl,
+  });
 
   @override
   State<UploadScreen> createState() => _UploadScreenState();
@@ -115,6 +128,31 @@ class _UploadScreenState extends State<UploadScreen> {
     return '${before}so_$startSeconds,eo_$endSeconds/$after';
   }
 
+  // Pulls the Cloudinary public id out of a delivery URL, e.g.
+  // ".../upload/so_0,eo_15/v1784906524/scfmvz1oo1zs9tttppd3.mp4"
+  // -> "scfmvz1oo1zs9tttppd3". That id is what an audio overlay needs.
+  String _publicIdFromUrl(String url) {
+    if (url.isEmpty) return '';
+    final String path = url.split('?').first;
+    final String last = path.split('/').last;
+    final int dot = last.lastIndexOf('.');
+    return dot > 0 ? last.substring(0, dot) : last;
+  }
+
+  // Replaces the new video's own audio with the chosen sound, entirely on
+  // Cloudinary's side - "ac_none" drops the original audio track and the
+  // audio layer adds the borrowed one on top.
+  String _buildSoundUrl(String videoUrl, String soundPublicId) {
+    if (soundPublicId.isEmpty) return videoUrl;
+    const String marker = '/upload/';
+    final int index = videoUrl.indexOf(marker);
+    if (index == -1) return videoUrl;
+
+    final String before = videoUrl.substring(0, index + marker.length);
+    final String after = videoUrl.substring(index + marker.length);
+    return '${before}ac_none/l_audio:$soundPublicId/fl_layer_apply/$after';
+  }
+
   Future<void> _uploadPost() async {
     if (_videoBytes == null) {
       setState(() {
@@ -167,13 +205,75 @@ class _UploadScreenState extends State<UploadScreen> {
             _buildTrimmedUrl(videoUrl, _trimStartSeconds!, _trimEndSeconds!);
       }
 
-      await FirebaseFirestore.instance.collection('posts').add({
+      // Look up the uploader's display name so the sound can be
+      // credited to them ("Original sound - Aung") wherever it's reused.
+      String ownerName = user.email?.split('@').first ?? 'User';
+      try {
+        final profile = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        final profileData = profile.data();
+        final String? displayName = profileData?['displayName'] as String?;
+        if (displayName != null && displayName.trim().isNotEmpty) {
+          ownerName = displayName.trim();
+        }
+      } catch (_) {
+        // Keep the fallback name
+      }
+
+      final postRef = FirebaseFirestore.instance.collection('posts').doc();
+
+      final String? borrowedSoundId = widget.presetSoundId;
+      final bool usingBorrowedSound =
+          borrowedSoundId != null && borrowedSoundId.isNotEmpty;
+
+      String soundId;
+      String soundTitle;
+      String soundOwnerName;
+
+      if (usingBorrowedSound) {
+        // Swap this video's audio for the borrowed sound, and credit the
+        // sound to whoever it originally came from.
+        final String soundPublicId =
+            _publicIdFromUrl(widget.presetSoundSourceUrl ?? '');
+        videoUrl = _buildSoundUrl(videoUrl, soundPublicId);
+
+        soundId = borrowedSoundId;
+        soundTitle = widget.presetSoundTitle ?? 'Original sound';
+        soundOwnerName = widget.presetSoundOwnerName ?? '';
+      } else {
+        // A fresh upload also becomes a reusable sound of its own. The
+        // sound doc shares the post's id so the two are easy to match up.
+        soundId = postRef.id;
+        soundTitle = 'Original sound';
+        soundOwnerName = ownerName;
+
+        await FirebaseFirestore.instance
+            .collection('sounds')
+            .doc(postRef.id)
+            .set({
+          'ownerId': user.uid,
+          'ownerName': ownerName,
+          'title': 'Original sound',
+          // The video this audio comes from - reusing the sound means
+          // taking the audio track off this URL.
+          'sourceUrl': videoUrl,
+          'sourcePostId': postRef.id,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await postRef.set({
         'userId': user.uid,
         'userEmail': user.email,
         'videoUrl': videoUrl,
         'caption': _captionController.text.trim(),
         // 'short' = full-screen vertical, 'long' = landscape (YouTube style)
         'videoType': _videoType ?? 'short',
+        'soundId': soundId,
+        'soundTitle': soundTitle,
+        'soundOwnerName': soundOwnerName,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -214,7 +314,52 @@ class _UploadScreenState extends State<UploadScreen> {
               )
             : null,
       ),
-      body: _videoType == null ? _buildTypeChooser() : _buildUploadForm(),
+      body: Column(
+        children: [
+          // Shown when this screen was opened via "Use this sound"
+          if (widget.presetSoundId != null && widget.presetSoundId!.isNotEmpty)
+            Container(
+              width: double.infinity,
+              color: const Color(0xFF1E1E1E),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.music_note,
+                      color: Colors.redAccent, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          [
+                            widget.presetSoundTitle ?? 'Original sound',
+                            widget.presetSoundOwnerName ?? '',
+                          ].where((s) => s.isNotEmpty).join(' - '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Text(
+                          'This sound will replace your video\'s audio',
+                          style: TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child:
+                _videoType == null ? _buildTypeChooser() : _buildUploadForm(),
+          ),
+        ],
+      ),
     );
   }
 

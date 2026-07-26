@@ -6,6 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:livekit_client/livekit_client.dart';
 import 'package:collection/collection.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'video_call_screen.dart' show kSandboxId;
 
 // Shared helper: gets a LiveKit access token + server url from the same
@@ -74,6 +76,8 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
   @override
   void initState() {
     super.initState();
+    // Don't let the phone dim/lock while broadcasting.
+    WakelockPlus.enable();
     _goLive();
   }
 
@@ -83,6 +87,34 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
       setState(() {
         _connecting = false;
         _error = 'You need to be signed in to go live.';
+      });
+      return;
+    }
+
+    // Ask for camera + mic up front. Without these granted, publishing
+    // the local tracks below throws and the stream can't start.
+    try {
+      final statuses = await [
+        Permission.camera,
+        Permission.microphone,
+      ].request();
+
+      final bool cameraOk = statuses[Permission.camera]?.isGranted ?? false;
+      final bool micOk = statuses[Permission.microphone]?.isGranted ?? false;
+
+      if (!cameraOk || !micOk) {
+        setState(() {
+          _connecting = false;
+          _error = 'Camera and microphone permission are required to go '
+              'live.\nPlease enable them in Settings > Apps > fly > '
+              'Permissions.';
+        });
+        return;
+      }
+    } catch (e) {
+      setState(() {
+        _connecting = false;
+        _error = 'Could not request camera/microphone permission:\n$e';
       });
       return;
     }
@@ -110,7 +142,8 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
     if (details == null) {
       setState(() {
         _connecting = false;
-        _error = 'Could not start the live stream. Please try again.';
+        _error = 'Could not reach the live server to get an access token.\n'
+            'Check your internet connection and try again.';
       });
       return;
     }
@@ -148,9 +181,11 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
         _connecting = false;
       });
     } catch (e) {
+      // Show the real error - a generic message hides whether this was a
+      // permission problem, a Firestore rules problem, or a LiveKit one.
       setState(() {
         _connecting = false;
-        _error = 'Could not start the live stream.';
+        _error = 'Could not start the live stream:\n$e';
       });
     }
   }
@@ -215,6 +250,7 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _listener?.dispose();
     _room?.disconnect();
     // Best-effort cleanup if the screen is dismissed some other way -
@@ -246,9 +282,9 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
               )
             else if (_error != null)
               Center(
-                child: Padding(
+                child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
-                  child: Text(_error!,
+                  child: SelectableText(_error!,
                       style: const TextStyle(color: Colors.white),
                       textAlign: TextAlign.center),
                 ),
@@ -397,6 +433,8 @@ class _LiveViewerScreenState extends State<LiveViewerScreen> {
   @override
   void initState() {
     super.initState();
+    // Don't let the phone dim/lock while watching a live stream.
+    WakelockPlus.enable();
     _join();
     _watchStatus();
   }
@@ -467,7 +505,7 @@ class _LiveViewerScreenState extends State<LiveViewerScreen> {
     } catch (e) {
       setState(() {
         _connecting = false;
-        _error = 'Could not join the live stream.';
+        _error = 'Could not join the live stream:\n$e';
       });
     }
   }
@@ -505,6 +543,7 @@ class _LiveViewerScreenState extends State<LiveViewerScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _statusSub?.cancel();
     _listener?.dispose();
     _room?.disconnect();
@@ -538,7 +577,12 @@ class _LiveViewerScreenState extends State<LiveViewerScreen> {
             )
           else if (_error != null)
             Center(
-              child: Text(_error!, style: const TextStyle(color: Colors.white)),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: SelectableText(_error!,
+                    style: const TextStyle(color: Colors.white),
+                    textAlign: TextAlign.center),
+              ),
             )
           else if (_hostVideoTrack != null)
             VideoTrackRenderer(_hostVideoTrack!)
@@ -833,6 +877,7 @@ class LiveInteractionLayer extends StatefulWidget {
 
 class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
   final TextEditingController _commentController = TextEditingController();
+  final FocusNode _commentFocus = FocusNode();
   final List<_LiveFlyingReaction> _flyingReactions = [];
   StreamSubscription<QuerySnapshot>? _reactionSub;
   bool _firstReactionSnapshot = true;
@@ -936,8 +981,18 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
         'text': text,
         'createdAt': FieldValue.serverTimestamp(),
       });
-    } catch (_) {
-      // Comments are best-effort too
+      // Keep the keyboard up so several comments can be sent in a row.
+      if (mounted) _commentFocus.requestFocus();
+    } catch (e) {
+      // Don't fail silently - a swallowed error here just looks like
+      // "the send button does nothing".
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not send comment: $e')),
+        );
+        // Put the text back so it isn't lost.
+        _commentController.text = text;
+      }
     }
   }
 
@@ -945,6 +1000,7 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
   void dispose() {
     _reactionSub?.cancel();
     _commentController.dispose();
+    _commentFocus.dispose();
     super.dispose();
   }
 
@@ -1037,23 +1093,60 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
                   ),
                   const SizedBox(height: 6),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+                    padding: const EdgeInsets.only(
+                        left: 14, right: 4, top: 4, bottom: 4),
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.4),
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: TextField(
-                      controller: _commentController,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText: 'Say something...',
-                        hintStyle: TextStyle(color: Colors.white54),
-                        border: InputBorder.none,
-                        isDense: true,
-                      ),
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _sendComment(),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _commentController,
+                            focusNode: _commentFocus,
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              hintText: 'Say something...',
+                              hintStyle: TextStyle(color: Colors.white54),
+                              border: InputBorder.none,
+                              isDense: true,
+                            ),
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) => _sendComment(),
+                          ),
+                        ),
+                        // Explicit send button - don't depend on the
+                        // keyboard exposing a "send" key, since many
+                        // keyboards show a newline key instead. Drawn as
+                        // a solid filled circle so it stays visible over
+                        // a bright video background.
+                        ValueListenableBuilder<TextEditingValue>(
+                          valueListenable: _commentController,
+                          builder: (context, value, _) {
+                            final bool canSend = value.text.trim().isNotEmpty;
+                            return GestureDetector(
+                              onTap: canSend ? _sendComment : null,
+                              child: Container(
+                                margin: const EdgeInsets.only(left: 8),
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: canSend
+                                      ? Colors.redAccent
+                                      : Colors.white24,
+                                ),
+                                child: const Icon(
+                                  Icons.send_rounded,
+                                  size: 18,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 ],

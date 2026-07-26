@@ -6,6 +6,7 @@ import 'firebase_options.dart';
 import 'notification_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
+import 'screens/home_screen.dart' show flyRouteObserver;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,9 @@ class FlyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Fly',
       debugShowCheckedModeBanner: false,
+      // Lets a playing video know when another screen is pushed on top
+      // of it, so it can pause instead of playing on in the background.
+      navigatorObservers: [flyRouteObserver],
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: Colors.black,

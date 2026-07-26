@@ -584,10 +584,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          IndexedStack(
-            index: _currentIndex,
-            children: _screens,
-          ),
+          // Only the active tab is built. An IndexedStack would keep the
+          // video tabs alive in the background, so their audio kept
+          // playing after switching to Chat/Upload/Profile.
+          _screens[_currentIndex],
           // Small menu pills (Home/Reels/Chat/Upload/Profile/Live) - always
           // fixed at the very bottom, regardless of where the big button is.
           if (_isMenuOpen)

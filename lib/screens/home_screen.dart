@@ -5,11 +5,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'notifications_screen.dart';
 import 'public_profile_screen.dart';
 import 'story_screen.dart';
 import 'search_screen.dart';
 import 'live_screen.dart';
+import 'sound_screen.dart';
+
+// Watches full-screen route pushes so a playing video can pause itself
+// when the user navigates somewhere else. Registered in main.dart.
+// Typed to PageRoute (not ModalRoute) so bottom sheets like the comments
+// sheet don't pause playback - only real screen changes do.
+final RouteObserver<PageRoute<dynamic>> flyRouteObserver =
+    RouteObserver<PageRoute<dynamic>>();
 
 // Available reaction types and their emojis
 const Map<String, String> kReactions = {
@@ -31,8 +40,32 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final PageController _pageController = PageController();
 
+  // Created ONCE here, not inside build(). Building a new
+  // .snapshots() stream on every rebuild makes StreamBuilder drop its
+  // subscription and start over in the "waiting" state, which tore the
+  // video player down and flashed a black screen every time something
+  // rebuilt this widget (e.g. tapping like).
+  late final Stream<QuerySnapshot> _postsStream;
+  late final Stream<QuerySnapshot> _repostsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    // Stop the phone from dimming/locking while videos are playing.
+    WakelockPlus.enable();
+    _postsStream = FirebaseFirestore.instance
+        .collection('posts')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+    _repostsStream = FirebaseFirestore.instance
+        .collection('reposts')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
+
   @override
   void dispose() {
+    WakelockPlus.disable();
     _pageController.dispose();
     super.dispose();
   }
@@ -52,22 +85,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('posts')
-            .orderBy('createdAt', descending: true)
-            .snapshots(),
+        stream: _postsStream,
         builder: (context, snapshot) {
           return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('reposts')
-                .orderBy('createdAt', descending: true)
-                .snapshots(),
+            stream: _repostsStream,
             builder: (context, repostSnapshot) {
-              final bool isLoading =
-                  snapshot.connectionState == ConnectionState.waiting ||
-                      repostSnapshot.connectionState == ConnectionState.waiting;
-
-              if (isLoading) {
+              // Only show the loader when we genuinely have nothing yet.
+              // Checking connectionState alone would also fire on a
+              // transient re-subscribe and destroy the playing video.
+              if (!snapshot.hasData && !repostSnapshot.hasData) {
                 return const Center(
                   child: CircularProgressIndicator(color: Colors.redAccent),
                 );
@@ -201,8 +227,30 @@ class ShortsScreen extends StatefulWidget {
 class _ShortsScreenState extends State<ShortsScreen> {
   final PageController _pageController = PageController();
 
+  // Same reasoning as _HomeScreenState: build these once, not on every
+  // rebuild, or StreamBuilder resubscribes and kills the playing video.
+  late final Stream<QuerySnapshot> _shortPostsStream;
+  late final Stream<QuerySnapshot> _shortRepostsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+    _shortPostsStream = FirebaseFirestore.instance
+        .collection('posts')
+        .where('videoType', isEqualTo: 'short')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+    _shortRepostsStream = FirebaseFirestore.instance
+        .collection('reposts')
+        .where('videoType', isEqualTo: 'short')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
+
   @override
   void dispose() {
+    WakelockPlus.disable();
     _pageController.dispose();
     super.dispose();
   }
@@ -222,29 +270,11 @@ class _ShortsScreenState extends State<ShortsScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('posts')
-            .where('videoType', isEqualTo: 'short')
-            .orderBy('createdAt', descending: true)
-            .snapshots(),
+        stream: _shortPostsStream,
         builder: (context, snapshot) {
           return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('reposts')
-                .where('videoType', isEqualTo: 'short')
-                .orderBy('createdAt', descending: true)
-                .snapshots(),
+            stream: _shortRepostsStream,
             builder: (context, repostSnapshot) {
-              final bool isLoading =
-                  snapshot.connectionState == ConnectionState.waiting ||
-                      repostSnapshot.connectionState == ConnectionState.waiting;
-
-              if (isLoading) {
-                return const Center(
-                  child: CircularProgressIndicator(color: Colors.redAccent),
-                );
-              }
-
               // Show the actual error (e.g. "missing composite index")
               // instead of silently falling through to "no reels yet",
               // which was hiding the real problem.
@@ -259,6 +289,13 @@ class _ShortsScreenState extends State<ShortsScreen> {
                       textAlign: TextAlign.center,
                     ),
                   ),
+                );
+              }
+
+              // Only show the loader when we genuinely have nothing yet.
+              if (!snapshot.hasData && !repostSnapshot.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.redAccent),
                 );
               }
 
@@ -429,8 +466,22 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
   late final PageController _pageController =
       PageController(initialPage: widget.initialIndex);
 
+  // Built once - see _HomeScreenState for why.
+  late final Stream<QuerySnapshot> _userPostsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+    _userPostsStream = FirebaseFirestore.instance
+        .collection('posts')
+        .where('userId', isEqualTo: widget.userId)
+        .snapshots();
+  }
+
   @override
   void dispose() {
+    WakelockPlus.disable();
     _pageController.dispose();
     super.dispose();
   }
@@ -451,12 +502,9 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
       backgroundColor: Colors.black,
       body: StreamBuilder<QuerySnapshot>(
         // Same query as the profile grid (no orderBy) so indexes line up
-        stream: FirebaseFirestore.instance
-            .collection('posts')
-            .where('userId', isEqualTo: widget.userId)
-            .snapshots(),
+        stream: _userPostsStream,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          if (!snapshot.hasData) {
             return const Center(
               child: CircularProgressIndicator(color: Colors.redAccent),
             );
@@ -522,7 +570,7 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
 // Plays a single video full-screen. Used for reposts on a profile grid,
 // where we want to open just the one shared video rather than paging
 // through a whole user's feed.
-class SingleVideoScreen extends StatelessWidget {
+class SingleVideoScreen extends StatefulWidget {
   final String postId;
   final String userId;
   final String videoUrl;
@@ -549,6 +597,23 @@ class SingleVideoScreen extends StatelessWidget {
   });
 
   @override
+  State<SingleVideoScreen> createState() => _SingleVideoScreenState();
+}
+
+class _SingleVideoScreenState extends State<SingleVideoScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+  }
+
+  @override
+  void dispose() {
+    WakelockPlus.disable();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
@@ -557,18 +622,18 @@ class SingleVideoScreen extends StatelessWidget {
           SafeArea(
             top: false,
             child: _VideoPostItem(
-              key: ValueKey(postId),
-              postId: postId,
-              userId: userId,
-              videoUrl: videoUrl,
-              caption: caption,
-              userEmail: userEmail,
+              key: ValueKey(widget.postId),
+              postId: widget.postId,
+              userId: widget.userId,
+              videoUrl: widget.videoUrl,
+              caption: widget.caption,
+              userEmail: widget.userEmail,
               reactions: const {},
-              videoType: videoType,
-              repostNote: repostNote,
-              repostByName: repostByName,
-              repostByUserId: repostByUserId,
-              repostByPhoto: repostByPhoto,
+              videoType: widget.videoType,
+              repostNote: widget.repostNote,
+              repostByName: widget.repostByName,
+              repostByUserId: widget.repostByUserId,
+              repostByPhoto: widget.repostByPhoto,
               // Nothing to auto-advance to - this is a single video screen.
               onVideoEnd: () {},
             ),
@@ -632,7 +697,8 @@ class _VideoPostItem extends StatefulWidget {
   State<_VideoPostItem> createState() => _VideoPostItemState();
 }
 
-class _VideoPostItemState extends State<_VideoPostItem> {
+class _VideoPostItemState extends State<_VideoPostItem>
+    with RouteAware, WidgetsBindingObserver {
   // How many times a video replays on its own before we auto-advance to
   // the next one. The user can still swipe away manually at any time.
   static const int _maxLoopsBeforeAutoSkip = 3;
@@ -650,11 +716,66 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
   final List<_FlyingEmoji> _flyingEmojis = [];
 
+  // Built once, for the same reason as the feed streams: creating it
+  // inside build() would resubscribe on every rebuild.
+  Stream<DocumentSnapshot>? _postDocStream;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.postId.isNotEmpty) {
+      _postDocStream = FirebaseFirestore.instance
+          .collection('posts')
+          .doc(widget.postId)
+          .snapshots();
+    }
     _initializeVideo();
     _recordView();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      flyRouteObserver.subscribe(this, route);
+    }
+  }
+
+  // Remembers whether playback was running, so returning to the screen
+  // resumes only videos that were actually playing.
+  bool _wasPlayingBeforeLeaving = false;
+
+  void _pauseForNavigation() {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    _wasPlayingBeforeLeaving = c.value.isPlaying;
+    if (c.value.isPlaying) c.pause();
+  }
+
+  void _resumeAfterNavigation() {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    if (_wasPlayingBeforeLeaving) c.play();
+  }
+
+  // Another full screen was pushed on top of this one - stop the sound.
+  @override
+  void didPushNext() => _pauseForNavigation();
+
+  // That screen was closed and this one is visible again.
+  @override
+  void didPopNext() => _resumeAfterNavigation();
+
+  // App sent to the background / a call came in, etc.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _resumeAfterNavigation();
+    } else {
+      _pauseForNavigation();
+    }
   }
 
   // Records that the current user viewed this post (counted once per user).
@@ -1057,6 +1178,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
   @override
   void dispose() {
+    flyRouteObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
     _controller?.removeListener(_onVideoProgress);
     _controller?.dispose();
     _controlsVisible.dispose();
@@ -1068,18 +1191,13 @@ class _VideoPostItemState extends State<_VideoPostItem> {
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
 
-    // The whole post item now listens directly to its own Firestore document.
-    // This is what keeps the like count and my-reaction state ALWAYS in sync
-    // with the database, instead of depending on the parent post-list
+    // The whole post item listens directly to its own Firestore document.
+    // This is what keeps the like count and my-reaction state ALWAYS in
+    // sync with the database, instead of depending on the parent post-list
     // snapshot (which could be a tick behind and made counts look wrong or
     // jump around, and made double-tapping like feel unreliable).
     return StreamBuilder<DocumentSnapshot>(
-      stream: widget.postId.isEmpty
-          ? null
-          : FirebaseFirestore.instance
-              .collection('posts')
-              .doc(widget.postId)
-              .snapshots(),
+      stream: _postDocStream,
       builder: (context, postSnap) {
         final Map<String, dynamic>? livePostData =
             (postSnap.data?.data()) as Map<String, dynamic>?;
@@ -1091,15 +1209,40 @@ class _VideoPostItemState extends State<_VideoPostItem> {
         final String? myReaction =
             user != null ? liveReactions[user.uid] as String? : null;
 
+        // Which sound this video uses, so it can be credited and opened.
+        final String? soundId = livePostData?['soundId'] as String?;
+        final String soundLabel = [
+          (livePostData?['soundTitle'] as String?) ?? 'Original sound',
+          (livePostData?['soundOwnerName'] as String?) ?? '',
+        ].where((s) => s.isNotEmpty).join(' - ');
+
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _handleScreenTap,
           child: Stack(
             fit: StackFit.expand,
             children: [
-              if (_isInitialized && _controller != null)
-                // Show the video at its real aspect ratio, centered with
-                // black bars if the container doesn't match exactly -
+              if (_isInitialized && _controller != null) ...[
+                // Backdrop: the same video, zoomed to fill and heavily
+                // blurred, so the empty letterbox/pillarbox area picks up
+                // the video's own colours instead of showing flat black.
+                ClipRect(
+                  child: ImageFiltered(
+                    imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _controller!.value.size.width,
+                        height: _controller!.value.size.height,
+                        child: VideoPlayer(_controller!),
+                      ),
+                    ),
+                  ),
+                ),
+                // Darken the backdrop a little so the real video and the
+                // overlaid text/buttons stay easy to read.
+                Container(color: Colors.black.withOpacity(0.4)),
+                // Show the video at its real aspect ratio, centered -
                 // never cropped, so it always looks like what was
                 // originally uploaded.
                 Center(
@@ -1107,8 +1250,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                     aspectRatio: _controller!.value.aspectRatio,
                     child: VideoPlayer(_controller!),
                   ),
-                )
-              else
+                ),
+              ] else
                 const Center(
                   child: CircularProgressIndicator(color: Colors.redAccent),
                 ),
@@ -1373,6 +1516,8 @@ class _VideoPostItemState extends State<_VideoPostItem> {
                       fallbackEmail: widget.userEmail,
                       caption: widget.caption,
                       postId: widget.postId,
+                      soundId: soundId,
+                      soundLabel: soundLabel,
                     ),
                   ],
                 ),
@@ -1381,7 +1526,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               ..._flyingEmojis.map((e) {
                 return Positioned(
                   right: 30,
-                  bottom: 300,
+                  bottom: 140,
                   child: _FlyingEmojiWidget(
                     key: ValueKey(e.id),
                     data: e,
@@ -1393,7 +1538,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
               if (_showReactionPicker)
                 Positioned(
                   right: 12,
-                  bottom: 340,
+                  bottom: 180,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(30),
                     child: BackdropFilter(
@@ -1426,7 +1571,7 @@ class _VideoPostItemState extends State<_VideoPostItem> {
 
               Positioned(
                 right: 12,
-                bottom: 280,
+                bottom: 120,
                 child: Column(
                   children: [
                     // Like (long-press for reactions)
@@ -2149,12 +2294,16 @@ class _OwnerInfo extends StatelessWidget {
   final String fallbackEmail;
   final String caption;
   final String postId;
+  final String? soundId;
+  final String soundLabel;
 
   const _OwnerInfo({
     required this.userId,
     required this.fallbackEmail,
     required this.caption,
     required this.postId,
+    this.soundId,
+    this.soundLabel = '',
   });
 
   // Follows or unfollows the video owner (and notifies them when following)
@@ -2343,6 +2492,39 @@ class _OwnerInfo extends StatelessWidget {
                   color: Colors.white,
                   fontSize: 14,
                   shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                ),
+              ),
+            ],
+            // Sound credit - tapping it opens every video using this sound
+            if (soundId != null && soundId!.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              GestureDetector(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SoundScreen(soundId: soundId!),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.music_note,
+                        color: Colors.white,
+                        size: 15,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)]),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        soundLabel,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
