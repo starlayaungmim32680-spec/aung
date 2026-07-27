@@ -40,6 +40,8 @@ class _UploadScreenState extends State<UploadScreen> {
   int? _trimStartSeconds;
   int? _trimEndSeconds;
   bool _isUploading = false;
+  // 0.0 - 1.0 while the video is being sent to Cloudinary
+  double _uploadProgress = 0;
   String? _errorMessage;
 
   // Which kind of video the user is posting: 'short' or 'long'.
@@ -171,9 +173,11 @@ class _UploadScreenState extends State<UploadScreen> {
 
     setState(() {
       _isUploading = true;
+      _uploadProgress = 0;
       _errorMessage = null;
     });
 
+    final http.Client client = http.Client();
     try {
       final Uri uploadUrl =
           Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/video/upload');
@@ -189,7 +193,37 @@ class _UploadScreenState extends State<UploadScreen> {
               ),
             );
 
-      final http.StreamedResponse streamedResponse = await request.send();
+      // Send the body ourselves so the bytes can be counted on the way
+      // out - MultipartRequest.send() gives no progress at all, which
+      // made big uploads look like the app had frozen.
+      //
+      // finalize() must come first: that's where MultipartRequest sets
+      // its "multipart/form-data; boundary=..." content-type header, and
+      // without that header the server can't parse the body at all.
+      final http.ByteStream bodyStream = request.finalize();
+      final int totalBytes = request.contentLength;
+      int sentBytes = 0;
+
+      final http.StreamedRequest streamed =
+          http.StreamedRequest('POST', uploadUrl)
+            ..headers.addAll(request.headers)
+            ..contentLength = totalBytes;
+
+      bodyStream.listen(
+        (List<int> chunk) {
+          streamed.sink.add(chunk);
+          sentBytes += chunk.length;
+          if (mounted && totalBytes > 0) {
+            setState(() => _uploadProgress = sentBytes / totalBytes);
+          }
+        },
+        onDone: () => streamed.sink.close(),
+        onError: (Object e) => streamed.sink.addError(e),
+        cancelOnError: true,
+      );
+
+      final http.StreamedResponse streamedResponse =
+          await client.send(streamed);
       final String responseBody = await streamedResponse.stream.bytesToString();
 
       if (streamedResponse.statusCode != 200) {
@@ -281,6 +315,7 @@ class _UploadScreenState extends State<UploadScreen> {
         await _previewController?.dispose();
         setState(() {
           _isUploading = false;
+          _uploadProgress = 0;
           _videoType = null;
           _videoBytes = null;
           _previewController = null;
@@ -293,10 +328,15 @@ class _UploadScreenState extends State<UploadScreen> {
         );
       }
     } catch (e) {
-      setState(() {
-        _isUploading = false;
-        _errorMessage = 'Upload failed: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _isUploading = false;
+          _uploadProgress = 0;
+          _errorMessage = 'Upload failed: $e';
+        });
+      }
+    } finally {
+      client.close();
     }
   }
 
@@ -559,11 +599,34 @@ class _UploadScreenState extends State<UploadScreen> {
           ],
           const SizedBox(height: 20),
           if (_isUploading)
-            const Column(
+            Column(
               children: [
-                CircularProgressIndicator(color: Colors.redAccent),
-                SizedBox(height: 8),
-                Text('Uploading...', style: TextStyle(color: Colors.grey)),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    // Null until the first chunk goes out, so the bar
+                    // animates instead of sitting at a dead 0%.
+                    value: _uploadProgress > 0 ? _uploadProgress : null,
+                    minHeight: 8,
+                    backgroundColor: Colors.white12,
+                    valueColor:
+                        const AlwaysStoppedAnimation<Color>(Colors.redAccent),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _uploadProgress > 0
+                      ? 'Uploading... ${(_uploadProgress * 100).toStringAsFixed(0)}%'
+                      : 'Preparing...',
+                  style: const TextStyle(color: Colors.grey),
+                ),
+                if (_uploadProgress >= 1) ...[
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Finishing up...',
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ],
               ],
             )
           else

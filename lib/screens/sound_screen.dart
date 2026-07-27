@@ -5,6 +5,7 @@ import 'package:video_player/video_player.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart';
 import 'upload_screen.dart';
+import 'media_utils.dart';
 
 // Shows one sound (for now always an "Original sound" taken from a user's
 // own upload), lets you listen to it, and lists every video using it -
@@ -306,7 +307,7 @@ class _SoundHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String myId = FirebaseAuth.instance.currentUser?.uid ?? '';
-    final String artUrl = _cloudinaryThumbUrl(sourceUrl);
+    final String artUrl = cloudinaryThumbUrl(sourceUrl);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
@@ -488,53 +489,6 @@ class _SoundHeader extends StatelessWidget {
   }
 }
 
-// Cloudinary renders a still image from a video if you ask for an image
-// extension, so a grid tile doesn't need to spin up a whole video player
-// (which also tended to show a black first frame).
-String _cloudinaryThumbUrl(String videoUrl) {
-  if (videoUrl.isEmpty) return '';
-  String url = videoUrl;
-
-  // Asking for an image extension makes Cloudinary return a still frame.
-  final int dot = url.lastIndexOf('.');
-  final int slash = url.lastIndexOf('/');
-  if (dot > slash) {
-    url = '${url.substring(0, dot)}.jpg';
-  } else {
-    url = '$url.jpg';
-  }
-
-  const String marker = '/upload/';
-  final int idx = url.indexOf(marker);
-  if (idx == -1) return url;
-
-  final String head = url.substring(0, idx + marker.length);
-  String tail = url.substring(idx + marker.length);
-
-  // A trimmed upload carries its own start/end offsets, e.g.
-  // "so_0,eo_15". Keeping those means asking for the very first frame,
-  // which is nearly always black - so drop them before picking a frame.
-  final List<String> parts = tail.split('/');
-  final bool hasTransform =
-      parts.isNotEmpty && !RegExp(r'^v\d+$').hasMatch(parts.first);
-  if (hasTransform) {
-    final List<String> kept = parts.first
-        .split(',')
-        .where((t) => !t.startsWith('so_') && !t.startsWith('eo_'))
-        .toList();
-    if (kept.isEmpty) {
-      parts.removeAt(0);
-    } else {
-      parts[0] = kept.join(',');
-    }
-    tail = parts.join('/');
-  }
-
-  // Take the frame from halfway through, so fade-ins and black intros
-  // don't produce an empty-looking thumbnail.
-  return '${head}so_50p/$tail';
-}
-
 // Still-frame thumbnail for the sound page grid
 class _SoundVideoThumbnail extends StatelessWidget {
   final String videoUrl;
@@ -543,7 +497,7 @@ class _SoundVideoThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String thumbUrl = _cloudinaryThumbUrl(videoUrl);
+    final String thumbUrl = cloudinaryThumbUrl(videoUrl);
 
     return Container(
       color: Colors.grey[900],

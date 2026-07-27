@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:video_player/video_player.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'chat_screen.dart';
 import 'home_screen.dart';
+import 'media_utils.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -546,50 +547,30 @@ class _VideoThumbnail extends StatefulWidget {
 }
 
 class _VideoThumbnailState extends State<_VideoThumbnail> {
-  VideoPlayerController? _controller;
-  bool _isInitialized = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initialize();
-  }
-
-  Future<void> _initialize() async {
-    if (widget.videoUrl.isEmpty) return;
-    final controller =
-        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
-    await controller.initialize();
-    await controller.seekTo(Duration.zero);
-    if (mounted) {
-      setState(() {
-        _controller = controller;
-        _isInitialized = true;
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
+    final String thumbUrl = cloudinaryThumbUrl(widget.videoUrl);
+
     return Container(
       color: Colors.grey[900],
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (_isInitialized && _controller != null)
-            FittedBox(
+          if (thumbUrl.isNotEmpty)
+            CachedNetworkImage(
+              imageUrl: thumbUrl,
               fit: BoxFit.cover,
-              clipBehavior: Clip.hardEdge,
-              child: SizedBox(
-                width: _controller!.value.size.width,
-                height: _controller!.value.size.height,
-                child: VideoPlayer(_controller!),
+              placeholder: (context, url) => const Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white24),
+                ),
+              ),
+              errorWidget: (context, url, error) => const Center(
+                child: Icon(Icons.play_circle_outline,
+                    color: Colors.white30, size: 30),
               ),
             )
           else
