@@ -265,6 +265,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     required DocumentReference callRef,
   }) async {
     _isShowingIncomingCall = true;
+    // Fires a full-screen notification so the ringing UI pops up even if the
+    // phone's screen is currently off or locked.
+    await NotificationService.showIncomingCallNotification(
+      callerName: callerName,
+    );
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -277,6 +282,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         ),
       ),
     );
+    // Safety net in case it wasn't already dismissed inside IncomingCallScreen.
+    await NotificationService.cancelIncomingCallNotification();
     _isShowingIncomingCall = false;
   }
 

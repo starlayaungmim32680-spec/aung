@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:audioplayers/audioplayers.dart';
+import '../notification_service.dart';
 import 'video_call_screen.dart';
 
 // Full-screen "incoming call" UI, shown when someone is calling you
@@ -132,6 +133,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Future<void> _accept() async {
     _stopVibrating();
     await _stopRingtone();
+    await NotificationService.cancelIncomingCallNotification();
     try {
       await widget.callRef.update({'status': 'accepted'});
     } catch (_) {}
@@ -152,6 +154,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   Future<void> _decline() async {
     _stopVibrating();
     await _stopRingtone();
+    await NotificationService.cancelIncomingCallNotification();
     try {
       await widget.callRef.update({'status': 'declined'});
     } catch (_) {}
@@ -162,6 +165,9 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   void dispose() {
     _stopVibrating();
     _ringPlayer.dispose();
+    // Fallback: make sure the notification never gets stuck if this screen
+    // is dismissed some other way (e.g. system back gesture).
+    NotificationService.cancelIncomingCallNotification();
     super.dispose();
   }
 

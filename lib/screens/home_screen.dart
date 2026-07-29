@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -48,6 +49,11 @@ class _HomeScreenState extends State<HomeScreen> {
   late final Stream<QuerySnapshot> _postsStream;
   late final Stream<QuerySnapshot> _repostsStream;
 
+  // "For You" (everything) vs "Following" (only people you follow)
+  bool _followingOnly = false;
+  Set<String> _followingIds = {};
+  StreamSubscription<QuerySnapshot>? _followingSub;
+
   @override
   void initState() {
     super.initState();
@@ -61,11 +67,30 @@ class _HomeScreenState extends State<HomeScreen> {
         .collection('reposts')
         .orderBy('createdAt', descending: true)
         .snapshots();
+
+    // Keep the set of followed accounts up to date so the Following
+    // tab reacts immediately when you follow or unfollow someone.
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId != null) {
+      _followingSub = FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('following')
+          .snapshots()
+          .listen((snap) {
+        if (mounted) {
+          setState(() {
+            _followingIds = snap.docs.map((d) => d.id).toSet();
+          });
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
+    _followingSub?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -78,6 +103,41 @@ class _HomeScreenState extends State<HomeScreen> {
         curve: Curves.easeInOut,
       );
     }
+  }
+
+  // One of the two feed tabs at the top of the home screen
+  Widget _feedTab(String label, bool followingTab) {
+    final bool isActive = _followingOnly == followingTab;
+    return GestureDetector(
+      onTap: () {
+        if (_followingOnly == followingTab) return;
+        setState(() => _followingOnly = followingTab);
+        // Start the newly selected feed from the top.
+        if (_pageController.hasClients) {
+          _pageController.jumpToPage(0);
+        }
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: isActive ? Colors.white : Colors.white54,
+              fontSize: 17,
+              fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
+              shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+            ),
+          ),
+          const SizedBox(height: 3),
+          Container(
+            height: 2,
+            width: isActive ? 22 : 0,
+            color: Colors.white,
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -110,6 +170,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
+              // On the Following tab, keep only videos from accounts you
+              // follow - either the original poster, or whoever shared it.
+              final List<_FeedItem> visibleItems = _followingOnly
+                  ? feedItems.where((item) {
+                      if (item.isRepost) {
+                        return _followingIds.contains(item.sharedByUserId);
+                      }
+                      return _followingIds.contains(item.originalUserId);
+                    }).toList()
+                  : feedItems;
+
               if (feedItems.isEmpty) {
                 return const Center(
                   child: Text(
@@ -130,14 +201,20 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Stack(
                             alignment: Alignment.center,
                             children: [
-                              const Center(
-                                child: Text(
-                                  'Fly',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                              Center(
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _feedTab('Following', true),
+                                    const SizedBox(width: 10),
+                                    Container(
+                                      width: 1,
+                                      height: 14,
+                                      color: Colors.white24,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    _feedTab('For You', false),
+                                  ],
                                 ),
                               ),
                               Positioned(
@@ -170,38 +247,54 @@ class _HomeScreenState extends State<HomeScreen> {
                   Expanded(
                     child: SafeArea(
                       top: false,
-                      child: PageView.builder(
-                        controller: _pageController,
-                        scrollDirection: Axis.vertical,
-                        itemCount: feedItems.length,
-                        itemBuilder: (context, index) {
-                          final item = feedItems[index];
+                      child: visibleItems.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(32),
+                                child: Text(
+                                  'Nothing here yet.\n'
+                                  'Follow some accounts and their videos '
+                                  'will show up here.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                              ),
+                            )
+                          : PageView.builder(
+                              controller: _pageController,
+                              scrollDirection: Axis.vertical,
+                              itemCount: visibleItems.length,
+                              itemBuilder: (context, index) {
+                                final item = visibleItems[index];
 
-                          // key includes the doc id (post id for own posts,
-                          // repost id for reposts) so Flutter doesn't reuse a
-                          // _VideoPostItem's State for a different feed entry,
-                          // even when the same video appears twice (once as
-                          // someone's original post, once as a repost).
-                          return _VideoPostItem(
-                            key: ValueKey(item.feedKey),
-                            postId: item.postId,
-                            userId: item.originalUserId,
-                            videoUrl: item.videoUrl,
-                            caption: item.caption,
-                            userEmail: item.userEmail,
-                            reactions: item.reactions,
-                            videoType: item.videoType,
-                            onVideoEnd: () => _goToNextVideo(feedItems.length),
-                            repostNote: item.isRepost ? item.note : null,
-                            repostByName:
-                                item.isRepost ? item.sharedByName : null,
-                            repostByUserId:
-                                item.isRepost ? item.sharedByUserId : null,
-                            repostByPhoto:
-                                item.isRepost ? item.sharedByPhoto : null,
-                          );
-                        },
-                      ),
+                                // key includes the doc id (post id for own
+                                // posts, repost id for reposts) so Flutter
+                                // doesn't reuse a _VideoPostItem's State for
+                                // a different feed entry, even when the same
+                                // video appears twice (once as someone's
+                                // original post, once as a repost).
+                                return _VideoPostItem(
+                                  key: ValueKey(item.feedKey),
+                                  postId: item.postId,
+                                  userId: item.originalUserId,
+                                  videoUrl: item.videoUrl,
+                                  caption: item.caption,
+                                  userEmail: item.userEmail,
+                                  reactions: item.reactions,
+                                  videoType: item.videoType,
+                                  onVideoEnd: () =>
+                                      _goToNextVideo(visibleItems.length),
+                                  repostNote: item.isRepost ? item.note : null,
+                                  repostByName:
+                                      item.isRepost ? item.sharedByName : null,
+                                  repostByUserId: item.isRepost
+                                      ? item.sharedByUserId
+                                      : null,
+                                  repostByPhoto:
+                                      item.isRepost ? item.sharedByPhoto : null,
+                                );
+                              },
+                            ),
                     ),
                   ),
                 ],
