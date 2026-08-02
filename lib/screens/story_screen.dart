@@ -192,8 +192,7 @@ class StoriesBar extends StatelessWidget {
                       ? 'You'
                       : (first['userName'] as String? ?? 'User'),
                   photoUrl: first['userPhoto'] as String? ?? '',
-                  mediaUrl: first['mediaUrl'] as String? ?? '',
-                  mediaType: first['mediaType'] as String? ?? 'image',
+                  storyCount: stories.length,
                   onTap: () {
                     final ordered = stories.reversed.toList();
                     Navigator.push(
@@ -243,14 +242,8 @@ class _CreateStoryCard extends StatelessWidget {
 
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        width: 104,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        decoration: BoxDecoration(
-          color: Colors.grey[900],
-          borderRadius: BorderRadius.circular(14),
-        ),
-        clipBehavior: Clip.hardEdge,
+      child: SizedBox(
+        width: 78,
         child: StreamBuilder<DocumentSnapshot>(
           stream: myId == null
               ? null
@@ -264,66 +257,71 @@ class _CreateStoryCard extends StatelessWidget {
             final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
 
             return Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
+                SizedBox(
+                  width: 72,
+                  height: 72,
                   child: Stack(
-                    fit: StackFit.expand,
                     clipBehavior: Clip.none,
                     children: [
-                      // My own profile photo as the card's background
-                      if (photoUrl.isNotEmpty)
-                        CachedNetworkImage(
-                          imageUrl: photoUrl,
-                          fit: BoxFit.cover,
-                          placeholder: (_, __) =>
-                              Container(color: Colors.grey[850]),
-                          errorWidget: (_, __, ___) =>
-                              Container(color: Colors.grey[850]),
-                        )
-                      else
-                        Container(
-                          color: Colors.grey[850],
-                          child: const Icon(Icons.person,
-                              color: Colors.white38, size: 40),
+                      Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
                         ),
-                      // "+" badge overlapping the seam between photo and label
+                        padding: const EdgeInsets.all(3),
+                        child: ClipOval(
+                          child: photoUrl.isNotEmpty
+                              ? CachedNetworkImage(
+                                  imageUrl: photoUrl,
+                                  fit: BoxFit.cover,
+                                  placeholder: (_, __) =>
+                                      Container(color: Colors.grey[850]),
+                                  errorWidget: (_, __, ___) =>
+                                      Container(color: Colors.grey[850]),
+                                )
+                              : Container(
+                                  color: Colors.grey[850],
+                                  child: const Icon(Icons.person,
+                                      color: Colors.white38, size: 30),
+                                ),
+                        ),
+                      ),
+                      // "+" badge overlapping the bottom-right of the circle
                       Positioned(
-                        bottom: -14,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: Container(
-                            width: 28,
-                            height: 28,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: const Color(0xFFFF4B6E),
-                              border: Border.all(
-                                color: Colors.grey[900]!,
-                                width: 3,
-                              ),
+                        bottom: -2,
+                        right: -2,
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: const Color(0xFFFF4B6E),
+                            border: Border.all(
+                              color: Colors.black,
+                              width: 2,
                             ),
-                            child: const Icon(Icons.add,
-                                color: Colors.white, size: 18),
                           ),
+                          child: const Icon(Icons.add,
+                              color: Colors.white, size: 15),
                         ),
                       ),
                     ],
                   ),
                 ),
-                Container(
-                  height: 46,
-                  width: double.infinity,
-                  alignment: Alignment.center,
-                  padding: const EdgeInsets.only(left: 4, right: 4, top: 14),
-                  child: const Text(
-                    'Create Story',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600),
-                  ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Your Story',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600),
                 ),
               ],
             );
@@ -334,114 +332,113 @@ class _CreateStoryCard extends StatelessWidget {
   }
 }
 
-// Facebook-style big story card (media preview + avatar + name)
+// Circular story avatar with a segmented gradient ring — the number of
+// segments matches how many active stories this person has, so it reads
+// differently from the plain solid ring other apps use.
 class _StoryCard extends StatelessWidget {
   final String name;
   final String photoUrl;
-  final String mediaUrl;
-  final String mediaType;
+  final int storyCount;
   final VoidCallback onTap;
 
   const _StoryCard({
     required this.name,
     required this.photoUrl,
-    required this.mediaUrl,
-    required this.mediaType,
+    required this.storyCount,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final String bg =
-        mediaType == 'video' ? _videoThumbUrl(mediaUrl) : mediaUrl;
-
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        width: 104,
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          color: Colors.grey[900],
-        ),
-        clipBehavior: Clip.hardEdge,
-        child: Stack(
-          fit: StackFit.expand,
+      child: SizedBox(
+        width: 78,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // Media preview
-            if (bg.isNotEmpty)
-              CachedNetworkImage(
-                imageUrl: bg,
-                fit: BoxFit.cover,
-                placeholder: (_, __) => Container(color: Colors.grey[850]),
-                errorWidget: (_, __, ___) => Container(color: Colors.grey[850]),
-              ),
-            // Dark gradient for text legibility
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.black38, Colors.transparent, Colors.black87],
-                  stops: [0.0, 0.5, 1.0],
-                ),
-              ),
-            ),
-            if (mediaType == 'video')
-              const Center(
-                child: Icon(Icons.play_circle_fill,
-                    color: Colors.white70, size: 34),
-              ),
-            // Avatar with gradient ring (top-left)
-            Positioned(
-              top: 8,
-              left: 8,
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+            SizedBox(
+              width: 72,
+              height: 72,
+              child: CustomPaint(
+                painter: _SegmentedRingPainter(segments: storyCount),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: CircleAvatar(
+                    backgroundColor: Colors.grey[800],
+                    backgroundImage: photoUrl.isNotEmpty
+                        ? CachedNetworkImageProvider(photoUrl)
+                        : null,
+                    child: photoUrl.isEmpty
+                        ? Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : '?',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 20),
+                          )
+                        : null,
                   ),
                 ),
-                child: CircleAvatar(
-                  radius: 15,
-                  backgroundColor: Colors.grey[800],
-                  backgroundImage: photoUrl.isNotEmpty
-                      ? CachedNetworkImageProvider(photoUrl)
-                      : null,
-                  child: photoUrl.isEmpty
-                      ? Text(
-                          name.isNotEmpty ? name[0].toUpperCase() : '?',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 12),
-                        )
-                      : null,
-                ),
               ),
             ),
-            // Name (bottom-left)
-            Positioned(
-              left: 8,
-              right: 8,
-              bottom: 8,
-              child: Text(
-                name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                ),
-              ),
+            const SizedBox(height: 6),
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+// Draws N gradient arcs (with small gaps between) instead of one solid
+// ring — the segment count equals how many active stories this person
+// has, so the ring itself hints at "how many stories" before you tap in.
+class _SegmentedRingPainter extends CustomPainter {
+  final int segments;
+  final double strokeWidth;
+
+  _SegmentedRingPainter({required this.segments, this.strokeWidth = 3});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final int count = segments < 1 ? 1 : segments;
+    final Rect rect = Rect.fromLTWH(
+      strokeWidth / 2,
+      strokeWidth / 2,
+      size.width - strokeWidth,
+      size.height - strokeWidth,
+    );
+    final double gapDegrees = count == 1 ? 0 : 12.0;
+    final double sweepDegrees = (360.0 / count) - gapDegrees;
+
+    final Paint paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..shader = const SweepGradient(
+        colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF), Color(0xFFFF4B6E)],
+      ).createShader(rect);
+
+    for (int i = 0; i < count; i++) {
+      final double startDegrees = (360.0 / count) * i - 90 + (gapDegrees / 2);
+      canvas.drawArc(
+        rect,
+        startDegrees * (pi / 180),
+        sweepDegrees * (pi / 180),
+        false,
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SegmentedRingPainter oldDelegate) =>
+      oldDelegate.segments != segments;
 }
 
 // ---------------------------------------------------------------------------

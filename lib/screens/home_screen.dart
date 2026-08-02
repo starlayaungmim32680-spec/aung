@@ -54,6 +54,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Set<String> _followingIds = {};
   StreamSubscription<QuerySnapshot>? _followingSub;
 
+  // Accounts the current user has blocked — their posts/reposts are hidden
+  // from the feed regardless of which tab is active.
+  Set<String> _blockedIds = {};
+  StreamSubscription<QuerySnapshot>? _blockedSub;
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +89,18 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         }
       });
+      _blockedSub = FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('blocked')
+          .snapshots()
+          .listen((snap) {
+        if (mounted) {
+          setState(() {
+            _blockedIds = snap.docs.map((d) => d.id).toSet();
+          });
+        }
+      });
     }
   }
 
@@ -91,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     WakelockPlus.disable();
     _followingSub?.cancel();
+    _blockedSub?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -170,16 +188,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
+              // Never show posts/reposts from accounts you've blocked,
+              // regardless of which tab is active.
+              final List<_FeedItem> unblockedItems = _blockedIds.isEmpty
+                  ? feedItems
+                  : feedItems.where((item) {
+                      final String posterId = (item.isRepost
+                              ? item.sharedByUserId
+                              : item.originalUserId) ??
+                          '';
+                      if (_blockedIds.contains(posterId)) return false;
+                      // A repost of a blocked user's original video should
+                      // also be hidden.
+                      if (item.isRepost &&
+                          _blockedIds.contains(item.originalUserId)) {
+                        return false;
+                      }
+                      return true;
+                    }).toList();
+
               // On the Following tab, keep only videos from accounts you
               // follow - either the original poster, or whoever shared it.
               final List<_FeedItem> visibleItems = _followingOnly
-                  ? feedItems.where((item) {
+                  ? unblockedItems.where((item) {
                       if (item.isRepost) {
                         return _followingIds.contains(item.sharedByUserId);
                       }
                       return _followingIds.contains(item.originalUserId);
                     }).toList()
-                  : feedItems;
+                  : unblockedItems;
 
               if (feedItems.isEmpty) {
                 return const Center(
@@ -325,6 +362,11 @@ class _ShortsScreenState extends State<ShortsScreen> {
   late final Stream<QuerySnapshot> _shortPostsStream;
   late final Stream<QuerySnapshot> _shortRepostsStream;
 
+  // Accounts the current user has blocked — their posts/reposts are hidden
+  // from Reels too.
+  Set<String> _blockedIds = {};
+  StreamSubscription<QuerySnapshot>? _blockedSub;
+
   @override
   void initState() {
     super.initState();
@@ -339,11 +381,28 @@ class _ShortsScreenState extends State<ShortsScreen> {
         .where('videoType', isEqualTo: 'short')
         .orderBy('createdAt', descending: true)
         .snapshots();
+
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId != null) {
+      _blockedSub = FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('blocked')
+          .snapshots()
+          .listen((snap) {
+        if (mounted) {
+          setState(() {
+            _blockedIds = snap.docs.map((d) => d.id).toSet();
+          });
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
+    _blockedSub?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -400,7 +459,23 @@ class _ShortsScreenState extends State<ShortsScreen> {
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-              if (feedItems.isEmpty) {
+              // Never show reels from accounts you've blocked.
+              final List<_FeedItem> visibleItems = _blockedIds.isEmpty
+                  ? feedItems
+                  : feedItems.where((item) {
+                      final String posterId = (item.isRepost
+                              ? item.sharedByUserId
+                              : item.originalUserId) ??
+                          '';
+                      if (_blockedIds.contains(posterId)) return false;
+                      if (item.isRepost &&
+                          _blockedIds.contains(item.originalUserId)) {
+                        return false;
+                      }
+                      return true;
+                    }).toList();
+
+              if (visibleItems.isEmpty) {
                 return const Center(
                   child: Text(
                     'No reels yet. Upload a short video!',
@@ -416,9 +491,9 @@ class _ShortsScreenState extends State<ShortsScreen> {
                     child: PageView.builder(
                       controller: _pageController,
                       scrollDirection: Axis.vertical,
-                      itemCount: feedItems.length,
+                      itemCount: visibleItems.length,
                       itemBuilder: (context, index) {
-                        final item = feedItems[index];
+                        final item = visibleItems[index];
                         return _VideoPostItem(
                           key: ValueKey(item.feedKey),
                           postId: item.postId,
@@ -428,7 +503,7 @@ class _ShortsScreenState extends State<ShortsScreen> {
                           userEmail: item.userEmail,
                           reactions: item.reactions,
                           videoType: item.videoType,
-                          onVideoEnd: () => _goToNextVideo(feedItems.length),
+                          onVideoEnd: () => _goToNextVideo(visibleItems.length),
                           repostNote: item.isRepost ? item.note : null,
                           repostByName:
                               item.isRepost ? item.sharedByName : null,
@@ -694,61 +769,148 @@ class SingleVideoScreen extends StatefulWidget {
 }
 
 class _SingleVideoScreenState extends State<SingleVideoScreen> {
+  late final Stream<QuerySnapshot> _postsStream;
+  final PageController _pageController = PageController();
+  bool _jumpedToInitial = false;
+
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    _postsStream = FirebaseFirestore.instance
+        .collection('posts')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
+    _pageController.dispose();
     super.dispose();
+  }
+
+  void _goToNextVideo(int totalCount) {
+    if (!_pageController.hasClients || _pageController.page == null) return;
+    final int next = _pageController.page!.round() + 1;
+    if (next < totalCount) {
+      _pageController.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Widget _backButton(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.4),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.arrow_back, color: Colors.white),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          SafeArea(
-            top: false,
-            child: _VideoPostItem(
-              key: ValueKey(widget.postId),
-              postId: widget.postId,
-              userId: widget.userId,
-              videoUrl: widget.videoUrl,
-              caption: widget.caption,
-              userEmail: widget.userEmail,
-              reactions: const {},
-              videoType: widget.videoType,
-              repostNote: widget.repostNote,
-              repostByName: widget.repostByName,
-              repostByUserId: widget.repostByUserId,
-              repostByPhoto: widget.repostByPhoto,
-              // Nothing to auto-advance to - this is a single video screen.
-              onVideoEnd: () {},
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.4),
-                    shape: BoxShape.circle,
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _postsStream,
+        builder: (context, snapshot) {
+          final List<QueryDocumentSnapshot> docs = snapshot.data?.docs ?? [];
+          final int initialIndex =
+              docs.indexWhere((d) => d.id == widget.postId);
+
+          // Feed hasn't loaded yet, or this post isn't in it for some
+          // reason - fall back to just showing the single tapped video so
+          // the screen never looks broken.
+          if (initialIndex == -1) {
+            return Stack(
+              children: [
+                SafeArea(
+                  top: false,
+                  child: _VideoPostItem(
+                    key: ValueKey(widget.postId),
+                    postId: widget.postId,
+                    userId: widget.userId,
+                    videoUrl: widget.videoUrl,
+                    caption: widget.caption,
+                    userEmail: widget.userEmail,
+                    reactions: const {},
+                    videoType: widget.videoType,
+                    repostNote: widget.repostNote,
+                    repostByName: widget.repostByName,
+                    repostByUserId: widget.repostByUserId,
+                    repostByPhoto: widget.repostByPhoto,
+                    onVideoEnd: () {},
                   ),
-                  child: const Icon(Icons.arrow_back, color: Colors.white),
+                ),
+                _backButton(context),
+              ],
+            );
+          }
+
+          if (!_jumpedToInitial) {
+            _jumpedToInitial = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_pageController.hasClients) {
+                _pageController.jumpToPage(initialIndex);
+              }
+            });
+          }
+
+          return Stack(
+            children: [
+              SafeArea(
+                top: false,
+                child: PageView.builder(
+                  controller: _pageController,
+                  scrollDirection: Axis.vertical,
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    final postDoc = docs[index];
+                    final post = postDoc.data() as Map<String, dynamic>;
+                    final Map<String, dynamic> reactions =
+                        (post['reactions'] as Map<String, dynamic>?) ?? {};
+                    // Only the video actually tapped into keeps its
+                    // "shared by" context — videos you swipe to next show
+                    // as plain posts, same as the main feed.
+                    final bool isInitial = postDoc.id == widget.postId;
+
+                    return _VideoPostItem(
+                      key: ValueKey(postDoc.id),
+                      postId: postDoc.id,
+                      userId: post['userId'] ?? '',
+                      videoUrl: post['videoUrl'] ?? '',
+                      caption: post['caption'] ?? '',
+                      userEmail: post['userEmail'] ?? 'Unknown user',
+                      reactions: reactions,
+                      videoType: (post['videoType'] as String?) ?? 'short',
+                      repostNote: isInitial ? widget.repostNote : null,
+                      repostByName: isInitial ? widget.repostByName : null,
+                      repostByUserId: isInitial ? widget.repostByUserId : null,
+                      repostByPhoto: isInitial ? widget.repostByPhoto : null,
+                      onVideoEnd: () => _goToNextVideo(docs.length),
+                    );
+                  },
                 ),
               ),
-            ),
-          ),
-        ],
+              _backButton(context),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1316,34 +1478,91 @@ class _VideoPostItemState extends State<_VideoPostItem>
             fit: StackFit.expand,
             children: [
               if (_isInitialized && _controller != null) ...[
-                // Backdrop: the same video, zoomed to fill and heavily
-                // blurred, so the empty letterbox/pillarbox area picks up
-                // the video's own colours instead of showing flat black.
-                ClipRect(
-                  child: ImageFiltered(
-                    imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _controller!.value.size.width,
-                        height: _controller!.value.size.height,
-                        child: VideoPlayer(_controller!),
+                if (widget.repostByName != null &&
+                    widget.repostByName!.isNotEmpty)
+                  // Reposts show the original video inside a framed box
+                  // (not edge-to-edge), so it visually reads as "this
+                  // person's video", clearly separate from the sharer's
+                  // own header above it.
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 30,
+                    left: 8,
+                    right: 8,
+                    bottom: 130,
+                    child: GestureDetector(
+                      // Tapping the framed video jumps to the original
+                      // post's own page (not the repost wrapper), so it
+                      // reads like "go see this video where it lives".
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => SingleVideoScreen(
+                              postId: widget.postId,
+                              userId: widget.userId,
+                              videoUrl: widget.videoUrl,
+                              caption: widget.caption,
+                              userEmail: widget.userEmail,
+                              videoType: widget.videoType,
+                            ),
+                          ),
+                        );
+                      },
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.3),
+                              width: 1,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(15),
+                            child: FittedBox(
+                              fit: BoxFit.cover,
+                              child: SizedBox(
+                                width: _controller!.value.size.width,
+                                height: _controller!.value.size.height,
+                                child: VideoPlayer(_controller!),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else ...[
+                  // Backdrop: the same video, zoomed to fill and heavily
+                  // blurred, so the empty letterbox/pillarbox area picks up
+                  // the video's own colours instead of showing flat black.
+                  ClipRect(
+                    child: ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                      child: FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: _controller!.value.size.width,
+                          height: _controller!.value.size.height,
+                          child: VideoPlayer(_controller!),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                // Darken the backdrop a little so the real video and the
-                // overlaid text/buttons stay easy to read.
-                Container(color: Colors.black.withOpacity(0.4)),
-                // Show the video at its real aspect ratio, centered -
-                // never cropped, so it always looks like what was
-                // originally uploaded.
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: _controller!.value.aspectRatio,
-                    child: VideoPlayer(_controller!),
+                  // Darken the backdrop a little so the real video and the
+                  // overlaid text/buttons stay easy to read.
+                  Container(color: Colors.black.withOpacity(0.4)),
+                  // Show the video at its real aspect ratio, centered -
+                  // never cropped, so it always looks like what was
+                  // originally uploaded.
+                  Center(
+                    child: AspectRatio(
+                      aspectRatio: _controller!.value.aspectRatio,
+                      child: VideoPlayer(_controller!),
+                    ),
                   ),
-                ),
+                ],
               ] else
                 const Center(
                   child: CircularProgressIndicator(color: Colors.redAccent),
@@ -1500,18 +1719,16 @@ class _VideoPostItemState extends State<_VideoPostItem>
                 },
               ),
 
-              Positioned(
-                left: 16,
-                bottom: 100,
-                right: 90,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // When this video is a repost, show who shared it
-                    // right above the original owner's own info/caption.
-                    if (widget.repostByName != null &&
-                        widget.repostByName!.isNotEmpty)
+              if (widget.repostByName != null &&
+                  widget.repostByName!.isNotEmpty)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 4,
+                  left: 16,
+                  right: 90,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       GestureDetector(
                         onTap: () {
                           if (widget.repostByUserId == null ||
@@ -1527,93 +1744,120 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             ),
                           );
                         },
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.55),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            children: [
-                              CircleAvatar(
-                                radius: 14,
-                                backgroundColor: Colors.grey[850],
-                                backgroundImage:
-                                    (widget.repostByPhoto != null &&
-                                            widget.repostByPhoto!.isNotEmpty)
-                                        ? NetworkImage(widget.repostByPhoto!)
-                                        : null,
-                                child: (widget.repostByPhoto == null ||
-                                        widget.repostByPhoto!.isEmpty)
-                                    ? Text(
-                                        widget.repostByName!.isNotEmpty
-                                            ? widget.repostByName![0]
-                                                .toUpperCase()
-                                            : '?',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      )
-                                    : null,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        const Icon(Icons.repeat_rounded,
-                                            color: Colors.white70, size: 13),
-                                        const SizedBox(width: 4),
-                                        Flexible(
-                                          child: Text(
-                                            '${widget.repostByName} shared this',
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    if (widget.repostNote != null &&
-                                        widget.repostNote!.isNotEmpty) ...[
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        widget.repostNote!,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13,
-                                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 13,
+                              backgroundColor: Colors.grey[850],
+                              backgroundImage: (widget.repostByPhoto != null &&
+                                      widget.repostByPhoto!.isNotEmpty)
+                                  ? NetworkImage(widget.repostByPhoto!)
+                                  : null,
+                              child: (widget.repostByPhoto == null ||
+                                      widget.repostByPhoto!.isEmpty)
+                                  ? Text(
+                                      widget.repostByName!.isNotEmpty
+                                          ? widget.repostByName![0]
+                                              .toUpperCase()
+                                          : '?',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
                                       ),
-                                    ],
+                                    )
+                                  : null,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: widget.repostByName,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        shadows: [
+                                          Shadow(
+                                              color: Colors.black54,
+                                              blurRadius: 6),
+                                        ],
+                                      ),
+                                    ),
+                                    const TextSpan(text: ' shared this'),
                                   ],
                                 ),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  shadows: [
+                                    Shadow(
+                                        color: Colors.black54, blurRadius: 6),
+                                  ],
+                                ),
+                                overflow: TextOverflow.ellipsis,
                               ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (widget.repostNote != null &&
+                          widget.repostNote!.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.repostNote!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            shadows: [
+                              Shadow(color: Colors.black54, blurRadius: 6),
                             ],
                           ),
                         ),
-                      ),
-                    _OwnerInfo(
-                      userId: widget.userId,
-                      fallbackEmail: widget.userEmail,
-                      caption: widget.caption,
-                      postId: widget.postId,
-                      soundId: soundId,
-                      soundLabel: soundLabel,
-                    ),
-                  ],
+                      ],
+                    ],
+                  ),
                 ),
+
+              Positioned(
+                left: 16,
+                bottom: 100,
+                right: 90,
+                child: (widget.repostByName != null &&
+                        widget.repostByName!.isNotEmpty)
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.14),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.25),
+                            width: 0.6,
+                          ),
+                        ),
+                        child: _OwnerInfo(
+                          userId: widget.userId,
+                          fallbackEmail: widget.userEmail,
+                          caption: widget.caption,
+                          postId: widget.postId,
+                          soundId: soundId,
+                          soundLabel: soundLabel,
+                          compact: true,
+                        ),
+                      )
+                    : _OwnerInfo(
+                        userId: widget.userId,
+                        fallbackEmail: widget.userEmail,
+                        caption: widget.caption,
+                        postId: widget.postId,
+                        soundId: soundId,
+                        soundLabel: soundLabel,
+                      ),
               ),
 
               ..._flyingEmojis.map((e) {
@@ -1662,132 +1906,485 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   ),
                 ),
 
-              Positioned(
-                right: 12,
-                bottom: 120,
-                child: Column(
-                  children: [
-                    // Like (long-press for reactions)
-                    GestureDetector(
-                      onTap: () => _quickToggleLike(liveReactions),
-                      onLongPress: () =>
-                          setState(() => _showReactionPicker = true),
-                      child: Column(
-                        children: [
-                          SizedBox(
-                            width: 40,
-                            height: 40,
-                            child: Center(
-                              child: myReaction == 'like'
-                                  ? const _PopInLikeBadge(
-                                      key: ValueKey('like'),
-                                      diameter: 40,
-                                    )
-                                  : myReaction != null
-                                      ? _PopInEmoji(
-                                          key: ValueKey(myReaction),
-                                          emoji: kReactions[myReaction]!,
-                                        )
-                                      : const Icon(
-                                          Icons.favorite,
-                                          color: Colors.white,
-                                          size: 34,
-                                          shadows: [
-                                            Shadow(
-                                                color: Colors.black,
-                                                blurRadius: 8)
-                                          ],
-                                        ),
+              if (widget.repostByName == null || widget.repostByName!.isEmpty)
+                Positioned(
+                  right: 12,
+                  bottom: 120,
+                  child: Column(
+                    children: [
+                      // Like (long-press for reactions)
+                      GestureDetector(
+                        onTap: () => _quickToggleLike(liveReactions),
+                        onLongPress: () =>
+                            setState(() => _showReactionPicker = true),
+                        child: Column(
+                          children: [
+                            SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: Center(
+                                child: myReaction == 'like'
+                                    ? const _PopInLikeBadge(
+                                        key: ValueKey('like'),
+                                        diameter: 40,
+                                      )
+                                    : myReaction != null
+                                        ? _PopInEmoji(
+                                            key: ValueKey(myReaction),
+                                            emoji: kReactions[myReaction]!,
+                                          )
+                                        : const Icon(
+                                            Icons.favorite,
+                                            color: Colors.white,
+                                            size: 34,
+                                            shadows: [
+                                              Shadow(
+                                                  color: Colors.black,
+                                                  blurRadius: 8)
+                                            ],
+                                          ),
+                              ),
                             ),
-                          ),
-                          _countLabel(_formatCount(liveReactions.length)),
-                        ],
+                            _countLabel(_formatCount(liveReactions.length)),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Comment
-                    StreamBuilder<QuerySnapshot>(
-                      stream: _postSubStream('comments'),
-                      builder: (context, snap) {
-                        final int count =
-                            snap.hasData ? snap.data!.docs.length : 0;
-                        return GestureDetector(
-                          onTap: _openComments,
-                          child: Column(
-                            children: [
-                              const _CommentBubbleIcon(size: 28),
-                              _countLabel(_formatCount(count)),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    // Share
-                    StreamBuilder<QuerySnapshot>(
-                      stream: _postSubStream('shares'),
-                      builder: (context, snap) {
-                        final int count =
-                            snap.hasData ? snap.data!.docs.length : 0;
-                        return GestureDetector(
-                          onTap: _shareVideo,
-                          child: Column(
-                            children: [
-                              Transform.flip(
-                                flipX: true,
-                                child: const Icon(
-                                  Icons.reply,
+                      const SizedBox(height: 16),
+                      // Comment
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _postSubStream('comments'),
+                        builder: (context, snap) {
+                          final int count =
+                              snap.hasData ? snap.data!.docs.length : 0;
+                          return GestureDetector(
+                            onTap: _openComments,
+                            child: Column(
+                              children: [
+                                const _CommentBubbleIcon(size: 28),
+                                _countLabel(_formatCount(count)),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      // Share
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _postSubStream('shares'),
+                        builder: (context, snap) {
+                          final int count =
+                              snap.hasData ? snap.data!.docs.length : 0;
+                          return GestureDetector(
+                            onTap: _shareVideo,
+                            child: Column(
+                              children: [
+                                Transform.flip(
+                                  flipX: true,
+                                  child: const Icon(
+                                    Icons.reply,
+                                    color: Colors.white,
+                                    size: 34,
+                                    shadows: [
+                                      Shadow(color: Colors.black, blurRadius: 8)
+                                    ],
+                                  ),
+                                ),
+                                _countLabel(_formatCount(count)),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      // Save / bookmark
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _postSubStream('saves'),
+                        builder: (context, snap) {
+                          final myId = FirebaseAuth.instance.currentUser?.uid;
+                          final docs =
+                              snap.hasData ? snap.data!.docs : const [];
+                          final int count = docs.length;
+                          final bool isSaved =
+                              myId != null && docs.any((d) => d.id == myId);
+                          return GestureDetector(
+                            onTap: () => _toggleSave(isSaved),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  isSaved
+                                      ? Icons.bookmark
+                                      : Icons.bookmark_border,
                                   color: Colors.white,
-                                  size: 34,
-                                  shadows: [
+                                  size: 32,
+                                  shadows: const [
                                     Shadow(color: Colors.black, blurRadius: 8)
                                   ],
                                 ),
-                              ),
-                              _countLabel(_formatCount(count)),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    // Save / bookmark
-                    StreamBuilder<QuerySnapshot>(
-                      stream: _postSubStream('saves'),
-                      builder: (context, snap) {
-                        final myId = FirebaseAuth.instance.currentUser?.uid;
-                        final docs = snap.hasData ? snap.data!.docs : const [];
-                        final int count = docs.length;
-                        final bool isSaved =
-                            myId != null && docs.any((d) => d.id == myId);
-                        return GestureDetector(
-                          onTap: () => _toggleSave(isSaved),
-                          child: Column(
-                            children: [
-                              Icon(
-                                isSaved
-                                    ? Icons.bookmark
-                                    : Icons.bookmark_border,
+                                _countLabel(_formatCount(count)),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      // More options (Report / Block)
+                      GestureDetector(
+                        onTap: () => _showReportBlockSheet(context),
+                        child: const Icon(
+                          Icons.more_horiz,
+                          color: Colors.white,
+                          size: 30,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 8)],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // Reposts show like/comment/share as a compact horizontal row
+              // under the boxed video (Facebook-style) instead of the
+              // vertical right-side rail used for regular posts.
+              if (widget.repostByName != null &&
+                  widget.repostByName!.isNotEmpty)
+                Positioned(
+                  left: 16,
+                  right: 16,
+                  bottom: 46,
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () => _quickToggleLike(liveReactions),
+                        onLongPress: () =>
+                            setState(() => _showReactionPicker = true),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              myReaction != null
+                                  ? Icons.favorite
+                                  : Icons.favorite_border,
+                              color: myReaction != null
+                                  ? const Color(0xFFFF4B6E)
+                                  : Colors.white,
+                              size: 20,
+                              shadows: const [
+                                Shadow(color: Colors.black, blurRadius: 6)
+                              ],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _formatCount(liveReactions.length),
+                              style: const TextStyle(
                                 color: Colors.white,
-                                size: 32,
-                                shadows: const [
-                                  Shadow(color: Colors.black, blurRadius: 8)
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                shadows: [
+                                  Shadow(color: Colors.black, blurRadius: 6)
                                 ],
                               ),
-                              _countLabel(_formatCount(count)),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                  ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 18),
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _postSubStream('comments'),
+                        builder: (context, snap) {
+                          final int count =
+                              snap.hasData ? snap.data!.docs.length : 0;
+                          return GestureDetector(
+                            onTap: _openComments,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.chat_bubble_outline_rounded,
+                                  color: Colors.white,
+                                  size: 19,
+                                  shadows: [
+                                    Shadow(color: Colors.black, blurRadius: 6)
+                                  ],
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _formatCount(count),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    shadows: [
+                                      Shadow(color: Colors.black, blurRadius: 6)
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(width: 18),
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _postSubStream('shares'),
+                        builder: (context, snap) {
+                          final int count =
+                              snap.hasData ? snap.data!.docs.length : 0;
+                          return GestureDetector(
+                            onTap: _shareVideo,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Transform.flip(
+                                  flipX: true,
+                                  child: const Icon(
+                                    Icons.reply,
+                                    color: Colors.white,
+                                    size: 20,
+                                    shadows: [
+                                      Shadow(color: Colors.black, blurRadius: 6)
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _formatCount(count),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    shadows: [
+                                      Shadow(color: Colors.black, blurRadius: 6)
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: () => _showReportBlockSheet(context),
+                        child: const Icon(
+                          Icons.more_horiz,
+                          color: Colors.white,
+                          size: 22,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
             ],
           ),
         );
       },
     );
+  }
+
+  // Shows a bottom sheet with "Report" (always) and "Block user" (only for
+  // other people's posts) options.
+  void _showReportBlockSheet(BuildContext context) {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    final bool isOwnPost = myId != null && myId == widget.userId;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading: const Icon(Icons.flag_outlined, color: Colors.white),
+                title: const Text('Report post',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showReportReasonSheet(
+                    targetType: 'post',
+                    targetId: widget.postId,
+                    targetOwnerId: widget.userId,
+                  );
+                },
+              ),
+              if (!isOwnPost)
+                ListTile(
+                  leading: const Icon(Icons.block, color: Colors.redAccent),
+                  title: const Text('Block user',
+                      style: TextStyle(color: Colors.redAccent)),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    _confirmBlockUser(widget.userId);
+                  },
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Shows the reason picker, then writes a 'reports' document.
+  void _showReportReasonSheet({
+    required String targetType, // 'post' or 'comment'
+    required String targetId,
+    required String targetOwnerId,
+    String? parentPostId, // set when targetType == 'comment'
+  }) {
+    const List<String> reasons = [
+      'Nudity or sexual content',
+      'Hate speech or harassment',
+      'Violence or dangerous content',
+      'Spam or scam',
+      'Something else',
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Why are you reporting this?',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...reasons.map((reason) => ListTile(
+                    title: Text(reason,
+                        style: const TextStyle(color: Colors.white70)),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _submitReport(
+                        targetType: targetType,
+                        targetId: targetId,
+                        targetOwnerId: targetOwnerId,
+                        reason: reason,
+                        parentPostId: parentPostId,
+                      );
+                    },
+                  )),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _submitReport({
+    required String targetType,
+    required String targetId,
+    required String targetOwnerId,
+    required String reason,
+    String? parentPostId,
+  }) async {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('reports').add({
+        'targetType': targetType,
+        'targetId': targetId,
+        'parentPostId': parentPostId,
+        'targetOwnerId': targetOwnerId,
+        'reporterId': myId,
+        'reason': reason,
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Report submitted. Thank you.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not submit report. Try again.')),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmBlockUser(String userIdToBlock) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Block this user?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          "You won't see their posts or comments anymore, and they won't be "
+          'able to message you.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Block', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('blocked')
+          .doc(userIdToBlock)
+          .set({'createdAt': FieldValue.serverTimestamp()});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('User blocked.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not block user. Try again.')),
+        );
+      }
+    }
   }
 }
 
@@ -1810,10 +2407,35 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   String? _replyToCommentId;
   String? _replyToName;
 
+  // Accounts the current user has blocked — their comments are hidden here.
+  Set<String> _blockedIds = {};
+  StreamSubscription<QuerySnapshot>? _blockedSub;
+
+  @override
+  void initState() {
+    super.initState();
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId != null) {
+      _blockedSub = FirebaseFirestore.instance
+          .collection('users')
+          .doc(myId)
+          .collection('blocked')
+          .snapshots()
+          .listen((snap) {
+        if (mounted) {
+          setState(() {
+            _blockedIds = snap.docs.map((d) => d.id).toSet();
+          });
+        }
+      });
+    }
+  }
+
   @override
   void dispose() {
     _commentController.dispose();
     _focusNode.dispose();
+    _blockedSub?.cancel();
     super.dispose();
   }
 
@@ -1948,6 +2570,88 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     );
   }
 
+  // Shows a reason picker and writes a 'reports' document for a comment.
+  void _showCommentReportSheet(
+      DocumentReference commentRef, Map<String, dynamic> data) {
+    const List<String> reasons = [
+      'Nudity or sexual content',
+      'Hate speech or harassment',
+      'Violence or dangerous content',
+      'Spam or scam',
+      'Something else',
+    ];
+    final String commentOwnerId = data['userId'] ?? '';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Report this comment',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...reasons.map((reason) => ListTile(
+                    title: Text(reason,
+                        style: const TextStyle(color: Colors.white70)),
+                    onTap: () async {
+                      Navigator.pop(sheetContext);
+                      final String? myId =
+                          FirebaseAuth.instance.currentUser?.uid;
+                      if (myId == null) return;
+                      try {
+                        await FirebaseFirestore.instance
+                            .collection('reports')
+                            .add({
+                          'targetType': 'comment',
+                          'targetId': commentRef.id,
+                          'parentPostId': widget.postId,
+                          'targetOwnerId': commentOwnerId,
+                          'reporterId': myId,
+                          'reason': reason,
+                          'status': 'pending',
+                          'createdAt': FieldValue.serverTimestamp(),
+                        });
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('Report submitted. Thank you.')),
+                          );
+                        }
+                      } catch (_) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Could not submit report. Try again.')),
+                          );
+                        }
+                      }
+                    },
+                  )),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
@@ -1996,7 +2700,12 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   );
                 }
 
-                final comments = snapshot.data?.docs ?? [];
+                final List<QueryDocumentSnapshot> comments =
+                    (snapshot.data?.docs ?? []).where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final String commentUserId = data['userId'] ?? '';
+                  return !_blockedIds.contains(commentUserId);
+                }).toList();
 
                 if (comments.isEmpty) {
                   return Center(
@@ -2017,6 +2726,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                       data: doc.data() as Map<String, dynamic>,
                       onReply: _startReply,
                       onReact: _openReactionPicker,
+                      onReport: _showCommentReportSheet,
                     );
                   },
                 );
@@ -2163,12 +2873,15 @@ class _CommentTile extends StatefulWidget {
   final void Function(String commentId, String name) onReply;
   final void Function(DocumentReference ref, Map<String, dynamic> reactions)
       onReact;
+  final void Function(DocumentReference ref, Map<String, dynamic> data)
+      onReport;
 
   const _CommentTile({
     required this.commentRef,
     required this.data,
     required this.onReply,
     required this.onReact,
+    required this.onReport,
   });
 
   @override
@@ -2189,98 +2902,102 @@ class _CommentTileState extends State<_CommentTile> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: Colors.grey[800],
-                backgroundImage:
-                    photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                child: photoUrl.isEmpty
-                    ? Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+        GestureDetector(
+          onLongPress: () => widget.onReport(widget.commentRef, widget.data),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: Colors.grey[800],
+                  backgroundImage:
+                      photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                  child: photoUrl.isEmpty
+                      ? Text(
+                          name.isNotEmpty ? name[0].toUpperCase() : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
+                          fontSize: 13,
                         ),
-                      )
-                    : null,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
                       ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      text,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
+                      const SizedBox(height: 2),
+                      Text(
+                        text,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 14,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        GestureDetector(
-                          onTap: () =>
-                              widget.onReply(widget.commentRef.id, name),
-                          child: Text(
-                            'Reply',
-                            style: TextStyle(
-                              color: Colors.grey[400],
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          GestureDetector(
+                            onTap: () =>
+                                widget.onReply(widget.commentRef.id, name),
+                            child: Text(
+                              'Reply',
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 16),
-                        StreamBuilder<QuerySnapshot>(
-                          stream: widget.commentRef
-                              .collection('replies')
-                              .snapshots(),
-                          builder: (context, snapshot) {
-                            final int replyCount = snapshot.hasData
-                                ? snapshot.data!.docs.length
-                                : 0;
-                            if (replyCount == 0) return const SizedBox.shrink();
-                            return GestureDetector(
-                              onTap: () =>
-                                  setState(() => _showReplies = !_showReplies),
-                              child: Text(
-                                _showReplies
-                                    ? 'Hide replies'
-                                    : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
-                                style: TextStyle(
-                                  color: Colors.grey[400],
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
+                          const SizedBox(width: 16),
+                          StreamBuilder<QuerySnapshot>(
+                            stream: widget.commentRef
+                                .collection('replies')
+                                .snapshots(),
+                            builder: (context, snapshot) {
+                              final int replyCount = snapshot.hasData
+                                  ? snapshot.data!.docs.length
+                                  : 0;
+                              if (replyCount == 0)
+                                return const SizedBox.shrink();
+                              return GestureDetector(
+                                onTap: () => setState(
+                                    () => _showReplies = !_showReplies),
+                                child: Text(
+                                  _showReplies
+                                      ? 'Hide replies'
+                                      : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
+                                  style: TextStyle(
+                                    color: Colors.grey[400],
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              _ReactionSummary(
-                reactions: reactions,
-                onTap: () => widget.onReact(widget.commentRef, reactions),
-              ),
-            ],
+                _ReactionSummary(
+                  reactions: reactions,
+                  onTap: () => widget.onReact(widget.commentRef, reactions),
+                ),
+              ],
+            ),
           ),
         ),
         if (_showReplies)
@@ -2389,6 +3106,10 @@ class _OwnerInfo extends StatelessWidget {
   final String postId;
   final String? soundId;
   final String soundLabel;
+  // When true, renders a much smaller version (smaller avatar/text, no
+  // sound credit or view count, single-line caption) for use inside the
+  // repost nested card, where space is tight.
+  final bool compact;
 
   const _OwnerInfo({
     required this.userId,
@@ -2397,6 +3118,7 @@ class _OwnerInfo extends StatelessWidget {
     required this.postId,
     this.soundId,
     this.soundLabel = '',
+    this.compact = false,
   });
 
   // Follows or unfollows the video owner (and notifies them when following)
@@ -2500,7 +3222,7 @@ class _OwnerInfo extends StatelessWidget {
                       ),
                     ),
                     child: CircleAvatar(
-                      radius: 18,
+                      radius: compact ? 13 : 18,
                       backgroundColor: Colors.grey[850],
                       backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
                           ? NetworkImage(photoUrl)
@@ -2510,9 +3232,9 @@ class _OwnerInfo extends StatelessWidget {
                               displayName.isNotEmpty
                                   ? displayName[0].toUpperCase()
                                   : '?',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 color: Colors.white,
-                                fontSize: 16,
+                                fontSize: compact ? 12 : 16,
                                 fontWeight: FontWeight.bold,
                               ),
                             )
@@ -2527,11 +3249,13 @@ class _OwnerInfo extends StatelessWidget {
                     child: Text(
                       displayName,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        fontSize: compact ? 13 : 16,
+                        shadows: const [
+                          Shadow(color: Colors.black, blurRadius: 6)
+                        ],
                       ),
                     ),
                   ),
@@ -2551,8 +3275,9 @@ class _OwnerInfo extends StatelessWidget {
                       return GestureDetector(
                         onTap: () => _toggleFollow(myId, isFollowing),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 5),
+                          padding: EdgeInsets.symmetric(
+                              horizontal: compact ? 10 : 14,
+                              vertical: compact ? 3 : 5),
                           decoration: BoxDecoration(
                             // Red when not following, grey once following
                             color: isFollowing
@@ -2565,9 +3290,9 @@ class _OwnerInfo extends StatelessWidget {
                           ),
                           child: Text(
                             isFollowing ? 'Following' : 'Follow',
-                            style: const TextStyle(
+                            style: TextStyle(
                               color: Colors.white,
-                              fontSize: 13,
+                              fontSize: compact ? 11 : 13,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -2578,84 +3303,97 @@ class _OwnerInfo extends StatelessWidget {
               ],
             ),
             if (caption.isNotEmpty) ...[
-              const SizedBox(height: 8),
+              SizedBox(height: compact ? 4 : 8),
               Text(
                 caption,
-                style: const TextStyle(
+                maxLines: compact ? 1 : null,
+                overflow:
+                    compact ? TextOverflow.ellipsis : TextOverflow.visible,
+                style: TextStyle(
                   color: Colors.white,
-                  fontSize: 14,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                  fontSize: compact ? 12 : 14,
+                  shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
                 ),
               ),
             ],
-            // Sound credit - tapping it opens every video using this sound
-            if (soundId != null && soundId!.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => SoundScreen(soundId: soundId!),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.music_note,
-                        color: Colors.white,
-                        size: 15,
-                        shadows: [Shadow(color: Colors.black, blurRadius: 6)]),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        soundLabel,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                        ),
-                      ),
+            // Sound credit and view count take up space we don't have in
+            // the compact (repost card) layout, so skip them there.
+            if (!compact) ...[
+              // Sound credit - tapping it opens every video using this sound
+              if (soundId != null && soundId!.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SoundScreen(soundId: soundId!),
                     ),
-                  ],
-                ),
-              ),
-            ],
-            // View count below the video (unique viewers)
-            if (postId.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('posts')
-                    .doc(postId)
-                    .collection('views')
-                    .snapshots(),
-                builder: (context, viewSnap) {
-                  final int viewCount =
-                      viewSnap.hasData ? viewSnap.data!.docs.length : 0;
-                  return Row(
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
-                        Icons.remove_red_eye,
-                        color: Colors.white,
-                        size: 16,
-                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        viewCount == 1 ? '1 view' : '$viewCount views',
-                        style: const TextStyle(
+                      const Icon(Icons.music_note,
                           color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                          size: 15,
+                          shadows: [
+                            Shadow(color: Colors.black, blurRadius: 6)
+                          ]),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          soundLabel,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 6)
+                            ],
+                          ),
                         ),
                       ),
                     ],
-                  );
-                },
-              ),
-            ],
+                  ),
+                ),
+              ],
+              // View count below the video (unique viewers)
+              if (postId.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('posts')
+                      .doc(postId)
+                      .collection('views')
+                      .snapshots(),
+                  builder: (context, viewSnap) {
+                    final int viewCount =
+                        viewSnap.hasData ? viewSnap.data!.docs.length : 0;
+                    return Row(
+                      children: [
+                        const Icon(
+                          Icons.remove_red_eye,
+                          color: Colors.white,
+                          size: 16,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          viewCount == 1 ? '1 view' : '$viewCount views',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 6)
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ], // end if (!compact)
           ],
         );
       },
@@ -2733,6 +3471,11 @@ class _NotificationBell extends StatelessWidget {
 // A round speech-bubble icon: a circular outline with a small pointed tail,
 // matching the reference design (rather than Material's rectangular
 // chat_bubble_outline icon).
+// A TikTok-style comment icon: a rounded-rectangle (pill-ish) speech bubble
+// outline with a small pointed tail at the bottom-left, matching Ko's
+// reference image more closely than a plain circular bubble.
+// A Facebook-style comment icon: a flattened oval speech-bubble outline
+// with a small filled pointed tail at the bottom-left.
 class _CommentBubbleIcon extends StatelessWidget {
   final double size;
   final Color color;
@@ -2741,66 +3484,72 @@ class _CommentBubbleIcon extends StatelessWidget {
   const _CommentBubbleIcon({
     this.size = 28,
     this.color = Colors.white,
-    this.strokeWidth = 2.4,
+    this.strokeWidth = 3.2,
   });
 
   @override
   Widget build(BuildContext context) {
+    // The painter works in an 80x80 reference space; scale the box to match.
+    final double boxSize = size * (80 / 60);
     return SizedBox(
-      width: size + 6,
-      height: size + 8,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            top: 0,
-            left: 3,
-            child: Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: color, width: strokeWidth),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black38, blurRadius: 6),
-                ],
-              ),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            bottom: 0,
-            child: CustomPaint(
-              size: const Size(10, 9),
-              painter: _CommentTailPainter(color: color),
-            ),
-          ),
-        ],
+      width: boxSize,
+      height: boxSize,
+      child: CustomPaint(
+        painter:
+            _FacebookCommentPainter(color: color, strokeWidth: strokeWidth),
       ),
     );
   }
 }
 
-// The small pointed tail attached at the bottom-left of _CommentBubbleIcon
-class _CommentTailPainter extends CustomPainter {
+class _FacebookCommentPainter extends CustomPainter {
   final Color color;
+  final double strokeWidth;
 
-  _CommentTailPainter({required this.color});
+  _FacebookCommentPainter({required this.color, required this.strokeWidth});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final Paint paint = Paint()..color = color;
-    final Path path = Path()
-      ..moveTo(size.width, 0)
-      ..lineTo(0, size.height)
-      ..lineTo(size.width * 0.8, size.height * 0.4)
+    final double scale = size.width / 80;
+    canvas.save();
+    canvas.scale(scale);
+
+    // Flattened oval bubble body (Facebook-style, not a perfect circle).
+    final Rect ellipseRect =
+        Rect.fromCenter(center: const Offset(40, 34), width: 60, height: 48);
+
+    // Small filled pointed tail at the bottom-left of the bubble.
+    final Path tail = Path()
+      ..moveTo(28, 54)
+      ..lineTo(22, 68)
+      ..lineTo(38, 60)
       ..close();
-    canvas.drawPath(path, paint);
+
+    // Soft drop shadow so the icon still reads over bright video frames.
+    final Paint shadowStroke = Paint()
+      ..color = Colors.black38
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    final Paint shadowFill = Paint()
+      ..color = Colors.black38
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    canvas.drawOval(ellipseRect, shadowStroke);
+    canvas.drawPath(tail, shadowFill);
+
+    final Paint bodyStroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth;
+    canvas.drawOval(ellipseRect, bodyStroke);
+    canvas.drawPath(tail, Paint()..color = color);
+
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _CommentTailPainter oldDelegate) =>
-      oldDelegate.color != color;
+  bool shouldRepaint(covariant _FacebookCommentPainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.strokeWidth != strokeWidth;
 }
 
 // Data describing a single flying emoji's path

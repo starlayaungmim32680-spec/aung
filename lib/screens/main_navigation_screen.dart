@@ -510,6 +510,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
+  // Menu item button. Size stays constant whether active or not — only the
+  // color/gradient changes, so selecting a tab never makes the button grow
+  // into a bigger box.
   Widget _buildMenuItem(int i) {
     final item = _menuItems[i];
     final bool isActive = _currentIndex == i;
@@ -528,7 +531,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
         padding: EdgeInsets.symmetric(
-          horizontal: (isActive ? 18 : 14) * scale,
+          horizontal: 14 * scale,
           vertical: 12 * scale,
         ),
         decoration: BoxDecoration(
@@ -550,33 +553,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                 ]
               : null,
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              item['icon'],
-              color: Colors.white,
-              size: 26 * scale,
-              shadows: const [Shadow(color: Colors.black54, blurRadius: 6)],
-            ),
-            AnimatedSize(
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-              child: isActive
-                  ? Padding(
-                      padding: EdgeInsets.only(left: 8 * scale),
-                      child: Text(
-                        item['label'],
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14 * scale,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    )
-                  : const SizedBox.shrink(),
-            ),
-          ],
+        child: Icon(
+          item['icon'],
+          color: Colors.white,
+          size: 26 * scale,
+          shadows: const [Shadow(color: Colors.black54, blurRadius: 6)],
         ),
       ),
     );

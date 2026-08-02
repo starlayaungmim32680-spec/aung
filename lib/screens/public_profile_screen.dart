@@ -22,6 +22,32 @@ class PublicProfileScreen extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.black,
         title: const Text('Profile', style: TextStyle(color: Colors.white)),
+        actions: [
+          if (!isMe)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert, color: Colors.white),
+              color: const Color(0xFF1E1E1E),
+              onSelected: (value) {
+                if (value == 'block') {
+                  _confirmBlockUser(context, userId);
+                } else if (value == 'report') {
+                  _showReportUserSheet(context, userId);
+                }
+              },
+              itemBuilder: (ctx) => const [
+                PopupMenuItem(
+                  value: 'report',
+                  child: Text('Report user',
+                      style: TextStyle(color: Colors.white)),
+                ),
+                PopupMenuItem(
+                  value: 'block',
+                  child: Text('Block user',
+                      style: TextStyle(color: Colors.redAccent)),
+                ),
+              ],
+            ),
+        ],
       ),
       body: StreamBuilder<DocumentSnapshot>(
         stream: FirebaseFirestore.instance
@@ -420,6 +446,137 @@ class _CountStat extends StatelessWidget {
       },
     );
   }
+}
+
+// Confirms and then writes a block record under the current user's
+// 'blocked' subcollection.
+Future<void> _confirmBlockUser(
+    BuildContext context, String userIdToBlock) async {
+  final bool? confirmed = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E1E),
+      title:
+          const Text('Block this user?', style: TextStyle(color: Colors.white)),
+      content: const Text(
+        "You won't see their posts or comments anymore, and they won't be "
+        'able to message you.',
+        style: TextStyle(color: Colors.white70),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Block', style: TextStyle(color: Colors.redAccent)),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true) return;
+
+  final String? myId = FirebaseAuth.instance.currentUser?.uid;
+  if (myId == null) return;
+
+  try {
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(myId)
+        .collection('blocked')
+        .doc(userIdToBlock)
+        .set({'createdAt': FieldValue.serverTimestamp()});
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('User blocked.')));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not block user. Try again.')));
+    }
+  }
+}
+
+// Shows a reason picker and writes a 'reports' document for this user.
+void _showReportUserSheet(BuildContext context, String userIdToReport) {
+  const List<String> reasons = [
+    'Nudity or sexual content',
+    'Hate speech or harassment',
+    'Violence or dangerous content',
+    'Spam or scam',
+    'Something else',
+  ];
+
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: const Color(0xFF1E1E1E),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Report this user',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...reasons.map((reason) => ListTile(
+                  title: Text(reason,
+                      style: const TextStyle(color: Colors.white70)),
+                  onTap: () async {
+                    Navigator.pop(sheetContext);
+                    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+                    if (myId == null) return;
+                    try {
+                      await FirebaseFirestore.instance
+                          .collection('reports')
+                          .add({
+                        'targetType': 'user',
+                        'targetId': userIdToReport,
+                        'parentPostId': null,
+                        'targetOwnerId': userIdToReport,
+                        'reporterId': myId,
+                        'reason': reason,
+                        'status': 'pending',
+                        'createdAt': FieldValue.serverTimestamp(),
+                      });
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text('Report submitted. Thank you.')),
+                        );
+                      }
+                    } catch (_) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content:
+                                  Text('Could not submit report. Try again.')),
+                        );
+                      }
+                    }
+                  },
+                )),
+            const SizedBox(height: 8),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 // Facebook-style Follow / Following toggle button
