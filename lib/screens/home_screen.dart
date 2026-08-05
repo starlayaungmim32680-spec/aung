@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
@@ -13,6 +14,9 @@ import 'story_screen.dart';
 import 'search_screen.dart';
 import 'live_screen.dart';
 import 'sound_screen.dart';
+import 'video_effects_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'media_utils.dart';
 
 // Watches full-screen route pushes so a playing video can pause itself
 // when the user navigates somewhere else. Registered in main.dart.
@@ -329,6 +333,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                       : null,
                                   repostByPhoto:
                                       item.isRepost ? item.sharedByPhoto : null,
+                                  videoSpeed: item.videoSpeed,
+                                  filterType: item.filterType,
+                                  textOverlays: item.textOverlays,
                                 );
                               },
                             ),
@@ -511,6 +518,9 @@ class _ShortsScreenState extends State<ShortsScreen> {
                               item.isRepost ? item.sharedByUserId : null,
                           repostByPhoto:
                               item.isRepost ? item.sharedByPhoto : null,
+                          videoSpeed: item.videoSpeed,
+                          filterType: item.filterType,
+                          textOverlays: item.textOverlays,
                         );
                       },
                     ),
@@ -565,6 +575,9 @@ class _FeedItem {
   final String? sharedByName;
   final String? sharedByUserId;
   final String? sharedByPhoto;
+  final double videoSpeed;
+  final String filterType;
+  final List<TextOverlayData> textOverlays;
 
   _FeedItem.post(QueryDocumentSnapshot doc)
       : feedKey = 'post_${doc.id}',
@@ -587,7 +600,19 @@ class _FeedItem {
         note = null,
         sharedByName = null,
         sharedByUserId = null,
-        sharedByPhoto = null;
+        sharedByPhoto = null,
+        videoSpeed =
+            ((doc.data() as Map<String, dynamic>)['videoSpeed'] as num?)
+                    ?.toDouble() ??
+                1.0,
+        filterType =
+            (doc.data() as Map<String, dynamic>)['filterType'] as String? ??
+                'none',
+        textOverlays = ((doc.data() as Map<String, dynamic>)['textOverlays']
+                    as List<dynamic>?)
+                ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
+                .toList() ??
+            const [];
 
   _FeedItem.repost(QueryDocumentSnapshot doc)
       : feedKey = 'repost_${doc.id}',
@@ -611,7 +636,19 @@ class _FeedItem {
         sharedByUserId =
             (doc.data() as Map<String, dynamic>)['sharedBy'] as String?,
         sharedByPhoto =
-            (doc.data() as Map<String, dynamic>)['sharedByPhoto'] as String?;
+            (doc.data() as Map<String, dynamic>)['sharedByPhoto'] as String?,
+        videoSpeed =
+            ((doc.data() as Map<String, dynamic>)['videoSpeed'] as num?)
+                    ?.toDouble() ??
+                1.0,
+        filterType =
+            (doc.data() as Map<String, dynamic>)['filterType'] as String? ??
+                'none',
+        textOverlays = ((doc.data() as Map<String, dynamic>)['textOverlays']
+                    as List<dynamic>?)
+                ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
+                .toList() ??
+            const [];
 }
 
 // Full-screen, swipeable viewer of a single user's videos (opened from a
@@ -706,6 +743,14 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                     userEmail: post['userEmail'] ?? 'Unknown user',
                     reactions: reactions,
                     videoType: (post['videoType'] as String?) ?? 'short',
+                    videoSpeed:
+                        ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+                    filterType: (post['filterType'] as String?) ?? 'none',
+                    textOverlays: ((post['textOverlays'] as List<dynamic>?)
+                            ?.map((m) => TextOverlayData.fromMap(
+                                m as Map<String, dynamic>))
+                            .toList()) ??
+                        const [],
                     onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
@@ -854,6 +899,9 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                     repostByName: widget.repostByName,
                     repostByUserId: widget.repostByUserId,
                     repostByPhoto: widget.repostByPhoto,
+                    videoSpeed: 1.0,
+                    filterType: 'none',
+                    textOverlays: const [],
                     onVideoEnd: () {},
                   ),
                 ),
@@ -902,6 +950,14 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                       repostByName: isInitial ? widget.repostByName : null,
                       repostByUserId: isInitial ? widget.repostByUserId : null,
                       repostByPhoto: isInitial ? widget.repostByPhoto : null,
+                      videoSpeed:
+                          ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+                      filterType: (post['filterType'] as String?) ?? 'none',
+                      textOverlays: ((post['textOverlays'] as List<dynamic>?)
+                              ?.map((m) => TextOverlayData.fromMap(
+                                  m as Map<String, dynamic>))
+                              .toList()) ??
+                          const [],
                       onVideoEnd: () => _goToNextVideo(docs.length),
                     );
                   },
@@ -931,6 +987,10 @@ class _VideoPostItem extends StatefulWidget {
   final String? repostByName;
   final String? repostByUserId;
   final String? repostByPhoto;
+  // Playback effects chosen at upload time (see video_effects_screen.dart).
+  final double videoSpeed;
+  final String filterType;
+  final List<TextOverlayData> textOverlays;
 
   const _VideoPostItem({
     super.key,
@@ -946,6 +1006,9 @@ class _VideoPostItem extends StatefulWidget {
     this.repostByName,
     this.repostByUserId,
     this.repostByPhoto,
+    this.videoSpeed = 1.0,
+    this.filterType = 'none',
+    this.textOverlays = const [],
   });
 
   @override
@@ -1051,12 +1114,59 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
+  // Renders one text overlay at its saved fractional position. Align
+  // handles the fraction-to-pixel math on its own, so this needs no
+  // LayoutBuilder/constraints - it just needs to sit inside a Stack.
+  // Colored text with a black outline, so it stays readable over any part
+  // of the video without needing an opaque background chip.
+  Widget _outlinedText(String text, double fontSize, Color color) {
+    return Stack(
+      children: [
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.bold,
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = fontSize * 0.12
+              ..color = Colors.black,
+          ),
+        ),
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _positionedOverlayText(TextOverlayData overlay) {
+    final double fontSize = (overlay.isSticker ? 56 : 20) * overlay.scale;
+    return IgnorePointer(
+      child: Align(
+        alignment: Alignment(overlay.dx * 2 - 1, overlay.dy * 2 - 1),
+        child: overlay.imageUrl != null
+            ? Image.network(overlay.imageUrl!,
+                width: 80 * overlay.scale, height: 80 * overlay.scale)
+            : overlay.isSticker
+                ? Text(overlay.text, style: TextStyle(fontSize: fontSize))
+                : _outlinedText(overlay.text, fontSize, overlay.color),
+      ),
+    );
+  }
+
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
 
     final controller =
         VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
     await controller.initialize();
+    await controller.setPlaybackSpeed(widget.videoSpeed);
     controller.play();
     controller.addListener(_onVideoProgress);
 
@@ -1342,6 +1452,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
           'videoUrl': widget.videoUrl,
           'caption': widget.caption,
           'videoType': widget.videoType,
+          'videoSpeed': widget.videoSpeed,
+          'filterType': widget.filterType,
+          'textOverlays': widget.textOverlays.map((o) => o.toMap()).toList(),
           'userEmail': widget.userEmail,
           'note': note,
           'createdAt': FieldValue.serverTimestamp(),
@@ -1520,13 +1633,25 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(15),
-                            child: FittedBox(
-                              fit: BoxFit.cover,
-                              child: SizedBox(
-                                width: _controller!.value.size.width,
-                                height: _controller!.value.size.height,
-                                child: VideoPlayer(_controller!),
-                              ),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                ColorFiltered(
+                                  colorFilter: ColorFilter.matrix(
+                                      kVideoFilterMatrices[widget.filterType] ??
+                                          kVideoFilterMatrices['none']!),
+                                  child: FittedBox(
+                                    fit: BoxFit.cover,
+                                    child: SizedBox(
+                                      width: _controller!.value.size.width,
+                                      height: _controller!.value.size.height,
+                                      child: VideoPlayer(_controller!),
+                                    ),
+                                  ),
+                                ),
+                                for (final overlay in widget.textOverlays)
+                                  _positionedOverlayText(overlay),
+                              ],
                             ),
                           ),
                         ),
@@ -1559,9 +1684,16 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   Center(
                     child: AspectRatio(
                       aspectRatio: _controller!.value.aspectRatio,
-                      child: VideoPlayer(_controller!),
+                      child: ColorFiltered(
+                        colorFilter: ColorFilter.matrix(
+                            kVideoFilterMatrices[widget.filterType] ??
+                                kVideoFilterMatrices['none']!),
+                        child: VideoPlayer(_controller!),
+                      ),
                     ),
                   ),
+                  for (final overlay in widget.textOverlays)
+                    _positionedOverlayText(overlay),
                 ],
               ] else
                 const Center(
@@ -3099,6 +3231,144 @@ class _ReplyTile extends StatelessWidget {
 }
 
 // Shows the post owner's profile photo, display name, follow button, and caption
+// Renders a caption with any #hashtags shown in a distinct color and
+// tappable, opening HashtagScreen for that tag.
+class _CaptionWithHashtags extends StatelessWidget {
+  final String caption;
+  final bool compact;
+
+  const _CaptionWithHashtags({required this.caption, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final RegExp hashtagPattern = RegExp(r'#([\p{L}\p{N}_]+)', unicode: true);
+    final List<InlineSpan> spans = [];
+    int lastEnd = 0;
+
+    for (final match in hashtagPattern.allMatches(caption)) {
+      if (match.start > lastEnd) {
+        spans.add(TextSpan(text: caption.substring(lastEnd, match.start)));
+      }
+      final String tag = match.group(1)!;
+      spans.add(
+        TextSpan(
+          text: '#$tag',
+          style: const TextStyle(
+            color: Color(0xFF6FC3FF),
+            fontWeight: FontWeight.bold,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => HashtagScreen(tag: tag.toLowerCase()),
+                ),
+              );
+            },
+        ),
+      );
+      lastEnd = match.end;
+    }
+    if (lastEnd < caption.length) {
+      spans.add(TextSpan(text: caption.substring(lastEnd)));
+    }
+
+    return Text.rich(
+      TextSpan(
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: compact ? 12 : 14,
+          shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+        ),
+        children: spans,
+      ),
+      maxLines: compact ? 1 : null,
+      overflow: compact ? TextOverflow.ellipsis : TextOverflow.visible,
+    );
+  }
+}
+
+// Grid of every video tagged with a given #hashtag.
+class HashtagScreen extends StatelessWidget {
+  final String tag;
+  const HashtagScreen({super.key, required this.tag});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        title: Text('#$tag', style: const TextStyle(color: Colors.white)),
+      ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('posts')
+            .where('hashtags', arrayContains: tag)
+            .orderBy('createdAt', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.white54),
+            );
+          }
+          final docs = snapshot.data!.docs;
+          if (docs.isEmpty) {
+            return const Center(
+              child: Text('No videos with this hashtag yet.',
+                  style: TextStyle(color: Colors.grey)),
+            );
+          }
+          return GridView.builder(
+            padding: const EdgeInsets.all(2),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 2,
+              mainAxisSpacing: 2,
+              childAspectRatio: 9 / 16,
+            ),
+            itemCount: docs.length,
+            itemBuilder: (context, index) {
+              final doc = docs[index];
+              final data = doc.data() as Map<String, dynamic>;
+              final String videoUrl = data['videoUrl'] ?? '';
+              return GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SingleVideoScreen(
+                        postId: doc.id,
+                        userId: data['userId'] ?? '',
+                        videoUrl: videoUrl,
+                        caption: data['caption'] ?? '',
+                        userEmail: data['userEmail'] ?? '',
+                        videoType: (data['videoType'] as String?) ?? 'short',
+                      ),
+                    ),
+                  );
+                },
+                child: Container(
+                  color: Colors.grey[900],
+                  child: CachedNetworkImage(
+                    imageUrl: cloudinaryThumbUrl(videoUrl),
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(color: Colors.grey[900]),
+                    errorWidget: (_, __, ___) =>
+                        Container(color: Colors.grey[900]),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
 class _OwnerInfo extends StatelessWidget {
   final String userId;
   final String fallbackEmail;
@@ -3304,16 +3574,9 @@ class _OwnerInfo extends StatelessWidget {
             ),
             if (caption.isNotEmpty) ...[
               SizedBox(height: compact ? 4 : 8),
-              Text(
-                caption,
-                maxLines: compact ? 1 : null,
-                overflow:
-                    compact ? TextOverflow.ellipsis : TextOverflow.visible,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: compact ? 12 : 14,
-                  shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
-                ),
+              _CaptionWithHashtags(
+                caption: caption,
+                compact: compact,
               ),
             ],
             // Sound credit and view count take up space we don't have in

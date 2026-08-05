@@ -50,4 +50,7 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Works around a known upstream bug in the `camera` plugin's CameraX
+    // dependency (camera-core 1.5.x is missing this transitive dependency).
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
 }

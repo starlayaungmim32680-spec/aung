@@ -8,6 +8,8 @@ import 'package:video_player/video_player.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
+import 'video_effects_screen.dart';
+import 'face_filter_camera_screen.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -39,6 +41,9 @@ class _UploadScreenState extends State<UploadScreen> {
   VideoPlayerController? _previewController;
   int? _trimStartSeconds;
   int? _trimEndSeconds;
+  double _videoSpeed = 1.0;
+  String _filterType = 'none';
+  List<TextOverlayData> _textOverlays = [];
   bool _isUploading = false;
   // 0.0 - 1.0 while the video is being sent to Cloudinary
   double _uploadProgress = 0;
@@ -77,14 +82,76 @@ class _UploadScreenState extends State<UploadScreen> {
       _previewController = null;
       _trimStartSeconds = null;
       _trimEndSeconds = null;
+      _videoSpeed = 1.0;
+      _filterType = 'none';
+      _textOverlays = [];
       _captionController.clear();
       _errorMessage = null;
     });
   }
 
-  Future<void> _pickAndTrimVideo() async {
+  // Asks the user whether to record a new video or pick one from the
+  // gallery, then returns the picked file (or null if cancelled).
+  Future<XFile?> _pickVideoFile() async {
+    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                leading:
+                    const Icon(Icons.videocam_rounded, color: Colors.white),
+                title: const Text('Record a video',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined,
+                    color: Colors.white),
+                title: const Text('Choose from gallery',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (source == null) return null;
+    if (source == ImageSource.camera) {
+      // Custom camera screen with live face-filter preview (Phase 1 —
+      // filters show live while recording but aren't baked into the saved
+      // video file yet; see face_filter_camera_screen.dart).
+      final XFile? recorded = await Navigator.push<XFile>(
+        context,
+        MaterialPageRoute(builder: (_) => const FaceFilterCameraScreen()),
+      );
+      return recorded;
+    }
     final ImagePicker picker = ImagePicker();
-    final XFile? picked = await picker.pickVideo(source: ImageSource.gallery);
+    return picker.pickVideo(source: source);
+  }
+
+  Future<void> _pickAndTrimVideo() async {
+    final XFile? picked = await _pickVideoFile();
 
     if (picked == null) return;
     if (!mounted) return;
@@ -99,6 +166,21 @@ class _UploadScreenState extends State<UploadScreen> {
 
     if (result == null) return;
 
+    // Let the user pick a speed, a color filter, and place any text
+    // overlays before moving on to the caption screen.
+    final VideoEffectsResult? effects =
+        await Navigator.push<VideoEffectsResult>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoEffectsScreen(
+          videoFile: result.originalFile,
+          startSeconds: result.startSeconds,
+        ),
+      ),
+    );
+
+    if (effects == null) return;
+
     final Uint8List bytes = await result.originalFile.readAsBytes();
 
     await _previewController?.dispose();
@@ -107,6 +189,7 @@ class _UploadScreenState extends State<UploadScreen> {
     await controller.initialize();
     await controller.seekTo(Duration(seconds: result.startSeconds));
     controller.setLooping(true);
+    controller.setPlaybackSpeed(effects.speed);
     controller.play();
 
     setState(() {
@@ -114,6 +197,9 @@ class _UploadScreenState extends State<UploadScreen> {
       _previewController = controller;
       _trimStartSeconds = result.startSeconds;
       _trimEndSeconds = result.endSeconds;
+      _videoSpeed = effects.speed;
+      _filterType = effects.filterType;
+      _textOverlays = effects.textOverlays;
       _errorMessage = null;
     });
   }
@@ -298,13 +384,26 @@ class _UploadScreenState extends State<UploadScreen> {
         });
       }
 
+      final String captionText = _captionController.text.trim();
+      // Lowercased so hashtag lookups are case-insensitive; the caption
+      // itself (with original casing) is still stored separately above.
+      final List<String> hashtags = RegExp(r'#([\p{L}\p{N}_]+)', unicode: true)
+          .allMatches(captionText)
+          .map((m) => m.group(1)!.toLowerCase())
+          .toSet()
+          .toList();
+
       await postRef.set({
         'userId': user.uid,
         'userEmail': user.email,
         'videoUrl': videoUrl,
-        'caption': _captionController.text.trim(),
+        'caption': captionText,
+        'hashtags': hashtags,
         // 'short' = full-screen vertical, 'long' = landscape (YouTube style)
         'videoType': _videoType ?? 'short',
+        'videoSpeed': _videoSpeed,
+        'filterType': _filterType,
+        'textOverlays': _textOverlays.map((o) => o.toMap()).toList(),
         'soundId': soundId,
         'soundTitle': soundTitle,
         'soundOwnerName': soundOwnerName,
@@ -321,6 +420,9 @@ class _UploadScreenState extends State<UploadScreen> {
           _previewController = null;
           _trimStartSeconds = null;
           _trimEndSeconds = null;
+          _videoSpeed = 1.0;
+          _filterType = 'none';
+          _textOverlays = [];
           _captionController.clear();
         });
         ScaffoldMessenger.of(context).showSnackBar(
@@ -338,6 +440,34 @@ class _UploadScreenState extends State<UploadScreen> {
     } finally {
       client.close();
     }
+  }
+
+  // Colored text with a black outline, so it stays readable over any part
+  // of the video without needing an opaque background chip.
+  Widget _outlinedText(String text, double fontSize, Color color) {
+    return Stack(
+      children: [
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.bold,
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = fontSize * 0.12
+              ..color = Colors.black,
+          ),
+        ),
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: fontSize,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -549,7 +679,39 @@ class _UploadScreenState extends State<UploadScreen> {
                       borderRadius: BorderRadius.circular(12),
                       child: AspectRatio(
                         aspectRatio: _previewController!.value.aspectRatio,
-                        child: VideoPlayer(_previewController!),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            return Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                ColorFiltered(
+                                  colorFilter: ColorFilter.matrix(
+                                      kVideoFilterMatrices[_filterType]!),
+                                  child: VideoPlayer(_previewController!),
+                                ),
+                                for (final overlay in _textOverlays)
+                                  Align(
+                                    alignment: Alignment(
+                                        overlay.dx * 2 - 1, overlay.dy * 2 - 1),
+                                    child: overlay.imageUrl != null
+                                        ? Image.network(overlay.imageUrl!,
+                                            width: 70 * overlay.scale,
+                                            height: 70 * overlay.scale)
+                                        : overlay.isSticker
+                                            ? Text(overlay.text,
+                                                style: TextStyle(
+                                                    fontSize:
+                                                        48 * overlay.scale))
+                                            : _outlinedText(
+                                                overlay.text,
+                                                18 * overlay.scale,
+                                                overlay.color,
+                                              ),
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
                       ),
                     )
                   : Column(
