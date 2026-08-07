@@ -13,9 +13,11 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  // Set up local notifications and request permission
-  await NotificationService.init();
   runApp(const FlyApp());
+  // Notification permission setup doesn't need to finish before the user
+  // sees a screen - running it after runApp() (instead of awaiting it
+  // first) shaves the delay off every app launch.
+  NotificationService.init();
 }
 
 class FlyApp extends StatelessWidget {

@@ -17,6 +17,7 @@ import 'sound_screen.dart';
 import 'video_effects_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
+import 'video_preload_cache.dart';
 
 // Watches full-screen route pushes so a playing video can pause itself
 // when the user navigates somewhere else. Registered in main.dart.
@@ -222,6 +223,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     }).toList()
                   : unblockedItems;
 
+              // Get a head start on the second video so even the very
+              // first swipe (before onPageChanged has ever fired) is fast.
+              if (visibleItems.length > 1) {
+                VideoPreloadCache.preload(visibleItems[1].videoUrl);
+              }
+
               if (feedItems.isEmpty) {
                 return const Center(
                   child: Text(
@@ -305,6 +312,24 @@ class _HomeScreenState extends State<HomeScreen> {
                               controller: _pageController,
                               scrollDirection: Axis.vertical,
                               itemCount: visibleItems.length,
+                              onPageChanged: (index) {
+                                final String currentUrl =
+                                    visibleItems[index].videoUrl;
+                                final Set<String> keep = {currentUrl};
+                                if (index + 1 < visibleItems.length) {
+                                  final String nextUrl =
+                                      visibleItems[index + 1].videoUrl;
+                                  keep.add(nextUrl);
+                                  VideoPreloadCache.preload(nextUrl);
+                                }
+                                if (index - 1 >= 0) {
+                                  final String prevUrl =
+                                      visibleItems[index - 1].videoUrl;
+                                  keep.add(prevUrl);
+                                  VideoPreloadCache.preload(prevUrl);
+                                }
+                                VideoPreloadCache.evictExcept(keep);
+                              },
                               itemBuilder: (context, index) {
                                 final item = visibleItems[index];
 
@@ -482,6 +507,12 @@ class _ShortsScreenState extends State<ShortsScreen> {
                       return true;
                     }).toList();
 
+              // Get a head start on the second video so even the very
+              // first swipe (before onPageChanged has ever fired) is fast.
+              if (visibleItems.length > 1) {
+                VideoPreloadCache.preload(visibleItems[1].videoUrl);
+              }
+
               if (visibleItems.isEmpty) {
                 return const Center(
                   child: Text(
@@ -499,6 +530,23 @@ class _ShortsScreenState extends State<ShortsScreen> {
                       controller: _pageController,
                       scrollDirection: Axis.vertical,
                       itemCount: visibleItems.length,
+                      onPageChanged: (index) {
+                        final String currentUrl = visibleItems[index].videoUrl;
+                        final Set<String> keep = {currentUrl};
+                        if (index + 1 < visibleItems.length) {
+                          final String nextUrl =
+                              visibleItems[index + 1].videoUrl;
+                          keep.add(nextUrl);
+                          VideoPreloadCache.preload(nextUrl);
+                        }
+                        if (index - 1 >= 0) {
+                          final String prevUrl =
+                              visibleItems[index - 1].videoUrl;
+                          keep.add(prevUrl);
+                          VideoPreloadCache.preload(prevUrl);
+                        }
+                        VideoPreloadCache.evictExcept(keep);
+                      },
                       itemBuilder: (context, index) {
                         final item = visibleItems[index];
                         return _VideoPostItem(
@@ -721,6 +769,11 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
               child: Text('No videos', style: TextStyle(color: Colors.grey)),
             );
           }
+          if (posts.length > 1) {
+            final String nextUrl =
+                (posts[1].data() as Map<String, dynamic>)['videoUrl'] ?? '';
+            VideoPreloadCache.preload(nextUrl);
+          }
 
           return Stack(
             children: [
@@ -728,6 +781,24 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                 controller: _pageController,
                 scrollDirection: Axis.vertical,
                 itemCount: posts.length,
+                onPageChanged: (index) {
+                  String urlOf(int i) =>
+                      (posts[i].data() as Map<String, dynamic>)['videoUrl'] ??
+                      '';
+                  final String currentUrl = urlOf(index);
+                  final Set<String> keep = {currentUrl};
+                  if (index + 1 < posts.length) {
+                    final String nextUrl = urlOf(index + 1);
+                    keep.add(nextUrl);
+                    VideoPreloadCache.preload(nextUrl);
+                  }
+                  if (index - 1 >= 0) {
+                    final String prevUrl = urlOf(index - 1);
+                    keep.add(prevUrl);
+                    VideoPreloadCache.preload(prevUrl);
+                  }
+                  VideoPreloadCache.evictExcept(keep);
+                },
                 itemBuilder: (context, index) {
                   final postDoc = posts[index];
                   final post = postDoc.data() as Map<String, dynamic>;
@@ -919,6 +990,13 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
             });
           }
 
+          if (initialIndex + 1 < docs.length) {
+            final String nextUrl = (docs[initialIndex + 1].data()
+                    as Map<String, dynamic>)['videoUrl'] ??
+                '';
+            VideoPreloadCache.preload(nextUrl);
+          }
+
           return Stack(
             children: [
               SafeArea(
@@ -927,6 +1005,24 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                   controller: _pageController,
                   scrollDirection: Axis.vertical,
                   itemCount: docs.length,
+                  onPageChanged: (index) {
+                    String urlOf(int i) =>
+                        (docs[i].data() as Map<String, dynamic>)['videoUrl'] ??
+                        '';
+                    final String currentUrl = urlOf(index);
+                    final Set<String> keep = {currentUrl};
+                    if (index + 1 < docs.length) {
+                      final String nextUrl = urlOf(index + 1);
+                      keep.add(nextUrl);
+                      VideoPreloadCache.preload(nextUrl);
+                    }
+                    if (index - 1 >= 0) {
+                      final String prevUrl = urlOf(index - 1);
+                      keep.add(prevUrl);
+                      VideoPreloadCache.preload(prevUrl);
+                    }
+                    VideoPreloadCache.evictExcept(keep);
+                  },
                   itemBuilder: (context, index) {
                     final postDoc = docs[index];
                     final post = postDoc.data() as Map<String, dynamic>;
@@ -1163,9 +1259,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
 
-    final controller =
-        VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
-    await controller.initialize();
+    // If this video was already preloaded while the previous one was
+    // playing, reuse that controller instead of starting a fresh network
+    // fetch — this is what makes swiping to the next video feel instant.
+    VideoPlayerController? controller =
+        VideoPreloadCache.claim(widget.videoUrl);
+
+    if (controller == null) {
+      controller = VideoPlayerController.networkUrl(
+          Uri.parse(playableVideoUrl(widget.videoUrl)));
+      await controller.initialize();
+    }
+    await controller.setVolume(1);
     await controller.setPlaybackSpeed(widget.videoSpeed);
     controller.play();
     controller.addListener(_onVideoProgress);
@@ -1696,8 +1801,29 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     _positionedOverlayText(overlay),
                 ],
               ] else
-                const Center(
-                  child: CircularProgressIndicator(color: Colors.redAccent),
+                Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (widget.videoUrl.isNotEmpty)
+                      CachedNetworkImage(
+                        imageUrl: cloudinaryThumbUrl(widget.videoUrl),
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) =>
+                            Container(color: Colors.grey[900]),
+                        errorWidget: (_, __, ___) =>
+                            Container(color: Colors.grey[900]),
+                      ),
+                    const Center(
+                      child: SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2.5,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
 
               // Tap-to-reveal media controls: rewind 10s / play-pause / forward 10s.
