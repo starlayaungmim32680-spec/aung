@@ -1,13 +1,19 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:video_player/video_player.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
 import 'notifications_screen.dart';
 import 'public_profile_screen.dart';
 import 'story_screen.dart';
@@ -361,6 +367,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   videoSpeed: item.videoSpeed,
                                   filterType: item.filterType,
                                   textOverlays: item.textOverlays,
+                                  effectsBaked: item.effectsBaked,
                                 );
                               },
                             ),
@@ -569,6 +576,7 @@ class _ShortsScreenState extends State<ShortsScreen> {
                           videoSpeed: item.videoSpeed,
                           filterType: item.filterType,
                           textOverlays: item.textOverlays,
+                          effectsBaked: item.effectsBaked,
                         );
                       },
                     ),
@@ -626,6 +634,14 @@ class _FeedItem {
   final double videoSpeed;
   final String filterType;
   final List<TextOverlayData> textOverlays;
+  // True once a post's speed/filter/text/sticker effects have been baked
+  // directly into the delivered video file itself (via Cloudinary
+  // transformations applied at upload time), so playback here should show
+  // the raw file as-is instead of re-applying videoSpeed/filterType/
+  // textOverlays on top of it - otherwise effects would be applied twice.
+  // False for older posts uploaded before this existed, which still need
+  // the client-side overlay below.
+  final bool effectsBaked;
 
   _FeedItem.post(QueryDocumentSnapshot doc)
       : feedKey = 'post_${doc.id}',
@@ -660,7 +676,10 @@ class _FeedItem {
                     as List<dynamic>?)
                 ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
                 .toList() ??
-            const [];
+            const [],
+        effectsBaked =
+            (doc.data() as Map<String, dynamic>)['effectsBaked'] as bool? ??
+                false;
 
   _FeedItem.repost(QueryDocumentSnapshot doc)
       : feedKey = 'repost_${doc.id}',
@@ -696,7 +715,10 @@ class _FeedItem {
                     as List<dynamic>?)
                 ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
                 .toList() ??
-            const [];
+            const [],
+        effectsBaked =
+            (doc.data() as Map<String, dynamic>)['effectsBaked'] as bool? ??
+                false;
 }
 
 // Full-screen, swipeable viewer of a single user's videos (opened from a
@@ -822,6 +844,7 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                                 m as Map<String, dynamic>))
                             .toList()) ??
                         const [],
+                    effectsBaked: post['effectsBaked'] as bool? ?? false,
                     onVideoEnd: () => _goToNextVideo(posts.length),
                   );
                 },
@@ -973,6 +996,7 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                     videoSpeed: 1.0,
                     filterType: 'none',
                     textOverlays: const [],
+                    effectsBaked: true,
                     onVideoEnd: () {},
                   ),
                 ),
@@ -1054,6 +1078,7 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                                   m as Map<String, dynamic>))
                               .toList()) ??
                           const [],
+                      effectsBaked: post['effectsBaked'] as bool? ?? false,
                       onVideoEnd: () => _goToNextVideo(docs.length),
                     );
                   },
@@ -1087,6 +1112,13 @@ class _VideoPostItem extends StatefulWidget {
   final double videoSpeed;
   final String filterType;
   final List<TextOverlayData> textOverlays;
+  // True once speed/filter/text/sticker effects are baked directly into
+  // videoUrl itself (Cloudinary transformations applied at upload time) -
+  // when true, videoSpeed/filterType/textOverlays above are only kept as
+  // editable metadata and must NOT be re-applied during playback, or the
+  // effects would show twice. False for older posts uploaded before this
+  // existed, which still need the client-side overlay/color-filter below.
+  final bool effectsBaked;
 
   const _VideoPostItem({
     super.key,
@@ -1105,6 +1137,7 @@ class _VideoPostItem extends StatefulWidget {
     this.videoSpeed = 1.0,
     this.filterType = 'none',
     this.textOverlays = const [],
+    this.effectsBaked = false,
   });
 
   @override
@@ -1271,7 +1304,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
       await controller.initialize();
     }
     await controller.setVolume(1);
-    await controller.setPlaybackSpeed(widget.videoSpeed);
+    // Baked posts already play at the chosen speed inside the file itself
+    // (see video_effects_baker.dart) - applying videoSpeed again on top
+    // would speed it up/slow it down a second time.
+    if (!widget.effectsBaked) {
+      await controller.setPlaybackSpeed(widget.videoSpeed);
+    }
     controller.play();
     controller.addListener(_onVideoProgress);
 
@@ -1560,6 +1598,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
           'videoSpeed': widget.videoSpeed,
           'filterType': widget.filterType,
           'textOverlays': widget.textOverlays.map((o) => o.toMap()).toList(),
+          'effectsBaked': widget.effectsBaked,
           'userEmail': widget.userEmail,
           'note': note,
           'createdAt': FieldValue.serverTimestamp(),
@@ -1575,6 +1614,285 @@ class _VideoPostItemState extends State<_VideoPostItem>
             ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
             : 'Watch this video on Fly: ${widget.videoUrl}';
     await Share.share(shareText);
+  }
+
+  // Plain "Watch this video on Fly: <link>" text, used by every external
+  // share destination below (WhatsApp / Messenger / Facebook / Email /
+  // Copy link / More apps) — none of those write a repost, only the
+  // "Share to Fly" tile above does that.
+  String get _plainShareText {
+    return widget.caption.isNotEmpty
+        ? '${widget.caption}\n\nWatch on Fly: ${widget.videoUrl}'
+        : 'Watch this video on Fly: ${widget.videoUrl}';
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  // Tries to open an external app via its scheme/URL. If the app isn't
+  // installed (or the OS blocks the visibility check), falls back to the
+  // web link inside [webFallback] so the user still gets somewhere useful.
+  Future<void> _launchWithFallback(
+      Uri appUri, Uri? webFallback, String appName) async {
+    try {
+      final bool launched =
+          await launchUrl(appUri, mode: LaunchMode.externalApplication);
+      if (launched) return;
+    } catch (_) {
+      // fall through to web fallback below
+    }
+    if (webFallback != null) {
+      try {
+        await launchUrl(webFallback, mode: LaunchMode.externalApplication);
+        return;
+      } catch (_) {}
+    }
+    _toast("Couldn't open $appName — check that it's installed");
+  }
+
+  Future<void> _shareToWhatsApp() async {
+    Navigator.of(context).maybePop();
+    final String text = Uri.encodeComponent(_plainShareText);
+    // wa.me with no phone number opens WhatsApp's own contact/group picker,
+    // so this naturally covers both individual friends and groups.
+    await _launchWithFallback(
+      Uri.parse('whatsapp://send?text=$text'),
+      Uri.parse('https://wa.me/?text=$text'),
+      'WhatsApp',
+    );
+  }
+
+  Future<void> _shareToMessenger() async {
+    Navigator.of(context).maybePop();
+    final String link = Uri.encodeComponent(widget.videoUrl);
+    // Messenger's own share dialog opens the user's friend/group list.
+    await _launchWithFallback(
+      Uri.parse('fb-messenger://share?link=$link'),
+      Uri.parse('https://www.facebook.com/dialog/send'
+          '?link=$link&app_id=0&redirect_uri=$link'),
+      'Messenger',
+    );
+  }
+
+  Future<void> _shareToFacebook() async {
+    Navigator.of(context).maybePop();
+    final String link = Uri.encodeComponent(widget.videoUrl);
+    // Facebook's sharer dialog lets the user post to their feed/story or
+    // send it straight to a friend, from inside the Facebook app itself.
+    await _launchWithFallback(
+      Uri.parse('fb://facewebmodal/f?href=https://www.facebook.com/sharer/'
+          'sharer.php?u=$link'),
+      Uri.parse('https://www.facebook.com/sharer/sharer.php?u=$link'),
+      'Facebook',
+    );
+  }
+
+  Future<void> _shareViaEmail() async {
+    Navigator.of(context).maybePop();
+    final Uri emailUri = Uri(
+      scheme: 'mailto',
+      query: 'subject=${Uri.encodeComponent('Check out this video on Fly')}'
+          '&body=${Uri.encodeComponent(_plainShareText)}',
+    );
+    try {
+      final bool launched =
+          await launchUrl(emailUri, mode: LaunchMode.externalApplication);
+      if (!launched) _toast("Couldn't open an email app");
+    } catch (_) {
+      _toast("Couldn't open an email app");
+    }
+  }
+
+  Future<void> _copyShareLink() async {
+    await Clipboard.setData(ClipboardData(text: widget.videoUrl));
+    if (mounted) Navigator.of(context).maybePop();
+    _toast('Link copied to clipboard');
+  }
+
+  // Falls back to the OS's own share sheet (Telegram, SMS, Bluetooth, save
+  // to Drive, and every other app installed on the phone) without going
+  // through the "add a note" dialog or saving a repost.
+  Future<void> _shareMoreApps() async {
+    Navigator.of(context).maybePop();
+    await Share.share(_plainShareText);
+  }
+
+  Future<void> _downloadVideo() async {
+    Navigator.of(context).maybePop();
+    _toast('Downloading video...');
+    try {
+      final response = await http.get(Uri.parse(widget.videoUrl));
+      if (response.statusCode != 200) {
+        _toast('Download failed');
+        return;
+      }
+      final Directory tempDir = await getTemporaryDirectory();
+      final String tempPath = '${tempDir.path}/'
+          'fly_${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final File tempFile = File(tempPath);
+      await tempFile.writeAsBytes(response.bodyBytes);
+
+      final bool hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final bool granted = await Gal.requestAccess();
+        if (!granted) {
+          _toast('Gallery access is needed to save the video');
+          return;
+        }
+      }
+      await Gal.putVideo(tempPath, album: 'Fly');
+      await tempFile.delete();
+      _toast('Video saved to your gallery');
+    } catch (_) {
+      _toast('Download failed — please try again');
+    }
+  }
+
+  Widget _shareOptionTile(
+      {required IconData icon,
+      required Color color,
+      required String label,
+      required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            child: Icon(icon, color: Colors.white, size: 26),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            width: 68,
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 11),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // The main share bottom sheet: a row of direct-share destinations
+  // (WhatsApp / Messenger / Facebook / Email / Copy link / More apps —
+  // "More apps" opens the full OS chooser, which covers every other app
+  // and lets the user pick a specific group chat inside it), plus the
+  // existing in-app "Share to Fly" repost action and the video download.
+  Future<void> _openShareSheet() {
+    return showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Share video',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 18),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      const SizedBox(width: 4),
+                      _shareOptionTile(
+                        icon: Icons.chat,
+                        color: const Color(0xFF25D366),
+                        label: 'WhatsApp',
+                        onTap: _shareToWhatsApp,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.send,
+                        color: const Color(0xFF0084FF),
+                        label: 'Messenger',
+                        onTap: _shareToMessenger,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.facebook,
+                        color: const Color(0xFF1877F2),
+                        label: 'Facebook',
+                        onTap: _shareToFacebook,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.email,
+                        color: Colors.orangeAccent,
+                        label: 'Email',
+                        onTap: _shareViaEmail,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.link,
+                        color: Colors.grey.shade700,
+                        label: 'Copy link',
+                        onTap: _copyShareLink,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.apps,
+                        color: Colors.grey.shade700,
+                        label: 'More apps',
+                        onTap: _shareMoreApps,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Divider(color: Colors.white24, height: 1),
+                ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Colors.redAccent,
+                    child: Icon(Icons.flight, color: Colors.white, size: 18),
+                  ),
+                  title: const Text('Share to Fly',
+                      style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Repost this on your own profile',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    _shareVideo();
+                  },
+                ),
+                ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.grey.shade800,
+                    child: const Icon(Icons.download,
+                        color: Colors.white, size: 18),
+                  ),
+                  title: const Text('Download video',
+                      style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('Save to your phone gallery',
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  onTap: _downloadVideo,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   // Live count of a post subcollection (comments / shares / saves)
@@ -1743,8 +2061,11 @@ class _VideoPostItemState extends State<_VideoPostItem>
                               children: [
                                 ColorFiltered(
                                   colorFilter: ColorFilter.matrix(
-                                      kVideoFilterMatrices[widget.filterType] ??
-                                          kVideoFilterMatrices['none']!),
+                                      widget.effectsBaked
+                                          ? kVideoFilterMatrices['none']!
+                                          : (kVideoFilterMatrices[
+                                                  widget.filterType] ??
+                                              kVideoFilterMatrices['none']!)),
                                   child: FittedBox(
                                     fit: BoxFit.cover,
                                     child: SizedBox(
@@ -1754,8 +2075,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                     ),
                                   ),
                                 ),
-                                for (final overlay in widget.textOverlays)
-                                  _positionedOverlayText(overlay),
+                                if (!widget.effectsBaked)
+                                  for (final overlay in widget.textOverlays)
+                                    _positionedOverlayText(overlay),
                               ],
                             ),
                           ),
@@ -1790,15 +2112,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     child: AspectRatio(
                       aspectRatio: _controller!.value.aspectRatio,
                       child: ColorFiltered(
-                        colorFilter: ColorFilter.matrix(
-                            kVideoFilterMatrices[widget.filterType] ??
-                                kVideoFilterMatrices['none']!),
+                        colorFilter: ColorFilter.matrix(widget.effectsBaked
+                            ? kVideoFilterMatrices['none']!
+                            : (kVideoFilterMatrices[widget.filterType] ??
+                                kVideoFilterMatrices['none']!)),
                         child: VideoPlayer(_controller!),
                       ),
                     ),
                   ),
-                  for (final overlay in widget.textOverlays)
-                    _positionedOverlayText(overlay),
+                  if (!widget.effectsBaked)
+                    for (final overlay in widget.textOverlays)
+                      _positionedOverlayText(overlay),
                 ],
               ] else
                 Stack(
@@ -2233,7 +2557,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           final int count =
                               snap.hasData ? snap.data!.docs.length : 0;
                           return GestureDetector(
-                            onTap: _shareVideo,
+                            onTap: _openShareSheet,
                             child: Column(
                               children: [
                                 Transform.flip(
@@ -2387,7 +2711,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           final int count =
                               snap.hasData ? snap.data!.docs.length : 0;
                           return GestureDetector(
-                            onTap: _shareVideo,
+                            onTap: _openShareSheet,
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [

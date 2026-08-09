@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Only needed on Android 9 (API 28) and below - the "gal" plugin uses
+         MediaStore on Android 10+, which needs no storage permission. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:label="fly"
@@ -53,6 +57,17 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Below: lets url_launcher check whether WhatsApp / Messenger /
+             Facebook / a mail app are installed, so the new share sheet
+             can open them directly instead of always falling back to the
+             web version. Required on Android 11+ (package visibility). -->
+        <package android:name="com.whatsapp" />
+        <package android:name="com.facebook.orca" />
+        <package android:name="com.facebook.katana" />
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
         </intent>
     </queries>
 </manifest>
