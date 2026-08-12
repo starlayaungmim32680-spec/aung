@@ -21,6 +21,7 @@ import 'search_screen.dart';
 import 'live_screen.dart';
 import 'sound_screen.dart';
 import 'video_effects_screen.dart';
+import 'translation_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
 import 'video_preload_cache.dart';
@@ -229,6 +230,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     }).toList()
                   : unblockedItems;
 
+              // Every 5 real videos swiped, insert a YouTube-style "Shorts
+              // shelf" page: a horizontal strip previewing a few of the
+              // upcoming shorts, so the user can jump straight to one
+              // instead of swiping through everything in between.
+              final _FeedSlots slots = _FeedSlots(visibleItems);
+
               // Get a head start on the second video so even the very
               // first swipe (before onPageChanged has ever fired) is fast.
               if (visibleItems.length > 1) {
@@ -317,27 +324,47 @@ class _HomeScreenState extends State<HomeScreen> {
                           : PageView.builder(
                               controller: _pageController,
                               scrollDirection: Axis.vertical,
-                              itemCount: visibleItems.length,
+                              itemCount: slots.length,
                               onPageChanged: (index) {
-                                final String currentUrl =
-                                    visibleItems[index].videoUrl;
-                                final Set<String> keep = {currentUrl};
-                                if (index + 1 < visibleItems.length) {
-                                  final String nextUrl =
-                                      visibleItems[index + 1].videoUrl;
-                                  keep.add(nextUrl);
-                                  VideoPreloadCache.preload(nextUrl);
+                                // Preloading only makes sense for actual
+                                // videos - a shelf slot has no single video
+                                // of its own.
+                                final _FeedItem? current = slots.itemAt(index);
+                                if (current == null) return;
+                                final Set<String> keep = {current.videoUrl};
+                                final _FeedItem? next = slots.itemAt(index + 1);
+                                if (next != null) {
+                                  keep.add(next.videoUrl);
+                                  VideoPreloadCache.preload(next.videoUrl);
                                 }
-                                if (index - 1 >= 0) {
-                                  final String prevUrl =
-                                      visibleItems[index - 1].videoUrl;
-                                  keep.add(prevUrl);
-                                  VideoPreloadCache.preload(prevUrl);
+                                final _FeedItem? prev = slots.itemAt(index - 1);
+                                if (prev != null) {
+                                  keep.add(prev.videoUrl);
+                                  VideoPreloadCache.preload(prev.videoUrl);
                                 }
                                 VideoPreloadCache.evictExcept(keep);
                               },
                               itemBuilder: (context, index) {
-                                final item = visibleItems[index];
+                                final List<int>? shelfRealIndices =
+                                    slots.shelfAt(index);
+                                if (shelfRealIndices != null) {
+                                  return _ShortsShelfPage(
+                                    entries: shelfRealIndices
+                                        .map(
+                                            (i) => MapEntry(i, visibleItems[i]))
+                                        .toList(),
+                                    onTapItem: (realIndex) {
+                                      _pageController.animateToPage(
+                                        slots.displayIndexForReal(realIndex),
+                                        duration:
+                                            const Duration(milliseconds: 300),
+                                        curve: Curves.easeInOut,
+                                      );
+                                    },
+                                  );
+                                }
+
+                                final item = slots.itemAt(index)!;
 
                                 // key includes the doc id (post id for own
                                 // posts, repost id for reposts) so Flutter
@@ -355,7 +382,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   reactions: item.reactions,
                                   videoType: item.videoType,
                                   onVideoEnd: () =>
-                                      _goToNextVideo(visibleItems.length),
+                                      _goToNextVideo(slots.length),
                                   repostNote: item.isRepost ? item.note : null,
                                   repostByName:
                                       item.isRepost ? item.sharedByName : null,
@@ -616,6 +643,187 @@ class _ShortsScreenState extends State<ShortsScreen> {
 // shared (repost). postId/originalUserId always point at the actual
 // video/post so likes, comments, and views stay attributed to the
 // original - only the note/sharedByName differ for a repost.
+// Maps the vertical PageView's flat "slot" index space onto the underlying
+// real feed items, inserting one Shorts-shelf slot after every 5 real
+// videos (only when there are more videos left to preview in the shelf).
+// Pattern per block of 6 slots: 5 real items, then 1 shelf.
+class _FeedSlots {
+  static const int _realPerShelf = 5;
+  final List<_FeedItem> items;
+  final int shelfCount;
+
+  _FeedSlots(this.items)
+      : shelfCount = items.isEmpty ? 0 : (items.length - 1) ~/ _realPerShelf;
+
+  int get length => items.length + shelfCount;
+
+  // Null when [index] lands on a shelf slot.
+  _FeedItem? itemAt(int index) {
+    if (index < 0 || index >= length) return null;
+    final int block = index ~/ (_realPerShelf + 1);
+    final int offset = index % (_realPerShelf + 1);
+    if (offset == _realPerShelf) return null; // shelf slot
+    final int realIndex = block * _realPerShelf + offset;
+    return realIndex < items.length ? items[realIndex] : null;
+  }
+
+  // Up to 4 upcoming short-video indices (into [items]) to preview in the
+  // shelf at this slot, or null if [index] isn't a shelf slot.
+  List<int>? shelfAt(int index) {
+    if (index < 0 || index >= length) return null;
+    final int block = index ~/ (_realPerShelf + 1);
+    final int offset = index % (_realPerShelf + 1);
+    if (offset != _realPerShelf) return null;
+    final int start = (block + 1) * _realPerShelf;
+    final List<int> shorts = [];
+    for (int i = start; i < items.length && shorts.length < 4; i++) {
+      if (items[i].videoType == 'short') shorts.add(i);
+    }
+    if (shorts.isEmpty) {
+      for (int i = start; i < items.length && shorts.length < 4; i++) {
+        shorts.add(i);
+      }
+    }
+    return shorts;
+  }
+
+  // Reverse of the real-item mapping above - which slot index a given
+  // real item (by its index into [items]) ends up at, so tapping a shelf
+  // thumbnail can jump the PageView straight to it.
+  int displayIndexForReal(int realIndex) {
+    final int block = realIndex ~/ _realPerShelf;
+    final int offset = realIndex % _realPerShelf;
+    return block * (_realPerShelf + 1) + offset;
+  }
+}
+
+// YouTube-style "Shorts shelf": a full feed page showing a horizontal strip
+// of upcoming short videos, so the user can jump ahead to one instead of
+// swiping past everything in between.
+class _ShortsShelfPage extends StatelessWidget {
+  final List<MapEntry<int, _FeedItem>> entries;
+  final void Function(int realIndex) onTapItem;
+
+  const _ShortsShelfPage({required this.entries, required this.onTapItem});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black,
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.bolt, color: Colors.redAccent, size: 22),
+              SizedBox(width: 6),
+              Text(
+                'Shorts you might like',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            height: 260,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: entries.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, i) => _ShortsShelfCard(
+                item: entries[i].value,
+                realIndex: entries[i].key,
+                onTap: onTapItem,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Swipe up to keep watching, or tap one to jump ahead',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShortsShelfCard extends StatelessWidget {
+  final _FeedItem item;
+  final int realIndex;
+  final void Function(int realIndex) onTap;
+
+  const _ShortsShelfCard({
+    required this.item,
+    required this.realIndex,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => onTap(realIndex),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: SizedBox(
+          width: 140,
+          height: 260,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              CachedNetworkImage(
+                imageUrl: cloudinaryThumbUrl(item.videoUrl),
+                fit: BoxFit.cover,
+                placeholder: (_, __) => Container(color: Colors.grey.shade900),
+                errorWidget: (_, __, ___) =>
+                    Container(color: Colors.grey.shade900),
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withOpacity(0.0),
+                      Colors.black.withOpacity(0.65),
+                    ],
+                    stops: const [0.6, 1.0],
+                  ),
+                ),
+              ),
+              const Center(
+                child: Icon(Icons.play_arrow, color: Colors.white70, size: 36),
+              ),
+              Positioned(
+                left: 8,
+                right: 8,
+                bottom: 8,
+                child: Text(
+                  item.caption.isNotEmpty ? item.caption : item.userEmail,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FeedItem {
   final String feedKey;
   final String postId;
@@ -1691,6 +1899,43 @@ class _VideoPostItemState extends State<_VideoPostItem>
     );
   }
 
+  Future<void> _shareToTelegram() async {
+    Navigator.of(context).maybePop();
+    final String link = Uri.encodeComponent(widget.videoUrl);
+    final String text = Uri.encodeComponent(_plainShareText);
+    // Telegram's own share dialog opens the user's chat/group/channel list.
+    await _launchWithFallback(
+      Uri.parse('tg://msg_url?url=$link&text=$text'),
+      Uri.parse('https://t.me/share/url?url=$link&text=$text'),
+      'Telegram',
+    );
+  }
+
+  Future<void> _shareToX() async {
+    Navigator.of(context).maybePop();
+    final String text = Uri.encodeComponent(_plainShareText);
+    await _launchWithFallback(
+      Uri.parse('twitter://post?message=$text'),
+      Uri.parse('https://twitter.com/intent/tweet?text=$text'),
+      'X',
+    );
+  }
+
+  Future<void> _shareViaSms() async {
+    Navigator.of(context).maybePop();
+    final String body = Uri.encodeComponent(_plainShareText);
+    // No recipient number - opens the phone's own contact picker, same as
+    // tapping the "New message" compose button in the Messages app.
+    final Uri smsUri = Uri.parse('sms:?body=$body');
+    try {
+      final bool launched =
+          await launchUrl(smsUri, mode: LaunchMode.externalApplication);
+      if (!launched) _toast("Couldn't open a messaging app");
+    } catch (_) {
+      _toast("Couldn't open a messaging app");
+    }
+  }
+
   Future<void> _shareViaEmail() async {
     Navigator.of(context).maybePop();
     final Uri emailUri = Uri(
@@ -1833,6 +2078,27 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         color: const Color(0xFF1877F2),
                         label: 'Facebook',
                         onTap: _shareToFacebook,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.send_rounded,
+                        color: const Color(0xFF29A9EA),
+                        label: 'Telegram',
+                        onTap: _shareToTelegram,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.close,
+                        color: Colors.black,
+                        label: 'X',
+                        onTap: _shareToX,
+                      ),
+                      const SizedBox(width: 14),
+                      _shareOptionTile(
+                        icon: Icons.sms,
+                        color: const Color(0xFF34C759),
+                        label: 'Text',
+                        onTap: _shareViaSms,
                       ),
                       const SizedBox(width: 14),
                       _shareOptionTile(
@@ -3683,21 +3949,74 @@ class _ReplyTile extends StatelessWidget {
 // Shows the post owner's profile photo, display name, follow button, and caption
 // Renders a caption with any #hashtags shown in a distinct color and
 // tappable, opening HashtagScreen for that tag.
-class _CaptionWithHashtags extends StatelessWidget {
+class _CaptionWithHashtags extends StatefulWidget {
   final String caption;
   final bool compact;
 
   const _CaptionWithHashtags({required this.caption, required this.compact});
 
   @override
-  Widget build(BuildContext context) {
+  State<_CaptionWithHashtags> createState() => _CaptionWithHashtagsState();
+}
+
+class _CaptionWithHashtagsState extends State<_CaptionWithHashtags> {
+  String? _translated;
+  bool _translating = false;
+  bool _showTranslated = false;
+  // Set only when a translate attempt comes back genuinely not
+  // applicable (already the device's language, or an unsupported
+  // language) - hides the link. A failed *attempt* (weak connection,
+  // low storage - common on budget phones) does NOT set this, so the
+  // link stays put and the user can just tap it again once they have a
+  // better connection, instead of the feature silently vanishing.
+  bool _translationUnavailable = false;
+
+  Future<void> _onTranslateTap() async {
+    // Already translated once - just toggle between the two, no need to
+    // hit ML Kit again.
+    if (_translated != null) {
+      setState(() => _showTranslated = !_showTranslated);
+      return;
+    }
+    setState(() => _translating = true);
+    final TranslationOutcome outcome = await TranslationService.instance
+        .translateToDeviceLanguage(widget.caption);
+    if (!mounted) return;
+    setState(() {
+      _translating = false;
+      switch (outcome.status) {
+        case TranslationStatus.success:
+          _translated = outcome.text;
+          _showTranslated = true;
+          break;
+        case TranslationStatus.notApplicable:
+          _translationUnavailable = true;
+          break;
+        case TranslationStatus.retry:
+          // Leave everything as-is so the link (and a quick explanation)
+          // shows again and can be tapped to retry.
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("Couldn't translate - check your connection "
+                    'and try again'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          }
+          break;
+      }
+    });
+  }
+
+  List<InlineSpan> _spansFor(BuildContext context, String text) {
     final RegExp hashtagPattern = RegExp(r'#([\p{L}\p{N}_]+)', unicode: true);
     final List<InlineSpan> spans = [];
     int lastEnd = 0;
 
-    for (final match in hashtagPattern.allMatches(caption)) {
+    for (final match in hashtagPattern.allMatches(text)) {
       if (match.start > lastEnd) {
-        spans.add(TextSpan(text: caption.substring(lastEnd, match.start)));
+        spans.add(TextSpan(text: text.substring(lastEnd, match.start)));
       }
       final String tag = match.group(1)!;
       spans.add(
@@ -3720,21 +4039,78 @@ class _CaptionWithHashtags extends StatelessWidget {
       );
       lastEnd = match.end;
     }
-    if (lastEnd < caption.length) {
-      spans.add(TextSpan(text: caption.substring(lastEnd)));
+    if (lastEnd < text.length) {
+      spans.add(TextSpan(text: text.substring(lastEnd)));
     }
+    return spans;
+  }
 
-    return Text.rich(
-      TextSpan(
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: compact ? 12 : 14,
-          shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+  @override
+  Widget build(BuildContext context) {
+    final bool compact = widget.compact;
+    final String textToShow =
+        _showTranslated && _translated != null ? _translated! : widget.caption;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text.rich(
+          TextSpan(
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: compact ? 12 : 14,
+              shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+            ),
+            children: _spansFor(context, textToShow),
+          ),
+          maxLines: compact ? 1 : null,
+          overflow: compact ? TextOverflow.ellipsis : TextOverflow.visible,
         ),
-        children: spans,
-      ),
-      maxLines: compact ? 1 : null,
-      overflow: compact ? TextOverflow.ellipsis : TextOverflow.visible,
+        // Skip the translate link in the compact (repost card) layout -
+        // there's no room for it there - and once we've established
+        // there's nothing useful to translate.
+        if (!compact && !_translationUnavailable) ...[
+          const SizedBox(height: 3),
+          GestureDetector(
+            onTap: _translating ? null : _onTranslateTap,
+            child: _translating
+                ? const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 11,
+                        height: 11,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        'Translating\u2026',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                    ],
+                  )
+                : Text(
+                    _showTranslated ? 'See original' : 'See translation',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      decoration: TextDecoration.underline,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                  ),
+          ),
+        ],
+      ],
     );
   }
 }
