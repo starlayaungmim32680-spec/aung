@@ -22,6 +22,8 @@ import 'live_screen.dart';
 import 'sound_screen.dart';
 import 'video_effects_screen.dart';
 import 'translation_service.dart';
+import 'text_overlay_style.dart';
+import 'gifting.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
 import 'video_preload_cache.dart';
@@ -1451,37 +1453,6 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
-  // Renders one text overlay at its saved fractional position. Align
-  // handles the fraction-to-pixel math on its own, so this needs no
-  // LayoutBuilder/constraints - it just needs to sit inside a Stack.
-  // Colored text with a black outline, so it stays readable over any part
-  // of the video without needing an opaque background chip.
-  Widget _outlinedText(String text, double fontSize, Color color) {
-    return Stack(
-      children: [
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = fontSize * 0.12
-              ..color = Colors.black,
-          ),
-        ),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _positionedOverlayText(TextOverlayData overlay) {
     final double fontSize = (overlay.isSticker ? 56 : 20) * overlay.scale;
     return IgnorePointer(
@@ -1492,7 +1463,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
                 width: 80 * overlay.scale, height: 80 * overlay.scale)
             : overlay.isSticker
                 ? Text(overlay.text, style: TextStyle(fontSize: fontSize))
-                : _outlinedText(overlay.text, fontSize, overlay.color),
+                : AnimatedOverlayText(
+                    text: overlay.text,
+                    fontSize: fontSize,
+                    color: overlay.color,
+                    styleId: overlay.styleId,
+                    animationId: overlay.animationId,
+                  ),
       ),
     );
   }
@@ -1541,6 +1518,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
         position.inMilliseconds >= duration.inMilliseconds - 200) {
       _endTriggered = true;
       _loopCount++;
+      CoinService.instance.awardWatchComplete();
 
       if (_loopCount >= _maxLoopsBeforeAutoSkip) {
         // Watched the same video 3 times in a row without the user
@@ -1762,6 +1740,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
             .collection('shares')
             .doc(user.uid)
             .set({'createdAt': FieldValue.serverTimestamp()});
+        CoinService.instance.awardShare();
       } catch (_) {
         // Ignore share-tracking errors
       }

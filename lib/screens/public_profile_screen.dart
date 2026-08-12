@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'chat_screen.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
+import 'gifting.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -644,6 +645,8 @@ class _FollowButton extends StatelessWidget {
         'seen': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
+
+      CoinService.instance.awardFollow(otherUserId);
     }
   }
 

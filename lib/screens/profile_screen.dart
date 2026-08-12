@@ -9,6 +9,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'login_screen.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
+import 'wallet_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -158,6 +159,14 @@ class ProfileScreen extends StatelessWidget {
         backgroundColor: Colors.black,
         title: const Text('Profile', style: TextStyle(color: Colors.white)),
         actions: [
+          IconButton(
+            icon: const Text('🪙', style: TextStyle(fontSize: 20)),
+            tooltip: 'Wallet',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const WalletScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white),
             onPressed: () => _logout(context),

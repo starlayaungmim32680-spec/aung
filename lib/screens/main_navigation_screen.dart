@@ -13,6 +13,7 @@ import 'upload_screen.dart';
 import 'profile_screen.dart';
 import 'incoming_call_screen.dart';
 import 'live_screen.dart';
+import 'gifting.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -95,6 +96,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     )..repeat();
     _listenForNewMessages();
     _listenForIncomingCalls();
+    CoinService.instance.awardDailyLogin();
   }
 
   // Builds a short "ding" notification sound as a WAV byte buffer

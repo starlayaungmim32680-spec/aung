@@ -9,6 +9,7 @@ import 'package:collection/collection.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'video_call_screen.dart' show kSandboxId;
+import 'gifting.dart';
 
 // Shared helper: gets a LiveKit access token + server url from the same
 // sandbox token server the 1-on-1 calls use.
@@ -883,10 +884,16 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
   bool _firstReactionSnapshot = true;
   int _nextReactionId = 0;
 
+  final List<LiveFlyingGift> _flyingGifts = [];
+  StreamSubscription<QuerySnapshot>? _giftSub;
+  bool _firstGiftSnapshot = true;
+  int _nextGiftId = 0;
+
   @override
   void initState() {
     super.initState();
     _listenForReactions();
+    _listenForGifts();
   }
 
   // Watches for reactions from ANYONE in the live (host + all viewers) so
@@ -928,6 +935,73 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
     if (mounted) {
       setState(() => _flyingReactions.removeWhere((r) => r.id == id));
     }
+  }
+
+  // Watches for gifts sent by ANYONE in the live, same pattern as
+  // reactions above, so every gift banner shows for the whole audience,
+  // not just the sender.
+  void _listenForGifts() {
+    _giftSub = FirebaseFirestore.instance
+        .collection('liveStreams')
+        .doc(widget.hostId)
+        .collection('gifts')
+        .orderBy('createdAt', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) {
+      if (_firstGiftSnapshot) {
+        _firstGiftSnapshot = false;
+        return;
+      }
+      for (final change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.added) {
+          final data = change.doc.data() as Map<String, dynamic>?;
+          _addFlyingGift(
+            emoji: data?['emoji'] as String? ?? '🎁',
+            giftName: data?['giftName'] as String? ?? 'Gift',
+            senderName: data?['senderName'] as String? ?? 'Someone',
+          );
+        }
+      }
+    });
+  }
+
+  void _addFlyingGift({
+    required String emoji,
+    required String giftName,
+    required String senderName,
+  }) {
+    if (!mounted) return;
+    final int id = _nextGiftId++;
+    setState(() => _flyingGifts.add(LiveFlyingGift(
+          id: id,
+          emoji: emoji,
+          giftName: giftName,
+          senderName: senderName,
+        )));
+  }
+
+  void _removeFlyingGift(int id) {
+    if (mounted) {
+      setState(() => _flyingGifts.removeWhere((g) => g.id == id));
+    }
+  }
+
+  void _openGiftPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      isScrollControlled: true,
+      builder: (ctx) => GiftPickerSheet(hostId: widget.hostId),
+    );
+  }
+
+  void _openTopSupporters() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      builder: (ctx) => TopSupportersSheet(hostId: widget.hostId),
+    );
   }
 
   Future<void> _sendReaction(String emoji) async {
@@ -999,6 +1073,7 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
   @override
   void dispose() {
     _reactionSub?.cancel();
+    _giftSub?.cancel();
     _commentController.dispose();
     _commentFocus.dispose();
     super.dispose();
@@ -1019,6 +1094,39 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
             ),
           );
         }),
+        // Gift banners stack just above the reactions/comment area, most
+        // recent at the bottom, so several gifts in quick succession
+        // don't overlap illegibly.
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 300,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: _flyingGifts.map((g) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: LiveFlyingGiftWidget(
+                  key: ValueKey(g.id),
+                  data: g,
+                  onComplete: () => _removeFlyingGift(g.id),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        Positioned(
+          top: 8,
+          right: 12,
+          child: SafeArea(
+            bottom: false,
+            child: GestureDetector(
+              onTap: _openTopSupporters,
+              child: const CoinBalanceBadge(),
+            ),
+          ),
+        ),
         Positioned(
           left: 12,
           right: 64,
@@ -1159,18 +1267,34 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
           bottom: 76,
           child: SafeArea(
             top: false,
-            child: GestureDetector(
-              onTap: () => _sendReaction('❤️'),
-              onLongPress: () => _showReactionPicker(context),
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.45),
-                  shape: BoxShape.circle,
+            child: Column(
+              children: [
+                GestureDetector(
+                  onTap: _openGiftPicker,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.45),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Text('🎁', style: TextStyle(fontSize: 20)),
+                  ),
                 ),
-                child: const Icon(Icons.favorite,
-                    color: Colors.redAccent, size: 24),
-              ),
+                const SizedBox(height: 12),
+                GestureDetector(
+                  onTap: () => _sendReaction('❤️'),
+                  onLongPress: () => _showReactionPicker(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.45),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.favorite,
+                        color: Colors.redAccent, size: 24),
+                  ),
+                ),
+              ],
             ),
           ),
         ),

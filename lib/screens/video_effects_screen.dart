@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
+import 'text_overlay_style.dart';
 
 // One piece of text (or a big emoji "sticker") placed on top of the video.
 // Position is stored as a fraction (0.0-1.0) of the video's width/height so
@@ -24,6 +25,13 @@ class TextOverlayData {
   // always drawn with a black outline too, so any color stays readable
   // without needing a solid background chip.
   Color color;
+  // Visual preset (classic/background/shadow/neon/impact/gradient) - see
+  // text_overlay_style.dart. Only used for non-sticker text overlays.
+  String styleId;
+  // Looping entrance/exit animation (none/fadeInOut/blink/typewriter/
+  // bounceIn/slideUp) - see text_overlay_style.dart. Only used for
+  // non-sticker text overlays.
+  String animationId;
 
   TextOverlayData({
     required this.text,
@@ -33,6 +41,8 @@ class TextOverlayData {
     this.scale = 1.0,
     this.imageUrl,
     this.color = Colors.white,
+    this.styleId = 'classic',
+    this.animationId = 'none',
   });
 
   Map<String, dynamic> toMap() => {
@@ -43,6 +53,8 @@ class TextOverlayData {
         'scale': scale,
         'imageUrl': imageUrl,
         'color': color.value,
+        'styleId': styleId,
+        'animationId': animationId,
       };
 
   static TextOverlayData fromMap(Map<String, dynamic> map) => TextOverlayData(
@@ -53,6 +65,8 @@ class TextOverlayData {
         scale: (map['scale'] as num?)?.toDouble() ?? 1.0,
         imageUrl: map['imageUrl'] as String?,
         color: map['color'] != null ? Color(map['color'] as int) : Colors.white,
+        styleId: map['styleId'] as String? ?? 'classic',
+        animationId: map['animationId'] as String? ?? 'none',
       );
 }
 
@@ -605,9 +619,19 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
     });
   }
 
-  Future<void> _addTextOverlay() async {
-    final TextEditingController textController = TextEditingController();
-    Color selectedColor = Colors.white;
+  Future<Map<String, dynamic>?> _showTextOverlayDialog({
+    required String title,
+    String initialText = '',
+    Color initialColor = Colors.white,
+    String initialStyle = 'classic',
+    String initialAnimation = 'none',
+    bool showDelete = false,
+  }) async {
+    final TextEditingController textController =
+        TextEditingController(text: initialText);
+    Color selectedColor = initialColor;
+    String selectedStyle = initialStyle;
+    String selectedAnimation = initialAnimation;
     const List<Color> colorChoices = [
       Colors.white,
       Colors.black,
@@ -619,68 +643,183 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
       Color(0xFF9C4DFF),
     ];
 
-    final Map<String, dynamic>? result = await showDialog<Map<String, dynamic>>(
+    return showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text('Add text', style: TextStyle(color: Colors.white)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: textController,
-                maxLength: 60,
-                autofocus: true,
-                style: TextStyle(
-                  color: selectedColor,
-                  fontWeight: FontWeight.bold,
-                  shadows: const [
-                    Shadow(color: Colors.black, blurRadius: 4),
-                    Shadow(color: Colors.black, blurRadius: 4),
-                  ],
+          title: Text(title, style: const TextStyle(color: Colors.white)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: textController,
+                  maxLength: 60,
+                  autofocus: true,
+                  style: TextStyle(
+                    color: selectedColor,
+                    fontWeight: FontWeight.bold,
+                    shadows: const [
+                      Shadow(color: Colors.black, blurRadius: 4),
+                      Shadow(color: Colors.black, blurRadius: 4),
+                    ],
+                  ),
+                  decoration: const InputDecoration(
+                    hintText: 'Type something...',
+                    hintStyle: TextStyle(color: Colors.grey),
+                    enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24)),
+                    focusedBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.redAccent)),
+                  ),
                 ),
-                decoration: const InputDecoration(
-                  hintText: 'Type something...',
-                  hintStyle: TextStyle(color: Colors.grey),
-                  enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24)),
-                  focusedBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.redAccent)),
+                const SizedBox(height: 14),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Style',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
                 ),
-              ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Text color',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-              ),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: colorChoices.map((color) {
-                  final bool isSelected = color.value == selectedColor.value;
-                  return GestureDetector(
-                    onTap: () => setDialogState(() => selectedColor = color),
-                    child: Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: color,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isSelected ? Colors.white : Colors.white24,
-                          width: isSelected ? 2.5 : 1,
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 64,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: kTextOverlayStyles.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, i) {
+                      final String styleId = kTextOverlayStyles[i];
+                      final bool isSelected = styleId == selectedStyle;
+                      return GestureDetector(
+                        onTap: () =>
+                            setDialogState(() => selectedStyle = styleId),
+                        child: Container(
+                          width: 64,
+                          decoration: BoxDecoration(
+                            color: Colors.black26,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.redAccent
+                                  : Colors.white24,
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              styledOverlayText(
+                                  'Aa', 20, selectedColor, styleId),
+                              const SizedBox(height: 4),
+                              Text(
+                                textOverlayStyleLabel(styleId),
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 9,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Animation',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 64,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: kTextOverlayAnimations.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, i) {
+                      final String animId = kTextOverlayAnimations[i];
+                      final bool isSelected = animId == selectedAnimation;
+                      return GestureDetector(
+                        onTap: () =>
+                            setDialogState(() => selectedAnimation = animId),
+                        child: Container(
+                          width: 64,
+                          decoration: BoxDecoration(
+                            color: Colors.black26,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.redAccent
+                                  : Colors.white24,
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              AnimatedOverlayText(
+                                text: 'Aa',
+                                fontSize: 20,
+                                color: selectedColor,
+                                styleId: selectedStyle,
+                                animationId: animId,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                textOverlayAnimationLabel(animId),
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 9,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Text color',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+                ),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: colorChoices.map((color) {
+                    final bool isSelected = color.value == selectedColor.value;
+                    return GestureDetector(
+                      onTap: () => setDialogState(() => selectedColor = color),
+                      child: Container(
+                        width: 30,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: isSelected ? Colors.white : Colors.white24,
+                            width: isSelected ? 2.5 : 1,
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ],
+                    );
+                  }).toList(),
+                ),
+              ],
+            ),
           ),
           actions: [
+            if (showDelete)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, {'delete': true}),
+                child: const Text('Delete',
+                    style: TextStyle(color: Colors.redAccent)),
+              ),
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
@@ -689,21 +828,60 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
               onPressed: () => Navigator.pop(ctx, {
                 'text': textController.text.trim(),
                 'color': selectedColor,
+                'styleId': selectedStyle,
+                'animationId': selectedAnimation,
               }),
-              child:
-                  const Text('Add', style: TextStyle(color: Colors.redAccent)),
+              child: Text(showDelete ? 'Save' : 'Add',
+                  style: const TextStyle(color: Colors.redAccent)),
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _addTextOverlay() async {
+    final Map<String, dynamic>? result =
+        await _showTextOverlayDialog(title: 'Add text');
     final String? text = result?['text'] as String?;
     if (text == null || text.isEmpty) return;
     setState(() {
       _textOverlays.add(TextOverlayData(
         text: text,
         color: result?['color'] as Color? ?? Colors.white,
+        styleId: result?['styleId'] as String? ?? 'classic',
+        animationId: result?['animationId'] as String? ?? 'none',
       ));
+    });
+  }
+
+  // Tapping an existing text overlay (not a sticker/emoji) reopens the
+  // same dialog pre-filled with its current text/color/style/animation,
+  // so a typo or a wrong style choice can be fixed in place instead of
+  // deleting and re-adding it from scratch.
+  Future<void> _editTextOverlay(int index) async {
+    final TextOverlayData overlay = _textOverlays[index];
+    final Map<String, dynamic>? result = await _showTextOverlayDialog(
+      title: 'Edit text',
+      initialText: overlay.text,
+      initialColor: overlay.color,
+      initialStyle: overlay.styleId,
+      initialAnimation: overlay.animationId,
+      showDelete: true,
+    );
+    if (result == null) return;
+    setState(() {
+      if (result['delete'] == true) {
+        _textOverlays.removeAt(index);
+        return;
+      }
+      final String? text = result['text'] as String?;
+      if (text == null || text.isEmpty) return;
+      overlay.text = text;
+      overlay.color = result['color'] as Color? ?? overlay.color;
+      overlay.styleId = result['styleId'] as String? ?? overlay.styleId;
+      overlay.animationId =
+          result['animationId'] as String? ?? overlay.animationId;
     });
   }
 
@@ -715,34 +893,6 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
         filterType: _filterType,
         textOverlays: _textOverlays,
       ),
-    );
-  }
-
-  // Colored text with a black outline, so it stays readable over any part
-  // of the video without needing an opaque background chip.
-  Widget _outlinedText(String text, double fontSize, Color color) {
-    return Stack(
-      children: [
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = fontSize * 0.12
-              ..color = Colors.black,
-          ),
-        ),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
     );
   }
 
@@ -766,6 +916,11 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
             overlay.scale = (gestureStartScale * details.scale).clamp(0.4, 4.0);
           });
         },
+        // Tapping a text overlay (not a sticker/emoji, which has nothing
+        // typed to correct) reopens the add-text dialog pre-filled, so a
+        // typo or wrong color/style choice can be fixed without deleting
+        // and re-adding it.
+        onTap: overlay.isSticker ? null : () => _editTextOverlay(index),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
@@ -774,7 +929,13 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
                     width: 80 * overlay.scale, height: 80 * overlay.scale)
                 : overlay.isSticker
                     ? Text(overlay.text, style: TextStyle(fontSize: fontSize))
-                    : _outlinedText(overlay.text, fontSize, overlay.color),
+                    : AnimatedOverlayText(
+                        text: overlay.text,
+                        fontSize: fontSize,
+                        color: overlay.color,
+                        styleId: overlay.styleId,
+                        animationId: overlay.animationId,
+                      ),
             // Small, always-visible delete button so removing an overlay
             // doesn't rely on remembering a long-press gesture.
             Positioned(

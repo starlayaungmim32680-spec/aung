@@ -9,6 +9,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
+import 'text_overlay_style.dart';
 import 'face_filter_camera_screen.dart';
 
 class UploadScreen extends StatefulWidget {
@@ -442,34 +443,6 @@ class _UploadScreenState extends State<UploadScreen> {
     }
   }
 
-  // Colored text with a black outline, so it stays readable over any part
-  // of the video without needing an opaque background chip.
-  Widget _outlinedText(String text, double fontSize, Color color) {
-    return Stack(
-      children: [
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = fontSize * 0.12
-              ..color = Colors.black,
-          ),
-        ),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -702,10 +675,13 @@ class _UploadScreenState extends State<UploadScreen> {
                                                 style: TextStyle(
                                                     fontSize:
                                                         48 * overlay.scale))
-                                            : _outlinedText(
-                                                overlay.text,
-                                                18 * overlay.scale,
-                                                overlay.color,
+                                            : AnimatedOverlayText(
+                                                text: overlay.text,
+                                                fontSize: 18 * overlay.scale,
+                                                color: overlay.color,
+                                                styleId: overlay.styleId,
+                                                animationId:
+                                                    overlay.animationId,
                                               ),
                                   ),
                               ],
