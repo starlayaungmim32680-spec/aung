@@ -11,6 +11,8 @@ import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'text_overlay_style.dart';
 import 'face_filter_camera_screen.dart';
+import 'sounds_library_screen.dart';
+import 'sound_sync_sheet.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -54,6 +56,103 @@ class _UploadScreenState extends State<UploadScreen> {
   // null means the user hasn't chosen an upload type yet.
   String? _videoType;
 
+  // Sound for this upload - starts from whatever was passed in (e.g. from
+  // a sound page's "Use this sound"), but can also be changed in-screen
+  // via the sound picker below (see _pickSound). Null id/sourceUrl means
+  // "just use this video's own audio" (the default).
+  String? _selectedSoundId;
+  String? _selectedSoundTitle;
+  String? _selectedSoundOwnerName;
+  String? _selectedSoundSourceUrl;
+  // Where in the (possibly longer) song to start, in seconds - chosen via
+  // the sync sheet below when the song runs longer than the video, so the
+  // audio doesn't just always start from the song's own 0:00.
+  double _selectedSoundStartOffset = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedSoundId = widget.presetSoundId;
+    _selectedSoundTitle = widget.presetSoundTitle;
+    _selectedSoundOwnerName = widget.presetSoundOwnerName;
+    _selectedSoundSourceUrl = widget.presetSoundSourceUrl;
+  }
+
+  // Video length to sync the sound against: the trimmed range if the user
+  // set one, otherwise the full picked video.
+  double? get _effectiveVideoDurationSeconds {
+    if (_trimStartSeconds != null && _trimEndSeconds != null) {
+      return (_trimEndSeconds! - _trimStartSeconds!).toDouble();
+    }
+    final duration = _previewController?.value.duration;
+    return duration == null ? null : duration.inMilliseconds / 1000;
+  }
+
+  // Loads just enough of [url] to read its duration, then throws the
+  // player away - used to compare a candidate sound's length against the
+  // video's before deciding whether syncing is even relevant.
+  Future<double?> _probeDurationSeconds(String url) async {
+    if (url.isEmpty) return null;
+    VideoPlayerController? controller;
+    try {
+      controller = VideoPlayerController.networkUrl(Uri.parse(url));
+      await controller.initialize();
+      return controller.value.duration.inMilliseconds / 1000;
+    } catch (_) {
+      return null;
+    } finally {
+      await controller?.dispose();
+    }
+  }
+
+  Future<void> _pickSound() async {
+    final result = await Navigator.push<Map<String, String>>(
+      context,
+      MaterialPageRoute(builder: (_) => const SoundsLibraryScreen()),
+    );
+    if (result == null) return;
+
+    final String sourceUrl = result['sourceUrl'] ?? '';
+    double startOffset = 0;
+
+    // Only worth syncing if we actually know both lengths and the song
+    // runs longer than the video - otherwise there's nothing to pick.
+    final double? videoDuration = _effectiveVideoDurationSeconds;
+    if (sourceUrl.isNotEmpty && videoDuration != null && videoDuration > 0) {
+      final double? soundDuration = await _probeDurationSeconds(sourceUrl);
+      if (soundDuration != null && soundDuration > videoDuration + 0.5) {
+        if (!mounted) return;
+        final double? chosen = await showSoundSyncSheet(
+          context: context,
+          soundTitle: result['title'] ?? 'Original sound',
+          soundSourceUrl: sourceUrl,
+          soundDurationSeconds: soundDuration,
+          videoDurationSeconds: videoDuration,
+        );
+        if (chosen != null) startOffset = chosen;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _selectedSoundId = result['soundId'];
+      _selectedSoundTitle = result['title'];
+      _selectedSoundOwnerName = result['ownerName'];
+      _selectedSoundSourceUrl = sourceUrl;
+      _selectedSoundStartOffset = startOffset;
+    });
+  }
+
+  void _clearSelectedSound() {
+    setState(() {
+      _selectedSoundId = null;
+      _selectedSoundTitle = null;
+      _selectedSoundOwnerName = null;
+      _selectedSoundSourceUrl = null;
+      _selectedSoundStartOffset = 0;
+    });
+  }
+
   @override
   void dispose() {
     _captionController.dispose();
@@ -88,6 +187,11 @@ class _UploadScreenState extends State<UploadScreen> {
       _textOverlays = [];
       _captionController.clear();
       _errorMessage = null;
+      _selectedSoundId = null;
+      _selectedSoundTitle = null;
+      _selectedSoundOwnerName = null;
+      _selectedSoundSourceUrl = null;
+      _selectedSoundStartOffset = 0;
     });
   }
 
@@ -230,8 +334,17 @@ class _UploadScreenState extends State<UploadScreen> {
 
   // Replaces the new video's own audio with the chosen sound, entirely on
   // Cloudinary's side - "ac_none" drops the original audio track and the
-  // audio layer adds the borrowed one on top.
-  String _buildSoundUrl(String videoUrl, String soundPublicId) {
+  // audio layer adds the borrowed one on top. so_/eo_ on the overlay
+  // layer itself (before fl_layer_apply) trim the SOUND to the chosen
+  // [startOffset, startOffset + videoDurationSeconds] window, so a song
+  // longer than the video plays the picked part instead of always
+  // starting at 0:00 - see sound_sync_sheet.dart.
+  String _buildSoundUrl(
+    String videoUrl,
+    String soundPublicId, {
+    required double startOffset,
+    double? videoDurationSeconds,
+  }) {
     if (soundPublicId.isEmpty) return videoUrl;
     const String marker = '/upload/';
     final int index = videoUrl.indexOf(marker);
@@ -239,7 +352,17 @@ class _UploadScreenState extends State<UploadScreen> {
 
     final String before = videoUrl.substring(0, index + marker.length);
     final String after = videoUrl.substring(index + marker.length);
-    return '${before}ac_none/l_audio:$soundPublicId/fl_layer_apply/$after';
+
+    String overlaySpec = 'l_audio:$soundPublicId';
+    if (startOffset > 0 || videoDurationSeconds != null) {
+      final String so = startOffset.toStringAsFixed(2);
+      overlaySpec += '/so_$so';
+      if (videoDurationSeconds != null) {
+        final double eo = startOffset + videoDurationSeconds;
+        overlaySpec += ',eo_${eo.toStringAsFixed(2)}';
+      }
+    }
+    return '${before}ac_none/$overlaySpec/fl_layer_apply/$after';
   }
 
   Future<void> _uploadPost() async {
@@ -345,7 +468,7 @@ class _UploadScreenState extends State<UploadScreen> {
 
       final postRef = FirebaseFirestore.instance.collection('posts').doc();
 
-      final String? borrowedSoundId = widget.presetSoundId;
+      final String? borrowedSoundId = _selectedSoundId;
       final bool usingBorrowedSound =
           borrowedSoundId != null && borrowedSoundId.isNotEmpty;
 
@@ -357,12 +480,25 @@ class _UploadScreenState extends State<UploadScreen> {
         // Swap this video's audio for the borrowed sound, and credit the
         // sound to whoever it originally came from.
         final String soundPublicId =
-            _publicIdFromUrl(widget.presetSoundSourceUrl ?? '');
-        videoUrl = _buildSoundUrl(videoUrl, soundPublicId);
+            _publicIdFromUrl(_selectedSoundSourceUrl ?? '');
+        videoUrl = _buildSoundUrl(
+          videoUrl,
+          soundPublicId,
+          startOffset: _selectedSoundStartOffset,
+          videoDurationSeconds: _effectiveVideoDurationSeconds,
+        );
 
         soundId = borrowedSoundId;
-        soundTitle = widget.presetSoundTitle ?? 'Original sound';
-        soundOwnerName = widget.presetSoundOwnerName ?? '';
+        soundTitle = _selectedSoundTitle ?? 'Original sound';
+        soundOwnerName = _selectedSoundOwnerName ?? '';
+
+        // Keeps the sound's "N videos" / trending count accurate - see
+        // sounds_library_screen.dart, which sorts by this field.
+        FirebaseFirestore.instance
+            .collection('sounds')
+            .doc(borrowedSoundId)
+            .set({'usageCount': FieldValue.increment(1)},
+                SetOptions(merge: true));
       } else {
         // A fresh upload also becomes a reusable sound of its own. The
         // sound doc shares the post's id so the two are easy to match up.
@@ -381,6 +517,9 @@ class _UploadScreenState extends State<UploadScreen> {
           // taking the audio track off this URL.
           'sourceUrl': videoUrl,
           'sourcePostId': postRef.id,
+          // Own creation doesn't count as a "use" of itself - starts at 0
+          // and only counts videos that later borrow it.
+          'usageCount': 0,
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
@@ -425,6 +564,11 @@ class _UploadScreenState extends State<UploadScreen> {
           _filterType = 'none';
           _textOverlays = [];
           _captionController.clear();
+          _selectedSoundId = null;
+          _selectedSoundTitle = null;
+          _selectedSoundOwnerName = null;
+          _selectedSoundSourceUrl = null;
+          _selectedSoundStartOffset = 0;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Posted successfully!')),
@@ -459,8 +603,10 @@ class _UploadScreenState extends State<UploadScreen> {
       ),
       body: Column(
         children: [
-          // Shown when this screen was opened via "Use this sound"
-          if (widget.presetSoundId != null && widget.presetSoundId!.isNotEmpty)
+          // Current sound status - shown once a sound has been picked
+          // (either via "Use this sound" from a sound page, or via the
+          // in-screen picker below).
+          if (_selectedSoundId != null && _selectedSoundId!.isNotEmpty)
             Container(
               width: double.infinity,
               color: const Color(0xFF1E1E1E),
@@ -476,8 +622,8 @@ class _UploadScreenState extends State<UploadScreen> {
                       children: [
                         Text(
                           [
-                            widget.presetSoundTitle ?? 'Original sound',
-                            widget.presetSoundOwnerName ?? '',
+                            _selectedSoundTitle ?? 'Original sound',
+                            _selectedSoundOwnerName ?? '',
                           ].where((s) => s.isNotEmpty).join(' - '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -494,7 +640,43 @@ class _UploadScreenState extends State<UploadScreen> {
                       ],
                     ),
                   ),
+                  TextButton(
+                    onPressed: _isUploading ? null : _pickSound,
+                    child: const Text('Change'),
+                  ),
+                  IconButton(
+                    onPressed: _isUploading ? null : _clearSelectedSound,
+                    icon: const Icon(Icons.close,
+                        color: Colors.white54, size: 18),
+                    tooltip: 'Remove sound',
+                  ),
                 ],
+              ),
+            )
+          else if (_videoType != null)
+            // No sound picked yet - offer the library once a video's
+            // actually being posted (not on the initial type-chooser).
+            Material(
+              color: const Color(0xFF1E1E1E),
+              child: InkWell(
+                onTap: _isUploading ? null : _pickSound,
+                child: Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.music_note, color: Colors.white54, size: 18),
+                      SizedBox(width: 8),
+                      Text('Add sound',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 14)),
+                      Spacer(),
+                      Icon(Icons.chevron_right,
+                          color: Colors.white38, size: 18),
+                    ],
+                  ),
+                ),
               ),
             ),
           Expanded(
