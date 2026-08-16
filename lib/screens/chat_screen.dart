@@ -12,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'public_profile_screen.dart';
 import 'video_call_screen.dart';
+import 'call_push_service.dart';
 
 // Cloudinary upload details (unsigned)
 const String kCloudinaryImageUrl =
@@ -639,7 +640,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     }
   }
 
-  Future<void> _startVideoCall() async {
+  Future<void> _startVideoCall({required bool withCamera}) async {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
 
@@ -662,6 +663,18 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'createdAt': FieldValue.serverTimestamp(),
     });
 
+    // Best-effort - wakes the other person's phone even if they've
+    // closed Fly entirely. The call still works normally without this
+    // (via the Firestore listener) if they already have the app open.
+    sendCallPush(
+      calleeId: widget.otherUserId,
+      callerId: myId,
+      callerName: myName,
+      callerPhoto: myPhoto,
+      roomName: _chatId,
+      isVideo: withCamera,
+    );
+
     if (!mounted) return;
 
     Navigator.push(
@@ -672,6 +685,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           myName: myId,
           otherName: widget.otherUserName,
           otherPhoto: widget.otherUserPhoto,
+          startWithCamera: withCamera,
         ),
       ),
     );
@@ -749,8 +763,14 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.call, color: Colors.white),
+            tooltip: 'Voice call',
+            onPressed: () => _startVideoCall(withCamera: false),
+          ),
+          IconButton(
             icon: const Icon(Icons.videocam, color: Colors.white),
-            onPressed: _startVideoCall,
+            tooltip: 'Video call',
+            onPressed: () => _startVideoCall(withCamera: true),
           ),
         ],
       ),

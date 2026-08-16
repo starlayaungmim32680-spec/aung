@@ -31,6 +31,11 @@ dependencies:
   google_mlkit_face_mesh_detection: ^0.4.2
   google_mlkit_translation: ^0.13.1
   google_mlkit_language_id: ^0.13.0
+  firebase_messaging: ^15.2.10
+  device_info_plus: ^12.3.0
+  android_intent_plus: ^6.0.0
+  flutter_callkit_incoming: ^3.1.5
+  uuid: ^4.5.3
   url_launcher: ^6.3.1
   gal: ^2.3.1
 dev_dependencies:

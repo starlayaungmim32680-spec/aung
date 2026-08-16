@@ -1,4 +1,8 @@
+import 'dart:typed_data';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 // A simple wrapper around flutter_local_notifications for showing chat alerts
 class NotificationService {
@@ -10,6 +14,11 @@ class NotificationService {
   // Fixed ID for the incoming-call notification so show()/cancel() always
   // target the same one.
   static const int _callNotificationId = 999999;
+
+  // Long-short-long-short, repeating for the notification's own life -
+  // reads as "someone is calling", not "you have a message".
+  static final Int64List _callVibrationPattern =
+      Int64List.fromList([0, 800, 400, 800, 400, 800, 400, 800]);
 
   // Sets up the notification plugin and asks for permission. Call once at startup.
   static Future<void> init() async {
@@ -68,8 +77,15 @@ class NotificationService {
   // Shows a full-screen incoming-call notification. If the phone screen is
   // off or locked right now, this wakes it up and brings Fly's already-open
   // IncomingCallScreen to the front (see MainActivity's showWhenLocked /
-  // turnScreenOn flags in AndroidManifest.xml). Sound/vibration are left off
-  // here since IncomingCallScreen already plays its own ringtone + haptics.
+  // turnScreenOn flags in AndroidManifest.xml).
+  //
+  // Sound/vibration are turned ON here (not left to IncomingCallScreen's
+  // own ringtone) because that screen only actually appears if the
+  // phone's full-screen-intent permission is granted - on phones where
+  // it isn't, this notification is the only thing the person sees/hears,
+  // so it needs to be audible on its own rather than sitting silent in
+  // the tray. If IncomingCallScreen does also open, both playing briefly
+  // together is a minor redundancy, not a real problem.
   //
   // Wrapped in try/catch: a notification failure (missing permission,
   // OEM restriction, etc.) must never stop the incoming-call screen itself
@@ -78,7 +94,7 @@ class NotificationService {
     required String callerName,
   }) async {
     try {
-      const AndroidNotificationDetails androidDetails =
+      final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
         'incoming_calls',
         'Incoming Calls',
@@ -89,14 +105,15 @@ class NotificationService {
         fullScreenIntent: true,
         ongoing: true,
         autoCancel: false,
-        playSound: false,
-        enableVibration: false,
+        playSound: true,
+        enableVibration: true,
+        vibrationPattern: _callVibrationPattern,
         visibility: NotificationVisibility.public,
         timeoutAfter: 45000,
         icon: '@drawable/ic_notification',
       );
 
-      const NotificationDetails details =
+      final NotificationDetails details =
           NotificationDetails(android: androidDetails);
 
       await _plugin.show(
@@ -115,6 +132,69 @@ class NotificationService {
   static Future<void> cancelIncomingCallNotification() async {
     try {
       await _plugin.cancel(_callNotificationId);
+    } catch (_) {}
+  }
+
+  // Asks for notification permission, grabs this device's FCM token, and
+  // saves it to the signed-in user's profile - that's what lets another
+  // user's device find this one to wake it for an incoming call (see
+  // call_push_service.dart). Also keeps the saved token current if it
+  // ever rotates. Call once after login.
+  //
+  // Returns null on success, or a short description of what went wrong -
+  // used by the "Push notifications" row in wallet_screen.dart so this
+  // can be checked/retried right from the app, without needing to dig
+  // through the Firebase Console to see whether it worked.
+  static Future<String?> registerAndSaveToken() async {
+    final messaging = FirebaseMessaging.instance;
+
+    NotificationSettings settings;
+    try {
+      settings = await messaging.requestPermission();
+    } catch (e) {
+      return 'Could not request permission: $e';
+    }
+    if (settings.authorizationStatus == AuthorizationStatus.denied) {
+      return "Notification permission was denied - check the phone's "
+          'settings for Fly and allow notifications, then try again.';
+    }
+
+    String? token;
+    try {
+      token = await messaging.getToken();
+    } catch (e) {
+      return 'Could not get a device token: $e';
+    }
+    if (token == null || token.isEmpty) {
+      return 'Device token came back empty - Google Play Services may be '
+          'missing or out of date on this phone.';
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return 'Not signed in.';
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({'fcmToken': token}, SetOptions(merge: true));
+    } catch (e) {
+      return 'Could not save the token to Firestore: $e';
+    }
+
+    messaging.onTokenRefresh.listen(_saveToken);
+    return null;
+  }
+
+  static Future<void> _saveToken(String? token) async {
+    if (token == null) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .set({'fcmToken': token}, SetOptions(merge: true));
     } catch (_) {}
   }
 }

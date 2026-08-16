@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'chat_screen.dart';
+import 'video_call_screen.dart';
+import 'call_push_service.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
 import 'gifting.dart';
@@ -166,7 +168,8 @@ class PublicProfileScreen extends StatelessWidget {
                               ),
                               const SizedBox(height: 18),
 
-                              // Follow + Message buttons (Facebook style, hidden on your own profile)
+                              // Follow + Message + Video call buttons
+                              // (Facebook style, hidden on your own profile)
                               if (!isMe && myId != null)
                                 Row(
                                   children: [
@@ -212,6 +215,50 @@ class PublicProfileScreen extends StatelessWidget {
                                                 BorderRadius.circular(8),
                                           ),
                                         ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    GestureDetector(
+                                      onTap: () => _startVideoCall(
+                                        context,
+                                        myId,
+                                        userId,
+                                        displayName,
+                                        photoUrl,
+                                        withCamera: false,
+                                      ),
+                                      child: Container(
+                                        width: 42,
+                                        height: 42,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF3A3B3C),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Icon(Icons.call,
+                                            color: Colors.white, size: 20),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    GestureDetector(
+                                      onTap: () => _startVideoCall(
+                                        context,
+                                        myId,
+                                        userId,
+                                        displayName,
+                                        photoUrl,
+                                        withCamera: true,
+                                      ),
+                                      child: Container(
+                                        width: 42,
+                                        height: 42,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF3A3B3C),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Icon(Icons.videocam,
+                                            color: Colors.white, size: 20),
                                       ),
                                     ),
                                   ],
@@ -447,6 +494,70 @@ class _CountStat extends StatelessWidget {
       },
     );
   }
+}
+
+// Starts a call with [otherUserId] directly from their profile - same
+// call-doc + navigation as ChatThreadScreen's own call buttons (see
+// chat_screen.dart's _startVideoCall), just reachable without opening
+// the chat thread first. Uses the same sorted-uid chat id so it's the
+// same call thread either way. [withCamera] decides whether it opens as
+// a voice call (camera off, can still be turned on mid-call) or a video
+// call (camera on from the start).
+Future<void> _startVideoCall(
+  BuildContext context,
+  String myId,
+  String otherUserId,
+  String otherUserName,
+  String otherUserPhoto, {
+  required bool withCamera,
+}) async {
+  final List<String> ids = [myId, otherUserId]..sort();
+  final String roomName = '${ids[0]}_${ids[1]}';
+
+  final myProfile =
+      await FirebaseFirestore.instance.collection('users').doc(myId).get();
+  final myData = myProfile.data();
+  final String myName =
+      (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+          ? myData!['displayName']
+          : 'Someone';
+  final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+  await FirebaseFirestore.instance.collection('calls').doc(roomName).set({
+    'callerId': myId,
+    'callerName': myName,
+    'callerPhoto': myPhoto,
+    'calleeId': otherUserId,
+    'roomName': roomName,
+    'status': 'ringing',
+    'createdAt': FieldValue.serverTimestamp(),
+  });
+
+  // Best-effort - wakes the other person's phone even if they've closed
+  // Fly entirely. The call still works normally without this (via the
+  // Firestore listener) if they already have the app open.
+  sendCallPush(
+    calleeId: otherUserId,
+    callerId: myId,
+    callerName: myName,
+    callerPhoto: myPhoto,
+    roomName: roomName,
+    isVideo: withCamera,
+  );
+
+  if (!context.mounted) return;
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => VideoCallScreen(
+        roomName: roomName,
+        myName: myId,
+        otherName: otherUserName,
+        otherPhoto: otherUserPhoto,
+        startWithCamera: withCamera,
+      ),
+    ),
+  );
 }
 
 // Confirms and then writes a block record under the current user's

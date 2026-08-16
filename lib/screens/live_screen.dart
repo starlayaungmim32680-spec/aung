@@ -8,22 +8,22 @@ import 'package:livekit_client/livekit_client.dart';
 import 'package:collection/collection.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'video_call_screen.dart' show kSandboxId;
+import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 import 'gifting.dart';
 
-// Shared helper: gets a LiveKit access token + server url from the same
-// sandbox token server the 1-on-1 calls use.
+// Shared helper: gets a LiveKit access token + server url from our own
+// token-minting server (see livekit_token_worker.js) - the same one the
+// 1-on-1 calls use.
 Future<Map<String, String>?> _fetchLiveKitConnectionDetails({
   required String roomName,
   required String participantName,
 }) async {
   try {
-    final uri = Uri.parse(
-        'https://cloud-api.livekit.io/api/sandbox/connection-details');
+    final uri = Uri.parse(kTokenServerUrl);
     final response = await http.post(
       uri,
       headers: {
-        'X-Sandbox-ID': kSandboxId,
+        'X-App-Secret': kAppSharedSecret,
         'Content-Type': 'application/json',
       },
       body: jsonEncode({

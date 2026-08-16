@@ -11,7 +11,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'gifting.dart';
+import '../notification_service.dart';
 
 class WalletScreen extends StatelessWidget {
   const WalletScreen({super.key});
@@ -34,6 +36,8 @@ class WalletScreen extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               children: [
                 _BalanceCard(uid: user.uid),
+                const SizedBox(height: 20),
+                _PushNotificationCard(uid: user.uid),
                 const SizedBox(height: 20),
                 _HowToEarnCard(),
                 const SizedBox(height: 20),
@@ -101,6 +105,149 @@ class _BalanceCard extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+// Shows whether this device is set up to receive incoming-call pushes
+// while Fly is closed, and lets the user retry the setup with one tap -
+// right from the app, without needing to check Firebase Console to see
+// whether it actually worked.
+class _PushNotificationCard extends StatefulWidget {
+  final String uid;
+  const _PushNotificationCard({required this.uid});
+
+  @override
+  State<_PushNotificationCard> createState() => _PushNotificationCardState();
+}
+
+class _PushNotificationCardState extends State<_PushNotificationCard> {
+  bool _checking = false;
+
+  Future<void> _retry() async {
+    setState(() => _checking = true);
+    final String? error = await NotificationService.registerAndSaveToken();
+    if (!mounted) return;
+    setState(() => _checking = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null
+              ? 'Push notifications are set up correctly'
+              : "Couldn't set up push notifications: $error",
+        ),
+        duration: const Duration(seconds: 6),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.notifications_active_outlined,
+                  color: Colors.white70, size: 18),
+              SizedBox(width: 8),
+              Text('Push notifications',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Account: ${widget.uid}',
+            style: const TextStyle(color: Colors.white38, fontSize: 10),
+          ),
+          const SizedBox(height: 6),
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .doc(widget.uid)
+                .snapshots(),
+            builder: (context, snap) {
+              final String? token = snap.data?.data()?['fcmToken'] as String?;
+              final bool hasToken = token?.isNotEmpty == true;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    hasToken
+                        ? 'Set up on this device - calls will wake Fly even '
+                            "when it's closed."
+                        : "Not set up yet on this device - incoming calls "
+                            'may only ring while Fly is already open.',
+                    style: TextStyle(
+                      color:
+                          hasToken ? Colors.greenAccent : Colors.orangeAccent,
+                      fontSize: 12,
+                    ),
+                  ),
+                  if (hasToken) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            token!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 10,
+                                fontFamily: 'monospace'),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: token));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Token copied'),
+                                  duration: Duration(seconds: 2)),
+                            );
+                          },
+                          child: const Padding(
+                            padding: EdgeInsets.only(left: 8),
+                            child: Icon(Icons.copy,
+                                color: Colors.white38, size: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: _checking ? null : _retry,
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.white24),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+              ),
+              child: Text(
+                _checking ? 'Checking...' : 'Check / retry setup',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

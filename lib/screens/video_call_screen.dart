@@ -4,10 +4,18 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:livekit_client/livekit_client.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import '../call_kit_service.dart';
 
-// LiveKit connection details for the Fly project
-const String kLiveKitUrl = 'wss://fly-iv33xo63.livekit.cloud';
-const String kSandboxId = 'fly-fu1yvy';
+// LiveKit connection details for the Fly project.
+//
+// Tokens are minted by our own Cloudflare Worker (livekit_token_worker.js)
+// instead of LiveKit's "Sandbox" endpoint - Sandbox is meant for demos/
+// development only, and this app is moving to real users. Fill these in
+// after deploying the Worker (see that file's setup comment).
+const String kTokenServerUrl =
+    'https://livekit-token-worker.chakaboycom.workers.dev';
+const String kAppSharedSecret = 'FlySecret2026xyz';
 
 // Colors available for drawing on the call
 const List<int> kDrawColors = [
@@ -25,6 +33,11 @@ class VideoCallScreen extends StatefulWidget {
   final String myName;
   final String? otherName;
   final String? otherPhoto;
+  // Every call here can switch between voice/video mid-call regardless -
+  // this only decides which one it opens as. True for a call started
+  // from a "video call" button, false (the default) for a plain voice
+  // call - camera stays off until the person taps the camera icon.
+  final bool startWithCamera;
 
   const VideoCallScreen({
     super.key,
@@ -32,6 +45,7 @@ class VideoCallScreen extends StatefulWidget {
     required this.myName,
     this.otherName,
     this.otherPhoto,
+    this.startWithCamera = false,
   });
 
   @override
@@ -89,13 +103,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   Future<Map<String, String>?> _fetchConnectionDetails() async {
     try {
-      final uri = Uri.parse(
-          'https://cloud-api.livekit.io/api/sandbox/connection-details');
+      final uri = Uri.parse(kTokenServerUrl);
 
       final response = await http.post(
         uri,
         headers: {
-          'X-Sandbox-ID': kSandboxId,
+          'X-App-Secret': kAppSharedSecret,
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
@@ -140,14 +153,31 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
       await room.connect(details['url']!, details['token']!);
 
-      await room.localParticipant?.setCameraEnabled(false);
+      await room.localParticipant?.setCameraEnabled(widget.startWithCamera);
       await room.localParticipant?.setMicrophoneEnabled(true);
+
+      LocalVideoTrack? startingVideoTrack;
+      if (widget.startWithCamera) {
+        final localPub =
+            room.localParticipant?.videoTrackPublications.firstOrNull;
+        startingVideoTrack = localPub?.track as LocalVideoTrack?;
+      }
 
       setState(() {
         _room = room;
         _listener = listener;
         _connecting = false;
+        _cameraEnabled = widget.startWithCamera;
+        _localVideoTrack = startingVideoTrack;
       });
+
+      // Tells CallKit the call is actually live now, not just ringing -
+      // its own internal call-state tracking needs this to later clean up
+      // the "on-going call" notification reliably when either side hangs
+      // up (see CallKitService.endCall).
+      try {
+        await FlutterCallkitIncoming.setCallConnected(widget.roomName);
+      } catch (_) {}
 
       _refreshRemote();
     } catch (e) {
@@ -354,6 +384,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   Future<void> _leaveCall() async {
+    // Dismisses CallKit's own native "ongoing call" notification/UI - the
+    // Firestore status update above closes this screen, but that's a
+    // separate thing from CallKit's own system-level call session, which
+    // otherwise keeps showing "On-going call" / Hang up on both phones
+    // even after one side has actually left.
+    await CallKitService.endCall(widget.roomName);
     if (!mounted) return;
     await _room?.disconnect();
     if (mounted) Navigator.pop(context);
@@ -365,6 +401,10 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     _listener?.dispose();
     _room?.disconnect();
     _room?.dispose();
+    // Safety net for exits that skip _leaveCall (e.g. system back
+    // gesture) - makes sure CallKit's native call session never gets
+    // left stuck showing "On-going call" on either phone.
+    CallKitService.endCall(widget.roomName);
     super.dispose();
   }
 
