@@ -12,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'public_profile_screen.dart';
 import 'video_call_screen.dart';
+import '../call_kit_service.dart';
 import 'call_push_service.dart';
 
 // Cloudinary upload details (unsigned)
@@ -672,6 +673,16 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       callerName: myName,
       callerPhoto: myPhoto,
       roomName: _chatId,
+      isVideo: withCamera,
+    );
+
+    // Registers this side of the call with Android's own Telecom system
+    // too, not just the person receiving it - see CallKitService's own
+    // comment on why the caller needs this just as much.
+    await CallKitService.startOutgoingCall(
+      roomName: _chatId,
+      otherName: widget.otherUserName,
+      otherPhoto: widget.otherUserPhoto,
       isVideo: withCamera,
     );
 

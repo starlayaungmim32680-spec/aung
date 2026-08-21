@@ -1,11 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:livekit_client/livekit_client.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' show Helper;
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:proximity_sensor/proximity_sensor.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../call_kit_service.dart';
+import '../active_call.dart';
 
 // LiveKit connection details for the Fly project.
 //
@@ -16,6 +21,10 @@ import '../call_kit_service.dart';
 const String kTokenServerUrl =
     'https://livekit-token-worker.chakaboycom.workers.dev';
 const String kAppSharedSecret = 'FlySecret2026xyz';
+
+// Shared with MainActivity.kt - lets Dart minimize the app / tell native
+// code about the active call for Picture-in-Picture (see that file).
+final MethodChannel kBackgroundChannel = MethodChannel('fly/background');
 
 // Colors available for drawing on the call
 const List<int> kDrawColors = [
@@ -38,6 +47,12 @@ class VideoCallScreen extends StatefulWidget {
   // from a "video call" button, false (the default) for a plain voice
   // call - camera stays off until the person taps the camera icon.
   final bool startWithCamera;
+  // True only when this screen was pushed via CallKitService's Accept
+  // handler (the person receiving the call, tapping Accept on the
+  // native ring UI) - see _leaveCall's own comment for why that path
+  // needs a different "where do I land after hanging up" strategy than
+  // a call someone placed themselves from inside e.g. a chat thread.
+  final bool fromIncomingCall;
 
   const VideoCallScreen({
     super.key,
@@ -46,13 +61,15 @@ class VideoCallScreen extends StatefulWidget {
     this.otherName,
     this.otherPhoto,
     this.startWithCamera = false,
+    this.fromIncomingCall = false,
   });
 
   @override
   State<VideoCallScreen> createState() => _VideoCallScreenState();
 }
 
-class _VideoCallScreenState extends State<VideoCallScreen> {
+class _VideoCallScreenState extends State<VideoCallScreen>
+    with WidgetsBindingObserver {
   Room? _room;
   EventsListener<RoomEvent>? _listener;
 
@@ -62,6 +79,11 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   bool _micEnabled = true;
   bool _cameraEnabled = false;
+  // Starts on speaker for video calls (screen's usually held away from
+  // the ear anyway) and earpiece for voice calls - matches how most
+  // phones behave by default, and the button lets either be flipped
+  // mid-call.
+  bool _speakerOn = false;
   bool _isFrontCamera = true;
 
   LocalVideoTrack? _localVideoTrack;
@@ -71,6 +93,30 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   StreamSubscription<DocumentSnapshot>? _callStatusSub;
   bool _hangingUp = false;
+
+  // Call duration - starts counting once setCallConnected fires (see
+  // _connect), ticks every second, shown in the app bar area.
+  Duration _callDuration = Duration.zero;
+  Timer? _durationTimer;
+
+  // Backstop for "I called, they didn't answer, but my screen never
+  // found out" - if the CallKit decline tap on their end doesn't make it
+  // back to Firestore (e.g. their app process wasn't fully alive to run
+  // CallKitService's listener when they tapped it), this makes sure the
+  // caller's own screen doesn't just sit on "Ringing..." forever. Same
+  // 45-second window CallKitParams already uses for the callee's own
+  // ring timeout, so both sides give up around the same time either way.
+  Timer? _noAnswerTimer;
+
+  // Voice calls only (never video - the screen needs to stay visible for
+  // that): mirrors what a real phone call does when held to the ear -
+  // Android turns the screen off itself via setProximityScreenOff, but
+  // per the plugin's own example, that flag alone isn't enough on some
+  // builds - it also needs an active listener on the raw sensor stream
+  // for the native side to actually engage. The events themselves aren't
+  // used for anything here; just keeping the subscription alive is what
+  // matters.
+  StreamSubscription<dynamic>? _proximitySub;
 
   // Drawing state
   bool _drawMode = false;
@@ -83,8 +129,56 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _connect();
     _listenForCallEnd();
+    _noAnswerTimer = Timer(const Duration(seconds: 45), () {
+      if (!_remoteJoined && mounted) _endCall();
+    });
+  }
+
+  // Since the call can't reliably survive leaving Fly entirely (see the
+  // long chase in the conversation history), the fallback goal is
+  // simpler and safer: end it cleanly for BOTH sides right away instead
+  // of leaving the other person connected to a call that's effectively
+  // dead on this end - avoids wasted call minutes and a one-sided
+  // "zombie" connection. Skipped when the person used the explicit
+  // in-app minimize button (_isMinimizing), since that's a deliberate
+  // "keep the call running, I'm just browsing Fly" action, not leaving.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_isMinimizing) return;
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _endCall();
+    }
+  }
+
+  void _startCallTimer() {
+    _durationTimer?.cancel();
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _callDuration += const Duration(seconds: 1));
+    });
+  }
+
+  String get _formattedDuration {
+    final int totalSeconds = _callDuration.inSeconds;
+    final int minutes = totalSeconds ~/ 60;
+    final int seconds = totalSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _startProximityScreenOffIfVoiceCall() async {
+    if (widget.startWithCamera) return; // video call - keep screen on
+    try {
+      await ProximitySensor.setProximityScreenOff(true);
+      _proximitySub = ProximitySensor.events.listen((_) {});
+    } catch (_) {
+      // Not available on this device/ROM - not a functional problem,
+      // the call itself is unaffected either way.
+    }
   }
 
   DocumentReference get _callRef =>
@@ -134,7 +228,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
+  DateTime? _connectedAt;
+  bool _isMinimizing = false;
+
   Future<void> _connect() async {
+    // If this exact call is already running because it was minimized
+    // rather than ended, reuse that connection instead of dialing again -
+    // reconnecting would drop and re-establish media for no reason, and
+    // briefly show "Ringing..." on a call that's actually been going for
+    // a while.
+    final Room? existing = ActiveCall.reclaim(widget.roomName);
+    if (existing != null) {
+      _adoptExistingRoom(existing);
+      return;
+    }
+
     final details = await _fetchConnectionDetails();
 
     if (details == null) {
@@ -146,7 +254,20 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
 
     try {
-      final room = Room();
+      final room = Room(
+        // Explicit rather than relying on the library's own defaults -
+        // these already default to true, but making it explicit means
+        // nothing else in the connect path can silently leave them off,
+        // which is exactly the kind of thing that would cause the
+        // person to hear their own voice echoed back.
+        roomOptions: const RoomOptions(
+          defaultAudioCaptureOptions: AudioCaptureOptions(
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          ),
+        ),
+      );
 
       final listener = room.createListener();
       _setupListeners(listener);
@@ -178,6 +299,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       try {
         await FlutterCallkitIncoming.setCallConnected(widget.roomName);
       } catch (_) {}
+      _connectedAt = DateTime.now();
+      _startCallTimer();
+      await _startProximityScreenOffIfVoiceCall();
+      // Video calls default to speaker (screen's held out to see the
+      // other person, not up to the ear); voice calls default to
+      // earpiece, like a normal phone call.
+      if (widget.startWithCamera) {
+        _speakerOn = true;
+        Helper.setSpeakerphoneOn(true).catchError((_) {});
+      }
+      // Keeps the CPU from sleeping for the length of the call - helps
+      // the connection survive Android's background throttling if the
+      // person switches away to another app mid-call.
+      WakelockPlus.enable();
+      _markCallActiveNatively();
 
       _refreshRemote();
     } catch (e) {
@@ -187,6 +323,65 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         _debugInfo = 'Connect error: $e';
       });
     }
+  }
+
+  // Picks a Room back up after minimizing (see ActiveCall) - rebuilds
+  // this screen's state from whatever the room's participants/tracks
+  // already are, instead of connecting fresh.
+  Future<void> _adoptExistingRoom(Room room) async {
+    final listener = room.createListener();
+    _setupListeners(listener);
+
+    final LocalVideoTrack? localVideo = room.localParticipant
+        ?.videoTrackPublications.firstOrNull?.track as LocalVideoTrack?;
+    final bool cameraOn = localVideo != null;
+
+    setState(() {
+      _room = room;
+      _listener = listener;
+      _connecting = false;
+      _cameraEnabled = cameraOn;
+      _localVideoTrack = localVideo;
+    });
+
+    _connectedAt = ActiveCall.connectedAt ?? DateTime.now();
+    _callDuration = DateTime.now().difference(_connectedAt!);
+    _startCallTimer();
+    await _startProximityScreenOffIfVoiceCall();
+    WakelockPlus.enable();
+    _markCallActiveNatively();
+
+    _refreshRemote();
+  }
+
+  // Tells MainActivity.kt whether there's a call it should treat
+  // specially: starting CallForegroundService (see that file) so the
+  // process survives leaving the app, and entering Picture-in-Picture
+  // automatically for video calls. Shows a SnackBar on failure - this
+  // native call has broken silently before, and there's no other way to
+  // see why without a full debugger attached.
+  Future<void> _markCallActiveNatively() async {
+    try {
+      await kBackgroundChannel.invokeMethod(
+        'setCallActive',
+        {'isVideo': _cameraEnabled},
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Background call service failed to start: $e'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _clearCallActiveNatively() async {
+    try {
+      await kBackgroundChannel.invokeMethod('clearCallActive');
+    } catch (_) {}
   }
 
   void _setupListeners(EventsListener<RoomEvent> listener) {
@@ -201,6 +396,16 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         _refreshRemote();
       })
       ..on<ParticipantDisconnectedEvent>((event) {
+        _endCall();
+      })
+      // My own connection dropping (network loss, the phone's background
+      // throttling silencing the call, etc.) - without this, the other
+      // person's screen would just sit there looking "connected" with no
+      // audio coming through and no way to know the call actually died
+      // on my end. Reusing _endCall() marks the Firestore doc "ended",
+      // which is what lets their own _listenForCallEnd() close their
+      // screen too, instead of one side hanging in a zombie call.
+      ..on<RoomDisconnectedEvent>((event) {
         _endCall();
       })
       // Receive the other person's drawing strokes
@@ -239,6 +444,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         _remoteName = remoteName;
         _remoteJoined = joined;
       });
+      if (joined) {
+        _noAnswerTimer?.cancel();
+      }
     }
   }
 
@@ -350,6 +558,17 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     setState(() => _micEnabled = next);
   }
 
+  Future<void> _toggleSpeaker() async {
+    final next = !_speakerOn;
+    try {
+      await Helper.setSpeakerphoneOn(next);
+      setState(() => _speakerOn = next);
+    } catch (_) {
+      // Not available on this device - leaves the phone on whichever
+      // output it was already using, which is still a working call.
+    }
+  }
+
   Future<void> _toggleCamera() async {
     final lp = _room?.localParticipant;
     if (lp == null) return;
@@ -377,6 +596,16 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   Future<void> _endCall() async {
     if (_hangingUp) return;
     _hangingUp = true;
+    // Fired together instead of one after another - if the phone is in
+    // the middle of leaving the app right now (the exact moment Android
+    // is most likely to start throttling this process), waiting for the
+    // Firestore write to finish before even starting CallKit's own
+    // cleanup risked never getting to the second step at all. Doing
+    // both at once gives each the best chance of actually completing
+    // before that happens - this is what left the "Ongoing call"
+    // notification stuck on the leaving person's own phone even though
+    // the other side correctly saw the call end via Firestore.
+    unawaited(CallKitService.endCall(widget.roomName));
     try {
       await _callRef.update({'status': 'ended'});
     } catch (_) {}
@@ -392,12 +621,74 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     await CallKitService.endCall(widget.roomName);
     if (!mounted) return;
     await _room?.disconnect();
-    if (mounted) Navigator.pop(context);
+    if (!mounted) return;
+    if (widget.fromIncomingCall) {
+      // A plain pop() left the person receiving the call on a black
+      // screen sometimes - their VideoCallScreen was pushed via the
+      // app-wide navigatorKey from CallKitService's Accept handler,
+      // not the in-context Navigator.push the caller's side uses, and
+      // something about that path leaves an extra, empty route behind.
+      // popUntil the first route sidesteps needing to know exactly why:
+      // whatever's stacked above the base MainNavigationScreen gets
+      // cleared, always landing on a real, populated screen.
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    } else {
+      // The caller placed this call from wherever they were (e.g. a
+      // chat thread) via a normal in-context push - a single pop
+      // correctly returns them right there, so this path is left alone.
+      Navigator.pop(context);
+    }
+  }
+
+  // Keeps the call fully connected but hands it off to ActiveCall and
+  // closes this screen - lets the person go use the rest of Fly while
+  // still talking, the same way a real phone call doesn't force you to
+  // stare at the dialer the whole time.
+  void _minimizeCall() {
+    if (_room == null) {
+      // Nothing connected yet to preserve (still connecting, or errored
+      // out) - closing the screen here is the same as leaving the call.
+      _leaveCall();
+      return;
+    }
+    _isMinimizing = true;
+    ActiveCall.adopt(
+      activeRoom: _room!,
+      activeRoomName: widget.roomName,
+      activeOtherName: widget.otherName ?? _remoteName,
+      activeOtherPhoto: widget.otherPhoto,
+      activeStartWithCamera: _cameraEnabled,
+      activeConnectedAt: _connectedAt ?? DateTime.now(),
+    );
+    // PiP only makes sense while this screen itself is what's showing -
+    // once minimized in-app, leaving Fly entirely should just background
+    // normally, not try to shrink a screen that's no longer open.
+    _clearCallActiveNatively();
+    Navigator.pop(context);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _callStatusSub?.cancel();
+    _durationTimer?.cancel();
+    _noAnswerTimer?.cancel();
+    _proximitySub?.cancel();
+    // Turn the screen-off-on-proximity behavior back off - otherwise it
+    // stays active app-wide even outside calls.
+    ProximitySensor.setProximityScreenOff(false).catchError((_) {});
+    WakelockPlus.disable();
+
+    if (_isMinimizing) {
+      // The call keeps running under ActiveCall - only this screen's own
+      // UI-bound listener needs cleaning up, not the room itself or
+      // CallKit's session, both of which ActiveCall now owns.
+      _listener?.dispose();
+      super.dispose();
+      return;
+    }
+
+    _clearCallActiveNatively();
     _listener?.dispose();
     _room?.disconnect();
     _room?.dispose();
@@ -410,96 +701,121 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0E0E0E),
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: _buildRemoteView(),
-            ),
-
-            // My own camera preview - only when my camera is on
-            if (_cameraEnabled && _localVideoTrack != null)
-              Positioned(
-                top: 16,
-                right: 16,
-                child: Container(
-                  width: 110,
-                  height: 160,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white24, width: 1),
-                    color: Colors.grey[900],
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: VideoTrackRenderer(_localVideoTrack!),
-                ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _minimizeCall();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0E0E0E),
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: _buildRemoteView(),
               ),
 
-            // Drawing layer - always shows strokes; captures touch in draw mode
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: !_drawMode,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final size =
-                        Size(constraints.maxWidth, constraints.maxHeight);
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onPanStart: (d) => _onDrawStart(d.localPosition, size),
-                      onPanUpdate: (d) => _onDrawUpdate(d.localPosition, size),
-                      onPanEnd: (d) => _onDrawEnd(),
-                      child: CustomPaint(
-                        painter: _DrawPainter(_strokes),
-                        size: Size.infinite,
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            // Switch-camera button (only when my camera is on)
-            if (_cameraEnabled && !_connecting && _error == null)
-              Positioned(
-                top: 16,
-                left: 16,
-                child: GestureDetector(
-                  onTap: _switchCamera,
+              // My own camera preview - only when my camera is on
+              if (_cameraEnabled && _localVideoTrack != null)
+                Positioned(
+                  top: 16,
+                  right: 16,
                   child: Container(
-                    width: 46,
-                    height: 46,
+                    width: 110,
+                    height: 160,
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      shape: BoxShape.circle,
+                      borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: Colors.white24, width: 1),
+                      color: Colors.grey[900],
                     ),
-                    child: const Icon(Icons.cameraswitch,
-                        color: Colors.white, size: 24),
+                    clipBehavior: Clip.antiAlias,
+                    child: VideoTrackRenderer(_localVideoTrack!),
+                  ),
+                ),
+
+              // Drawing layer - always shows strokes; captures touch in draw mode
+              Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: !_drawMode,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final size =
+                          Size(constraints.maxWidth, constraints.maxHeight);
+                      return GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanStart: (d) => _onDrawStart(d.localPosition, size),
+                        onPanUpdate: (d) =>
+                            _onDrawUpdate(d.localPosition, size),
+                        onPanEnd: (d) => _onDrawEnd(),
+                        child: CustomPaint(
+                          painter: _DrawPainter(_strokes),
+                          size: Size.infinite,
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
 
-            // Draw toolbar (colors + clear) - shown when in draw mode
-            if (_drawMode && _error == null)
+              // Switch-camera button (only when my camera is on)
+              if (_cameraEnabled && !_connecting && _error == null)
+                Positioned(
+                  top: 16,
+                  left: 16,
+                  child: GestureDetector(
+                    onTap: _switchCamera,
+                    child: Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.5),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1),
+                      ),
+                      child: const Icon(Icons.cameraswitch,
+                          color: Colors.white, size: 24),
+                    ),
+                  ),
+                ),
+
+              // Draw toolbar (colors + clear) - shown when in draw mode
+              if (_drawMode && _error == null)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 110,
+                  child: Center(child: _buildDrawToolbar()),
+                ),
+
               Positioned(
                 left: 0,
                 right: 0,
-                bottom: 110,
-                child: Center(child: _buildDrawToolbar()),
+                bottom: 30,
+                child: _buildControls(),
               ),
 
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 30,
-              child: _buildControls(),
-            ),
-          ],
+              _buildMinimizeButton(),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  // Backgrounds the app the way pressing the Home button would (see
+  // MainActivity.kt's method channel) - the LiveKit room, CallKit
+  // session, and this whole widget's state are left completely alone,
+  // so returning to the app (task switcher or the CallKit notification)
+  // drops the person right back into the still-connected call, instead
+  // of the back gesture hanging up the way a normal screen-pop would.
+  Future<void> _minimizeToBackground() async {
+    try {
+      await kBackgroundChannel.invokeMethod('moveToBackground');
+    } catch (_) {
+      // Fall back to the old behavior (actually leaving the call) rather
+      // than trapping the person on this screen with no way out.
+      _leaveCall();
+    }
   }
 
   Widget _buildDrawToolbar() {
@@ -654,7 +970,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           ),
           const SizedBox(height: 10),
           Text(
-            _remoteJoined ? 'In call' : 'Ringing...',
+            _remoteJoined
+                ? (_callDuration.inSeconds > 0 ? _formattedDuration : 'In call')
+                : 'Ringing...',
             style: const TextStyle(color: Colors.white60, fontSize: 15),
           ),
         ],
@@ -671,20 +989,26 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           color: _micEnabled ? Colors.white24 : Colors.redAccent,
           onTap: _toggleMic,
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 14),
+        _ControlButton(
+          icon: _speakerOn ? Icons.volume_up : Icons.hearing,
+          color: _speakerOn ? const Color(0xFF24D17E) : Colors.white24,
+          onTap: _toggleSpeaker,
+        ),
+        const SizedBox(width: 14),
         _ControlButton(
           icon: Icons.call_end,
           color: Colors.red,
           size: 62,
           onTap: _endCall,
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 14),
         _ControlButton(
           icon: _cameraEnabled ? Icons.videocam : Icons.videocam_off,
           color: _cameraEnabled ? Colors.white24 : Colors.redAccent,
           onTap: _toggleCamera,
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 14),
         // Draw toggle
         _ControlButton(
           icon: Icons.edit,
@@ -692,6 +1016,31 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           onTap: () => setState(() => _drawMode = !_drawMode),
         ),
       ],
+    );
+  }
+
+  // A small, explicit "minimize" affordance up top - the back gesture
+  // does the same thing (see PopScope in build()), but this makes it
+  // discoverable without relying on people knowing that.
+  Widget _buildMinimizeButton() {
+    return Positioned(
+      top: 8,
+      left: 8,
+      child: SafeArea(
+        child: GestureDetector(
+          onTap: _minimizeCall,
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.black45,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Icon(Icons.keyboard_arrow_down,
+                color: Colors.white, size: 26),
+          ),
+        ),
+      ),
     );
   }
 }

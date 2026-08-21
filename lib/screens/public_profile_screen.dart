@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'chat_screen.dart';
 import 'video_call_screen.dart';
+import '../call_kit_service.dart';
 import 'call_push_service.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
@@ -542,6 +543,16 @@ Future<void> _startVideoCall(
     callerName: myName,
     callerPhoto: myPhoto,
     roomName: roomName,
+    isVideo: withCamera,
+  );
+
+  // Registers this side of the call with Android's own Telecom system
+  // too, not just the person receiving it - see CallKitService's own
+  // comment on why the caller needs this just as much.
+  await CallKitService.startOutgoingCall(
+    roomName: roomName,
+    otherName: otherUserName,
+    otherPhoto: otherUserPhoto,
     isVideo: withCamera,
   );
 

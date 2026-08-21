@@ -11,6 +11,8 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import '../notification_service.dart';
 import '../call_kit_service.dart';
+import '../active_call.dart';
+import 'video_call_screen.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
 import 'upload_screen.dart';
@@ -920,7 +922,115 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               child: _buildMainButton(context),
             ),
           ),
+
+          // A minimized call, if there is one - tap to jump straight back
+          // into VideoCallScreen, which reclaims the still-running Room
+          // (see active_call.dart) instead of reconnecting.
+          const _MinimizedCallBar(),
         ],
+      ),
+    );
+  }
+}
+
+// Shown across every tab whenever a call has been minimized (see
+// active_call.dart) - lets the person keep browsing Fly and still see,
+// at a glance, that they're on a call, with one tap back into it.
+class _MinimizedCallBar extends StatefulWidget {
+  const _MinimizedCallBar();
+
+  @override
+  State<_MinimizedCallBar> createState() => _MinimizedCallBarState();
+}
+
+class _MinimizedCallBarState extends State<_MinimizedCallBar> {
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    // Cheap once-a-second rebuild so the elapsed-time text stays live -
+    // ActiveCall itself doesn't need to be a ChangeNotifier for just this.
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  String _formatElapsed(DateTime since) {
+    final int totalSeconds = DateTime.now().difference(since).inSeconds;
+    final int minutes = totalSeconds ~/ 60;
+    final int seconds = totalSeconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!ActiveCall.hasActiveCall) return const SizedBox.shrink();
+    final String name = ActiveCall.otherName ?? 'Ongoing call';
+    final DateTime since = ActiveCall.connectedAt ?? DateTime.now();
+
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        bottom: false,
+        child: Material(
+          color: const Color(0xFF24D17E),
+          child: InkWell(
+            onTap: () {
+              final String? roomName = ActiveCall.roomName;
+              final myId = FirebaseAuth.instance.currentUser?.uid;
+              if (roomName == null || myId == null) return;
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => VideoCallScreen(
+                    roomName: roomName,
+                    myName: myId,
+                    otherName: ActiveCall.otherName,
+                    otherPhoto: ActiveCall.otherPhoto,
+                    startWithCamera: ActiveCall.startWithCamera,
+                  ),
+                ),
+              );
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.call, color: Colors.white, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'On call with $name',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    _formatElapsed(since),
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.keyboard_arrow_up,
+                      color: Colors.white, size: 18),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

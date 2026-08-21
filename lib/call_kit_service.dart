@@ -88,11 +88,21 @@ class CallKitService {
       android: const AndroidParams(
         isCustomNotification: true,
         isShowLogo: false,
-        ringtonePath: 'system_ringtone_default',
+        // File name only, no extension - Android looks it up from
+        // android/app/src/main/res/raw/fly_ringtone.mp3. Falls back to
+        // the phone's own default ringtone automatically if that file
+        // isn't there, so this is safe even before it's added.
+        ringtonePath: 'fly_ringtone',
         backgroundColor: '#0E0E0E',
         actionColor: '#24D17E',
         textColor: '#FFFFFF',
         incomingCallNotificationChannelName: 'Incoming Calls',
+        // Keeps the call treated as a genuine full-screen, over-the-
+        // lock-screen experience for its whole lifetime, not just while
+        // the ring UI itself is showing - part of what's needed for
+        // Answer to lead into VideoCallScreen without an extra unlock
+        // prompt on phones without a secure (PIN/pattern) lock set.
+        isShowFullLockedScreen: true,
         missedCallNotificationChannelName: 'Missed Calls',
         textAccept: 'Accept',
         textDecline: 'Decline',
@@ -104,6 +114,49 @@ class CallKitService {
       // Best-effort - a failure here (e.g. an unusual OEM ROM) shouldn't
       // crash the call flow; the Firestore call doc still exists, so the
       // person can still find and join it from the app if they open it.
+    }
+  }
+
+  // Registers the CALLER's own side of the call with Android's Telecom
+  // system too - without this, only the person receiving the call gets
+  // real OS-level "this is an actual phone call" protection (from
+  // showIncomingCall's ConnectionService registration below), while the
+  // person who dialed only has Fly's own CallForegroundService to lean
+  // on, which turned out not to be enough on its own: their audio was
+  // the side that kept dropping on leaving the app, while the receiving
+  // side stayed connected fine. This puts both sides on equal footing.
+  static Future<void> startOutgoingCall({
+    required String roomName,
+    required String otherName,
+    required String otherPhoto,
+    required bool isVideo,
+  }) async {
+    final CallKitParams params = CallKitParams(
+      id: roomName,
+      nameCaller: otherName,
+      appName: 'Fly',
+      avatar: otherPhoto.isNotEmpty ? otherPhoto : null,
+      handle: otherName,
+      type: isVideo ? 1 : 0,
+      extra: <String, dynamic>{
+        'roomName': roomName,
+        'callerName': otherName,
+        'callerPhoto': otherPhoto,
+        'isVideo': isVideo,
+      },
+      android: const AndroidParams(
+        isCustomNotification: true,
+        backgroundColor: '#0E0E0E',
+        actionColor: '#24D17E',
+        textColor: '#FFFFFF',
+        incomingCallNotificationChannelName: 'Outgoing Calls',
+      ),
+    );
+    try {
+      await FlutterCallkitIncoming.startCall(params);
+    } catch (_) {
+      // Best-effort - the call still works over Fly's own foreground
+      // service even if this fails, just without the extra protection.
     }
   }
 
@@ -154,6 +207,7 @@ class CallKitService {
               myName: myId,
               otherName: callerName,
               otherPhoto: callerPhoto,
+              fromIncomingCall: true,
             ),
           ),
         );
