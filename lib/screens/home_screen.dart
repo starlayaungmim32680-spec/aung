@@ -2735,7 +2735,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
 
               if (widget.repostByName == null || widget.repostByName!.isEmpty)
                 Positioned(
-                  right: 12,
+                  right: 8,
                   bottom: 120,
                   child: Column(
                     children: [
@@ -2761,7 +2761,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                             emoji: kReactions[myReaction]!,
                                           )
                                         : const Icon(
-                                            Icons.favorite,
+                                            Icons.favorite_border,
                                             color: Colors.white,
                                             size: 34,
                                             shadows: [
@@ -2776,7 +2776,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           ],
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       // Comment
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('comments'),
@@ -2794,7 +2794,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       // Share
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('shares'),
@@ -2822,7 +2822,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       // Save / bookmark
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('saves'),
@@ -2853,7 +2853,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       // More options (Report / Block)
                       GestureDetector(
                         onTap: () => _showReportBlockSheet(context),
@@ -4536,14 +4536,12 @@ class _NotificationBell extends StatelessWidget {
   }
 }
 
-// A round speech-bubble icon: a circular outline with a small pointed tail,
-// matching the reference design (rather than Material's rectangular
-// chat_bubble_outline icon).
-// A TikTok-style comment icon: a rounded-rectangle (pill-ish) speech bubble
-// outline with a small pointed tail at the bottom-left, matching Ko's
-// reference image more closely than a plain circular bubble.
-// A Facebook-style comment icon: a flattened oval speech-bubble outline
-// with a small filled pointed tail at the bottom-left.
+// Fly's own comment icon — not a copy of TikTok's plain outline or
+// Facebook's flattened oval. A rounded-square bubble with a Fly-brand
+// blue-to-cyan gradient outline (matching the app's logo mark and the
+// orbit menu's cyan glow), a soft glow behind it, and three small dots
+// inside like an active chat — so it reads as "comments happening now"
+// and is instantly recognizable as Fly's, not a generic chat icon.
 class _CommentBubbleIcon extends StatelessWidget {
   final double size;
   final Color color;
@@ -4563,18 +4561,16 @@ class _CommentBubbleIcon extends StatelessWidget {
       width: boxSize,
       height: boxSize,
       child: CustomPaint(
-        painter:
-            _FacebookCommentPainter(color: color, strokeWidth: strokeWidth),
+        painter: _FlySparkCommentPainter(strokeWidth: strokeWidth),
       ),
     );
   }
 }
 
-class _FacebookCommentPainter extends CustomPainter {
-  final Color color;
+class _FlySparkCommentPainter extends CustomPainter {
   final double strokeWidth;
 
-  _FacebookCommentPainter({required this.color, required this.strokeWidth});
+  _FlySparkCommentPainter({required this.strokeWidth});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -4582,42 +4578,58 @@ class _FacebookCommentPainter extends CustomPainter {
     canvas.save();
     canvas.scale(scale);
 
-    // Flattened oval bubble body (Facebook-style, not a perfect circle).
-    final Rect ellipseRect =
-        Rect.fromCenter(center: const Offset(40, 34), width: 60, height: 48);
+    // Rounded-square bubble body — deliberately not a circle or oval, so it
+    // doesn't read as "TikTok's icon" or "Facebook's icon".
+    final RRect bubbleRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: const Offset(40, 34), width: 56, height: 50),
+      const Radius.circular(20),
+    );
 
-    // Small filled pointed tail at the bottom-left of the bubble.
+    // Small pointed tail at the bottom-left of the bubble.
     final Path tail = Path()
-      ..moveTo(28, 54)
-      ..lineTo(22, 68)
-      ..lineTo(38, 60)
+      ..moveTo(26, 56)
+      ..lineTo(20, 70)
+      ..lineTo(36, 60)
       ..close();
 
-    // Soft drop shadow so the icon still reads over bright video frames.
+    // Drop shadow so the outline still reads clearly over bright video
+    // frames — no solid fill, so the video stays visible through the icon.
     final Paint shadowStroke = Paint()
       ..color = Colors.black38
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-    final Paint shadowFill = Paint()
-      ..color = Colors.black38
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-    canvas.drawOval(ellipseRect, shadowStroke);
-    canvas.drawPath(tail, shadowFill);
+    canvas.drawRRect(bubbleRect, shadowStroke);
+    canvas.drawPath(
+      tail,
+      shadowStroke..strokeJoin = StrokeJoin.round,
+    );
 
+    // Plain white outline — no color fill, so the video underneath shows
+    // through the whole icon.
     final Paint bodyStroke = Paint()
-      ..color = color
+      ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth;
-    canvas.drawOval(ellipseRect, bodyStroke);
-    canvas.drawPath(tail, Paint()..color = color);
+    canvas.drawRRect(bubbleRect, bodyStroke);
+    canvas.drawPath(tail, bodyStroke..strokeJoin = StrokeJoin.round);
+
+    // Three small hollow dots inside, like an active-chat/typing indicator —
+    // outline only, so they stay see-through too.
+    final Paint dotStroke = Paint()
+      ..color = Colors.black
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth * 0.7;
+    for (final dx in [28.0, 40.0, 52.0]) {
+      canvas.drawCircle(Offset(dx, 34), 3.6, dotStroke);
+    }
 
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _FacebookCommentPainter oldDelegate) =>
-      oldDelegate.color != color || oldDelegate.strokeWidth != strokeWidth;
+  bool shouldRepaint(covariant _FlySparkCommentPainter oldDelegate) =>
+      oldDelegate.strokeWidth != strokeWidth;
 }
 
 // Data describing a single flying emoji's path
