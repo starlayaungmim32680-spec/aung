@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
@@ -26,6 +27,7 @@ import 'text_overlay_style.dart';
 import 'gifting.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
+import 'content_filter.dart';
 import 'video_preload_cache.dart';
 
 // Watches full-screen route pushes so a playing video can pause itself
@@ -2735,7 +2737,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
 
               if (widget.repostByName == null || widget.repostByName!.isEmpty)
                 Positioned(
-                  right: 8,
+                  right: 12,
                   bottom: 120,
                   child: Column(
                     children: [
@@ -2761,7 +2763,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                             emoji: kReactions[myReaction]!,
                                           )
                                         : const Icon(
-                                            Icons.favorite_border,
+                                            Icons.favorite,
                                             color: Colors.white,
                                             size: 34,
                                             shadows: [
@@ -2776,7 +2778,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           ],
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 16),
                       // Comment
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('comments'),
@@ -2794,7 +2796,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 16),
                       // Share
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('shares'),
@@ -2822,7 +2824,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 16),
                       // Save / bookmark
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('saves'),
@@ -2853,7 +2855,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 16),
                       // More options (Report / Block)
                       GestureDetector(
                         onTap: () => _showReportBlockSheet(context),
@@ -3293,12 +3295,75 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     });
   }
 
+  // Base URL of the self-hosted moderation service (Flask on Render.com),
+  // which proxies to OpenAI's free, multilingual omni-moderation model.
+  static const String _moderationBaseUrl =
+      'https://fly-moderation.onrender.com';
+
+  // Calls the moderation service and returns whether the content was
+  // flagged. Fails "open" (returns false / not flagged) on any network
+  // error or timeout - e.g. the free Render instance waking up from a
+  // cold start can take up to ~50s - so a moderation-service outage never
+  // blocks comments outright. The local ContentFilter word-list check
+  // still runs regardless as a first line of defense.
+  Future<bool> _isFlaggedByModerationServer(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_moderationBaseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 90));
+      if (response.statusCode != 200) return false;
+      final Map<String, dynamic> data = jsonDecode(response.body);
+      return data['flagged'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _sendComment() async {
     final user = FirebaseAuth.instance.currentUser;
     final String text = _commentController.text.trim();
     if (user == null || text.isEmpty) return;
 
+    // Block obviously inappropriate comments before writing to Firestore.
+    // The local word-list is small and English/Burmese-only, so it won't
+    // catch every language or every Burmese slang term.
+    if (ContentFilter.containsBlockedContent(text)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Your comment contains inappropriate language. Please edit it.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    // Second line of defense: OpenAI's multilingual moderation model,
+    // which understands far more languages and slang (including Burmese)
+    // than the local word-list ever can.
     setState(() => _isSending = true);
+    final bool commentFlagged =
+        await _isFlaggedByModerationServer('/moderate/text', {'text': text});
+    if (commentFlagged) {
+      if (mounted) {
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Your comment contains inappropriate language. Please edit it.'),
+          ),
+        );
+      }
+      return;
+    }
 
     final profile = await _getMyProfile(user.uid, user.email);
     final String displayName = profile['name']!;
@@ -4536,12 +4601,14 @@ class _NotificationBell extends StatelessWidget {
   }
 }
 
-// Fly's own comment icon — not a copy of TikTok's plain outline or
-// Facebook's flattened oval. A rounded-square bubble with a Fly-brand
-// blue-to-cyan gradient outline (matching the app's logo mark and the
-// orbit menu's cyan glow), a soft glow behind it, and three small dots
-// inside like an active chat — so it reads as "comments happening now"
-// and is instantly recognizable as Fly's, not a generic chat icon.
+// A round speech-bubble icon: a circular outline with a small pointed tail,
+// matching the reference design (rather than Material's rectangular
+// chat_bubble_outline icon).
+// A TikTok-style comment icon: a rounded-rectangle (pill-ish) speech bubble
+// outline with a small pointed tail at the bottom-left, matching Ko's
+// reference image more closely than a plain circular bubble.
+// A Facebook-style comment icon: a flattened oval speech-bubble outline
+// with a small filled pointed tail at the bottom-left.
 class _CommentBubbleIcon extends StatelessWidget {
   final double size;
   final Color color;
@@ -4561,16 +4628,18 @@ class _CommentBubbleIcon extends StatelessWidget {
       width: boxSize,
       height: boxSize,
       child: CustomPaint(
-        painter: _FlySparkCommentPainter(strokeWidth: strokeWidth),
+        painter:
+            _FacebookCommentPainter(color: color, strokeWidth: strokeWidth),
       ),
     );
   }
 }
 
-class _FlySparkCommentPainter extends CustomPainter {
+class _FacebookCommentPainter extends CustomPainter {
+  final Color color;
   final double strokeWidth;
 
-  _FlySparkCommentPainter({required this.strokeWidth});
+  _FacebookCommentPainter({required this.color, required this.strokeWidth});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -4578,58 +4647,42 @@ class _FlySparkCommentPainter extends CustomPainter {
     canvas.save();
     canvas.scale(scale);
 
-    // Rounded-square bubble body — deliberately not a circle or oval, so it
-    // doesn't read as "TikTok's icon" or "Facebook's icon".
-    final RRect bubbleRect = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: const Offset(40, 34), width: 56, height: 50),
-      const Radius.circular(20),
-    );
+    // Flattened oval bubble body (Facebook-style, not a perfect circle).
+    final Rect ellipseRect =
+        Rect.fromCenter(center: const Offset(40, 34), width: 60, height: 48);
 
-    // Small pointed tail at the bottom-left of the bubble.
+    // Small filled pointed tail at the bottom-left of the bubble.
     final Path tail = Path()
-      ..moveTo(26, 56)
-      ..lineTo(20, 70)
-      ..lineTo(36, 60)
+      ..moveTo(28, 54)
+      ..lineTo(22, 68)
+      ..lineTo(38, 60)
       ..close();
 
-    // Drop shadow so the outline still reads clearly over bright video
-    // frames — no solid fill, so the video stays visible through the icon.
+    // Soft drop shadow so the icon still reads over bright video frames.
     final Paint shadowStroke = Paint()
       ..color = Colors.black38
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-    canvas.drawRRect(bubbleRect, shadowStroke);
-    canvas.drawPath(
-      tail,
-      shadowStroke..strokeJoin = StrokeJoin.round,
-    );
+    final Paint shadowFill = Paint()
+      ..color = Colors.black38
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    canvas.drawOval(ellipseRect, shadowStroke);
+    canvas.drawPath(tail, shadowFill);
 
-    // Plain white outline — no color fill, so the video underneath shows
-    // through the whole icon.
     final Paint bodyStroke = Paint()
-      ..color = Colors.white
+      ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth;
-    canvas.drawRRect(bubbleRect, bodyStroke);
-    canvas.drawPath(tail, bodyStroke..strokeJoin = StrokeJoin.round);
-
-    // Three small hollow dots inside, like an active-chat/typing indicator —
-    // outline only, so they stay see-through too.
-    final Paint dotStroke = Paint()
-      ..color = Colors.black
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth * 0.7;
-    for (final dx in [28.0, 40.0, 52.0]) {
-      canvas.drawCircle(Offset(dx, 34), 3.6, dotStroke);
-    }
+    canvas.drawOval(ellipseRect, bodyStroke);
+    canvas.drawPath(tail, Paint()..color = color);
 
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _FlySparkCommentPainter oldDelegate) =>
-      oldDelegate.strokeWidth != strokeWidth;
+  bool shouldRepaint(covariant _FacebookCommentPainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.strokeWidth != strokeWidth;
 }
 
 // Data describing a single flying emoji's path

@@ -7,6 +7,25 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:249450735887:android:ef71671b6044685d38767a",
+        "android_client_info": {
+          "package_name": "com.aungdev.fly"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC7nEx4x06gnWCXPst8fCWO9ZynGa9L4hY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:249450735887:android:d64e7a0d30d3e18c38767a",
         "android_client_info": {
           "package_name": "com.example.fly"

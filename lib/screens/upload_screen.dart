@@ -13,6 +13,7 @@ import 'text_overlay_style.dart';
 import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
+import 'content_filter.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -365,6 +366,37 @@ class _UploadScreenState extends State<UploadScreen> {
     return '${before}ac_none/$overlaySpec/fl_layer_apply/$after';
   }
 
+  // Base URL of the self-hosted moderation service (Flask on Render.com),
+  // which proxies to OpenAI's free, multilingual omni-moderation model.
+  static const String _moderationBaseUrl =
+      'https://fly-moderation.onrender.com';
+
+  // Calls the moderation service and returns whether the content was
+  // flagged. Fails "open" (returns false / not flagged) on any network
+  // error or timeout - e.g. the free Render instance waking up from a
+  // cold start can take up to ~50s - so a moderation-service outage never
+  // blocks uploads outright. The local ContentFilter word-list check still
+  // runs regardless as a first line of defense.
+  Future<bool> _isFlaggedByModerationServer(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_moderationBaseUrl$endpoint'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 90));
+      if (response.statusCode != 200) return false;
+      final Map<String, dynamic> data = jsonDecode(response.body);
+      return data['flagged'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _uploadPost() async {
     if (_videoBytes == null) {
       setState(() {
@@ -379,6 +411,45 @@ class _UploadScreenState extends State<UploadScreen> {
         _errorMessage = 'You must be logged in to upload';
       });
       return;
+    }
+
+    // Block obviously inappropriate captions before spending any upload
+    // bandwidth. This is a fast, offline first line of defense - the local
+    // word-list is small and English/Burmese-only, so it won't catch every
+    // language or every Burmese slang term.
+    if (ContentFilter.containsBlockedContent(_captionController.text)) {
+      setState(() {
+        _errorMessage =
+            'Your caption contains inappropriate language. Please edit it before uploading.';
+      });
+      return;
+    }
+
+    // Second line of defense for the caption: OpenAI's multilingual
+    // moderation model, which understands far more languages and slang
+    // (including Burmese) than the local word-list ever can. Checked here,
+    // before any upload starts, so a flagged caption never wastes upload
+    // bandwidth.
+    if (_captionController.text.trim().isNotEmpty) {
+      setState(() {
+        _isUploading = true;
+        _uploadProgress = 0;
+        _errorMessage = null;
+      });
+      final bool captionFlagged = await _isFlaggedByModerationServer(
+        '/moderate/text',
+        {'text': _captionController.text.trim()},
+      );
+      if (captionFlagged) {
+        if (mounted) {
+          setState(() {
+            _isUploading = false;
+            _errorMessage =
+                'Your caption contains inappropriate language. Please edit it before uploading.';
+          });
+        }
+        return;
+      }
     }
 
     setState(() {
@@ -447,6 +518,29 @@ class _UploadScreenState extends State<UploadScreen> {
       if (_trimStartSeconds != null && _trimEndSeconds != null) {
         videoUrl =
             _buildTrimmedUrl(videoUrl, _trimStartSeconds!, _trimEndSeconds!);
+      }
+
+      // Multilingual video content check via the OpenAI-backed moderation
+      // service (fly-moderation on Render) - this catches inappropriate
+      // video content the local caption word-list can't, in any language.
+      // Runs after the Cloudinary upload since it needs the hosted video's
+      // URL to sample frames from.
+      if (mounted) {
+        setState(() => _uploadProgress = 1);
+      }
+      final bool videoFlagged = await _isFlaggedByModerationServer(
+        '/moderate/video',
+        {'video_url': videoUrl},
+      );
+      if (videoFlagged) {
+        if (mounted) {
+          setState(() {
+            _isUploading = false;
+            _errorMessage =
+                'This video was flagged as inappropriate and could not be posted.';
+          });
+        }
+        return;
       }
 
       // Look up the uploader's display name so the sound can be

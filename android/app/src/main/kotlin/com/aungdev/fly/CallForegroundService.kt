@@ -1,4 +1,4 @@
-package com.example.fly
+package com.aungdev.fly
 
 import android.app.Notification
 import android.app.NotificationChannel

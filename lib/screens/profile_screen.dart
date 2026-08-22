@@ -25,6 +25,151 @@ class ProfileScreen extends StatelessWidget {
     }
   }
 
+  // Deletes the signed-in user's account, as required by Google Play policy
+  // (an app that supports account creation must offer in-app account
+  // deletion). Firebase requires a *recent* sign-in before it will allow
+  // deleting the Auth account itself, so this re-authenticates with the
+  // user's password first.
+  //
+  // Best-effort data cleanup: deletes the user's own posts, reposts,
+  // stories, and profile document. Subcollections under those documents
+  // (comments, likes, views, followers/following, etc.) are not
+  // individually deleted - Firestore doesn't cascade-delete subcollections,
+  // and doing so client-side for every collection would need a Cloud
+  // Function (Blaze). Once the parent documents above are gone, that
+  // orphaned data is no longer reachable through the app.
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Delete your account?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently delete your account, videos, reposts, '
+          'and stories. This cannot be undone.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete my account',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !context.mounted) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.email == null) return;
+
+    // Firebase requires a recent login before it allows deleting the Auth
+    // account - ask for the password to reauthenticate.
+    final TextEditingController passwordController = TextEditingController();
+    final String? password = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Confirm your password',
+            style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: passwordController,
+          obscureText: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Password',
+            hintStyle: TextStyle(color: Colors.grey),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, passwordController.text),
+            child: const Text('Confirm',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (password == null || password.isEmpty || !context.mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          const Center(child: CircularProgressIndicator(color: Colors.white)),
+    );
+
+    try {
+      final credential =
+          EmailAuthProvider.credential(email: user.email!, password: password);
+      await user.reauthenticateWithCredential(credential);
+
+      final firestore = FirebaseFirestore.instance;
+      final uid = user.uid;
+
+      final ownPosts = await firestore
+          .collection('posts')
+          .where('ownerId', isEqualTo: uid)
+          .get();
+      for (final doc in ownPosts.docs) {
+        await doc.reference.delete();
+      }
+
+      final ownReposts = await firestore
+          .collection('reposts')
+          .where('sharedBy', isEqualTo: uid)
+          .get();
+      for (final doc in ownReposts.docs) {
+        await doc.reference.delete();
+      }
+
+      final ownStories = await firestore
+          .collection('stories')
+          .where('userId', isEqualTo: uid)
+          .get();
+      for (final doc in ownStories.docs) {
+        await doc.reference.delete();
+      }
+
+      await firestore.collection('users').doc(uid).delete();
+      await user.delete();
+
+      if (context.mounted) {
+        Navigator.pop(context); // close loading dialog
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          (route) => false,
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context); // close loading dialog
+        final String message =
+            e.code == 'wrong-password' || e.code == 'invalid-credential'
+                ? 'Incorrect password.'
+                : 'Could not delete account: ${e.message}';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context); // close loading dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not delete account: $e')));
+      }
+    }
+  }
+
   // Confirms and deletes one of the user's own posts
   Future<void> _confirmDelete(BuildContext context, String postId) async {
     final bool? confirm = await showDialog<bool>(
@@ -170,6 +315,20 @@ class ProfileScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white),
             onPressed: () => _logout(context),
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            color: const Color(0xFF1E1E1E),
+            onSelected: (value) {
+              if (value == 'delete') _confirmDeleteAccount(context);
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'delete',
+                child: Text('Delete account',
+                    style: TextStyle(color: Colors.redAccent)),
+              ),
+            ],
           ),
         ],
       ),

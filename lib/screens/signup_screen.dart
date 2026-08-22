@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'main_navigation_screen.dart';
 
 class SignUpScreen extends StatefulWidget {
@@ -18,6 +19,48 @@ class _SignUpScreenState extends State<SignUpScreen> {
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
   String? _errorMessage;
+  // Google Play requires apps that allow account creation to confirm a
+  // minimum age (Fly requires 13+, given live streaming, chat, and gifting
+  // with other users). Collected here rather than assumed.
+  DateTime? _birthDate;
+
+  Future<void> _pickBirthDate() async {
+    final DateTime now = DateTime.now();
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime(now.year - 18, now.month, now.day),
+      firstDate: DateTime(now.year - 100),
+      lastDate: now,
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Colors.redAccent,
+              onPrimary: Colors.white,
+              surface: Color(0xFF1E1E1E),
+              onSurface: Colors.white,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+    if (picked != null) {
+      setState(() {
+        _birthDate = picked;
+        _errorMessage = null;
+      });
+    }
+  }
+
+  bool _isAtLeast13(DateTime birthDate) {
+    final DateTime now = DateTime.now();
+    int age = now.year - birthDate.year;
+    final bool hadBirthdayThisYear = (now.month > birthDate.month) ||
+        (now.month == birthDate.month && now.day >= birthDate.day);
+    if (!hadBirthdayThisYear) age -= 1;
+    return age >= 13;
+  }
 
   @override
   void dispose() {
@@ -53,16 +96,37 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
+    if (_birthDate == null) {
+      setState(() {
+        _errorMessage = 'Please enter your date of birth';
+      });
+      return;
+    }
+
+    if (!_isAtLeast13(_birthDate!)) {
+      setState(() {
+        _errorMessage = 'You must be at least 13 years old to use Fly';
+      });
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      final credential =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
+      final uid = credential.user?.uid;
+      if (uid != null) {
+        await FirebaseFirestore.instance.collection('users').doc(uid).set(
+            {'dateOfBirth': _birthDate!.toIso8601String()},
+            SetOptions(merge: true));
+      }
       if (mounted) _goToHome();
     } on FirebaseAuthException catch (e) {
       setState(() {
@@ -192,6 +256,34 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           _obscureConfirmPassword = !_obscureConfirmPassword;
                         });
                       },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                InkWell(
+                  onTap: _pickBirthDate,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[900],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.cake_outlined, color: Colors.grey),
+                        const SizedBox(width: 12),
+                        Text(
+                          _birthDate == null
+                              ? 'Date of birth'
+                              : '${_birthDate!.month}/${_birthDate!.day}/${_birthDate!.year}',
+                          style: TextStyle(
+                            color:
+                                _birthDate == null ? Colors.grey : Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
