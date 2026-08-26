@@ -23,12 +23,22 @@ class UploadScreen extends StatefulWidget {
   final String? presetSoundOwnerName;
   final String? presetSoundSourceUrl;
 
+  // "Reply Video Chain": when opened via "Reply with video" from someone
+  // else's post, these carry that post along so the new upload can be
+  // linked back to it as a video reply, instead of a plain unrelated post.
+  final String? replyToPostId;
+  final String? replyToOwnerId;
+  final String? replyToOwnerName;
+
   const UploadScreen({
     super.key,
     this.presetSoundId,
     this.presetSoundTitle,
     this.presetSoundOwnerName,
     this.presetSoundSourceUrl,
+    this.replyToPostId,
+    this.replyToOwnerId,
+    this.replyToOwnerName,
   });
 
   @override
@@ -49,6 +59,13 @@ class _UploadScreenState extends State<UploadScreen> {
   String _filterType = 'none';
   List<TextOverlayData> _textOverlays = [];
   bool _isUploading = false;
+  // When true (default), non-fullscreen-aspect videos get a blurred,
+  // zoomed-in copy of themselves filling the empty space behind them
+  // (matches how the video's own colors were already showing through).
+  // When false, that empty space is left plain black instead - some
+  // people prefer the cleaner, non-blurred look, so it's their choice
+  // per-upload rather than a fixed app-wide behavior.
+  bool _blurBackground = true;
   // 0.0 - 1.0 while the video is being sent to Cloudinary
   double _uploadProgress = 0;
   String? _errorMessage;
@@ -637,10 +654,16 @@ class _UploadScreenState extends State<UploadScreen> {
         'videoType': _videoType ?? 'short',
         'videoSpeed': _videoSpeed,
         'filterType': _filterType,
+        'blurBackground': _blurBackground,
         'textOverlays': _textOverlays.map((o) => o.toMap()).toList(),
         'soundId': soundId,
         'soundTitle': soundTitle,
         'soundOwnerName': soundOwnerName,
+        if (widget.replyToPostId != null) ...{
+          'replyToPostId': widget.replyToPostId,
+          'replyToOwnerId': widget.replyToOwnerId,
+          'replyToOwnerName': widget.replyToOwnerName,
+        },
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -989,6 +1012,32 @@ class _UploadScreenState extends State<UploadScreen> {
             ),
           ],
           const SizedBox(height: 20),
+          if (widget.replyToPostId != null && widget.replyToOwnerName != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161A1E),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF35E1F2), width: 1),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.reply, color: Color(0xFF35E1F2), size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Replying to @${widget.replyToOwnerName}',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           TextField(
             controller: _captionController,
             maxLines: 3,
@@ -1003,6 +1052,26 @@ class _UploadScreenState extends State<UploadScreen> {
                 borderSide: BorderSide.none,
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          // Lets each person choose whether empty space around their video
+          // (for aspect ratios that don't fill the screen exactly) gets a
+          // blurred backdrop of the video's own colors, or stays plain
+          // black - a look-and-feel choice, not everyone likes the blur.
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Blur background to fill screen',
+                  style: TextStyle(color: Colors.grey[300], fontSize: 13),
+                ),
+              ),
+              Switch(
+                value: _blurBackground,
+                activeColor: const Color(0xFF35E1F2),
+                onChanged: (value) => setState(() => _blurBackground = value),
+              ),
+            ],
           ),
           if (_errorMessage != null) ...[
             const SizedBox(height: 12),

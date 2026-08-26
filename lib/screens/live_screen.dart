@@ -207,6 +207,48 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
   Future<void> _endLive() async {
     if (_ending) return;
     setState(() => _ending = true);
+
+    // "Timeline Highlights": before marking the stream ended, scan its
+    // whole reaction history for the 30-second window with the most
+    // reactions, so the host gets a quick "this was your biggest moment"
+    // recap instead of having to guess from memory.
+    Map<String, dynamic>? highlight;
+    try {
+      final liveDoc = await FirebaseFirestore.instance
+          .collection('liveStreams')
+          .doc(_uid)
+          .get();
+      final Timestamp? startedTs = liveDoc.data()?['startedAt'] as Timestamp?;
+      final reactionsSnap = await FirebaseFirestore.instance
+          .collection('liveStreams')
+          .doc(_uid)
+          .collection('reactions')
+          .orderBy('createdAt')
+          .get();
+
+      if (startedTs != null && reactionsSnap.docs.isNotEmpty) {
+        final DateTime started = startedTs.toDate();
+        const int windowSeconds = 30;
+        final Map<int, int> windowCounts = {};
+        for (final doc in reactionsSnap.docs) {
+          final Timestamp? ts = doc.data()['createdAt'] as Timestamp?;
+          if (ts == null) continue;
+          final int secondsIn = ts.toDate().difference(started).inSeconds;
+          final int windowIndex = secondsIn ~/ windowSeconds;
+          windowCounts[windowIndex] = (windowCounts[windowIndex] ?? 0) + 1;
+        }
+        final MapEntry<int, int> peak =
+            windowCounts.entries.reduce((a, b) => b.value > a.value ? b : a);
+        highlight = {
+          'highlightAtSeconds': peak.key * windowSeconds,
+          'highlightReactionCount': peak.value,
+          'totalReactions': reactionsSnap.docs.length,
+        };
+      }
+    } catch (_) {
+      // Highlight computation is a bonus, never block ending the stream.
+    }
+
     try {
       // Keep the doc (marked "ended") instead of deleting it, so the live
       // still shows up - as a recap with its comment thread - afterward.
@@ -214,12 +256,49 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
         {
           'status': 'ended',
           'endedAt': FieldValue.serverTimestamp(),
+          if (highlight != null) ...highlight,
         },
         SetOptions(merge: true),
       );
     } catch (_) {}
     await _room?.disconnect();
+    if (!mounted) return;
+    if (highlight != null) {
+      await _showHighlightRecap(highlight);
+    }
     if (mounted) Navigator.pop(context);
+  }
+
+  // Small recap shown right after ending, summarizing the stream's peak
+  // engagement moment - not tied to video playback (Fly doesn't record
+  // live streams), just a quick "here's how it went" for the host.
+  Future<void> _showHighlightRecap(Map<String, dynamic> highlight) async {
+    final int seconds = highlight['highlightAtSeconds'] as int;
+    final int minutesIn = seconds ~/ 60;
+    final int secondsIn = seconds % 60;
+    final String timeLabel =
+        minutesIn > 0 ? '$minutesIn min ${secondsIn}s in' : '${secondsIn}s in';
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('🔥 Timeline Highlight',
+            style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Your biggest moment was $timeLabel, with '
+          '${highlight['highlightReactionCount']} reactions in 30 seconds.\n\n'
+          'Total reactions this stream: ${highlight['totalReactions']}.',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child:
+                const Text('Nice!', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<bool> _confirmEnd() async {
@@ -385,6 +464,13 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
               ),
             ),
             if (!_connecting && _error == null)
+              Positioned(
+                top: 90,
+                left: 12,
+                right: 12,
+                child: _ReactionPulseBar(hostId: _uid),
+              ),
+            if (!_connecting && _error == null)
               LiveInteractionLayer(hostId: _uid),
           ],
         ),
@@ -393,9 +479,92 @@ class _GoLiveScreenState extends State<GoLiveScreen> {
   }
 }
 
-// ---------------------------------------------------------------------
-// Viewer
-// ---------------------------------------------------------------------
+// "Reaction Pulse" - a small live-updating bar chart showing how heavily
+// viewers are reacting (❤️😂😮👏🔥all counted together) over the last
+// ~40 seconds, host-only, so the streamer can see which moments are
+// landing without reading through the comment/reaction stream itself.
+class _ReactionPulseBar extends StatelessWidget {
+  final String hostId;
+
+  const _ReactionPulseBar({required this.hostId});
+
+  static const int _bucketSeconds = 2;
+  static const int _bucketCount = 20; // 40 seconds of history
+
+  @override
+  Widget build(BuildContext context) {
+    final DateTime windowStart = DateTime.now()
+        .subtract(Duration(seconds: _bucketSeconds * _bucketCount));
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('liveStreams')
+          .doc(hostId)
+          .collection('reactions')
+          .where('createdAt', isGreaterThan: Timestamp.fromDate(windowStart))
+          .snapshots(),
+      builder: (context, snapshot) {
+        final List<QueryDocumentSnapshot> docs = snapshot.data?.docs ?? [];
+        if (docs.isEmpty) return const SizedBox.shrink();
+
+        final List<int> buckets = List.filled(_bucketCount, 0);
+        final DateTime now = DateTime.now();
+        for (final doc in docs) {
+          final Timestamp? ts =
+              (doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+          if (ts == null) continue;
+          final int secondsAgo = now.difference(ts.toDate()).inSeconds;
+          final int bucketFromEnd = secondsAgo ~/ _bucketSeconds;
+          final int index = _bucketCount - 1 - bucketFromEnd;
+          if (index >= 0 && index < _bucketCount) buckets[index]++;
+        }
+
+        final int maxCount = buckets.reduce((a, b) => a > b ? a : b);
+        if (maxCount == 0) return const SizedBox.shrink();
+
+        return Container(
+          height: 34,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black38,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              for (int i = 0; i < _bucketCount; i++)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 1),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      height: 4 + (buckets[i] / maxCount) * 22,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(2),
+                        gradient: buckets[i] == maxCount && maxCount > 1
+                            ? const LinearGradient(
+                                begin: Alignment.bottomCenter,
+                                end: Alignment.topCenter,
+                                colors: [
+                                  Color(0xFF2E6BFF),
+                                  Color(0xFF35E1F2),
+                                ],
+                              )
+                            : null,
+                        color: buckets[i] == maxCount && maxCount > 1
+                            ? null
+                            : Colors.white54,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
 
 // Screen a viewer uses to watch someone else's live stream. Joins the
 // same LiveKit room as an audience member (camera/mic off).

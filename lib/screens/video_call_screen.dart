@@ -10,6 +10,7 @@ import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../call_kit_service.dart';
+import '../call_permissions.dart';
 import '../active_call.dart';
 
 // LiveKit connection details for the Fly project.
@@ -130,6 +131,15 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Request call-related permissions (notifications, and Android 14+'s
+    // "full screen intent" for incoming-call alerts) right here, at the
+    // moment a call actually starts - not on app open, and not on every
+    // app open regardless of whether the person ever uses calling.
+    CallKitService.requestPermissions();
+    // Battery-optimization exemption, overlay, full-screen intent, and
+    // OEM autostart settings - same reasoning, only asked once a call is
+    // actually happening.
+    maybeAskForCallReliabilityPermissions(context);
     _connect();
     _listenForCallEnd();
     _noAnswerTimer = Timer(const Duration(seconds: 45), () {

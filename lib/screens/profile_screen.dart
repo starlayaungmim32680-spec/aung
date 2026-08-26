@@ -378,8 +378,51 @@ class ProfileScreen extends StatelessWidget {
                           ConnectionState.waiting ||
                       repostSnapshot.connectionState == ConnectionState.waiting;
 
+                  // "Fly Memories": if any of this user's own videos were
+                  // posted on this same month+day in a past year, surface
+                  // the oldest such match as a small on-this-day card, the
+                  // same idea as Facebook's "On This Day".
+                  final DateTime today = DateTime.now();
+                  QueryDocumentSnapshot? memoryDoc;
+                  int memoryYearsAgo = 0;
+                  for (final doc in ownDocs) {
+                    final data = doc.data() as Map<String, dynamic>;
+                    final DateTime? created =
+                        (data['createdAt'] as Timestamp?)?.toDate();
+                    if (created == null) continue;
+                    if (created.month == today.month &&
+                        created.day == today.day &&
+                        created.year < today.year) {
+                      final int yearsAgo = today.year - created.year;
+                      if (memoryDoc == null || yearsAgo > memoryYearsAgo) {
+                        memoryDoc = doc;
+                        memoryYearsAgo = yearsAgo;
+                      }
+                    }
+                  }
+
                   return CustomScrollView(
                     slivers: [
+                      if (memoryDoc != null)
+                        SliverToBoxAdapter(
+                          child: _MemoryBanner(
+                            videoUrl: (memoryDoc.data()
+                                    as Map<String, dynamic>)['videoUrl'] ??
+                                '',
+                            yearsAgo: memoryYearsAgo,
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => UserVideoFeedScreen(
+                                    userId: user?.uid ?? '',
+                                    initialIndex: ownDocs.indexOf(memoryDoc!),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.all(20),
@@ -658,6 +701,108 @@ class _ProfileGridItem {
             (doc.data() as Map<String, dynamic>)['sharedBy'] as String?,
         sharedByPhoto =
             (doc.data() as Map<String, dynamic>)['sharedByPhoto'] as String?;
+}
+
+// "Fly Memories" card - Facebook's "On This Day" idea, Fly's own version.
+// Shows once per profile visit; dismissing just hides it for this viewing,
+// it'll show again the next time the profile is opened.
+class _MemoryBanner extends StatefulWidget {
+  final String videoUrl;
+  final int yearsAgo;
+  final VoidCallback onTap;
+
+  const _MemoryBanner({
+    required this.videoUrl,
+    required this.yearsAgo,
+    required this.onTap,
+  });
+
+  @override
+  State<_MemoryBanner> createState() => _MemoryBannerState();
+}
+
+class _MemoryBannerState extends State<_MemoryBanner> {
+  bool _dismissed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_dismissed) return const SizedBox.shrink();
+
+    final String label = widget.yearsAgo == 1
+        ? '1 year ago today'
+        : '${widget.yearsAgo} years ago today';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF2E6BFF), Color(0xFF35E1F2)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+          padding: const EdgeInsets.all(2),
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF161A1E),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius:
+                      const BorderRadius.horizontal(left: Radius.circular(12)),
+                  child: CachedNetworkImage(
+                    imageUrl: cloudinaryThumbUrl(widget.videoUrl),
+                    width: 64,
+                    height: 64,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) =>
+                        Container(color: Colors.grey.shade900),
+                    errorWidget: (_, __, ___) =>
+                        Container(color: Colors.grey.shade900),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Fly Memories',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon:
+                      const Icon(Icons.close, color: Colors.white54, size: 18),
+                  onPressed: () => setState(() => _dismissed = true),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // Screen for editing the profile name and photo

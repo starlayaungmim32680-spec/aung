@@ -113,9 +113,12 @@ class AuthGate extends StatelessWidget {
         if (snapshot.hasData) {
           // User is logged in - make sure their profile doc exists, and
           // this device is registered to receive incoming-call pushes.
+          // Call-related permissions are intentionally NOT requested here
+          // - they're requested only when a call actually starts (see
+          // CallKitService.showIncomingCall / the outgoing-call flow), so
+          // opening the app never itself triggers a permission prompt.
           _ensureUserDoc(snapshot.data!);
           NotificationService.registerAndSaveToken();
-          CallKitService.requestPermissions();
           return const MainNavigationScreen();
         }
 

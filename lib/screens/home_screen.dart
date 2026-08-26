@@ -19,6 +19,7 @@ import 'notifications_screen.dart';
 import 'public_profile_screen.dart';
 import 'story_screen.dart';
 import 'search_screen.dart';
+import 'upload_screen.dart';
 import 'live_screen.dart';
 import 'sound_screen.dart';
 import 'video_effects_screen.dart';
@@ -255,6 +256,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
 
+              // Video now renders truly full-screen, with the header
+              // (search/tabs/bell/stories/live) as a transparent overlay on
+              // top of it - Stack instead of Column, so the header no
+              // longer reserves its own dedicated space above the video.
               return Column(
                 children: [
                   SafeArea(
@@ -397,6 +402,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       item.isRepost ? item.sharedByPhoto : null,
                                   videoSpeed: item.videoSpeed,
                                   filterType: item.filterType,
+                                  blurBackground: item.blurBackground,
                                   textOverlays: item.textOverlays,
                                   effectsBaked: item.effectsBaked,
                                 );
@@ -606,6 +612,7 @@ class _ShortsScreenState extends State<ShortsScreen> {
                               item.isRepost ? item.sharedByPhoto : null,
                           videoSpeed: item.videoSpeed,
                           filterType: item.filterType,
+                          blurBackground: item.blurBackground,
                           textOverlays: item.textOverlays,
                           effectsBaked: item.effectsBaked,
                         );
@@ -845,6 +852,12 @@ class _FeedItem {
   final String? sharedByPhoto;
   final double videoSpeed;
   final String filterType;
+  // Whether empty space around this video (for aspect ratios that don't
+  // exactly fill the screen) should get a blurred backdrop of the
+  // video's own colors, or stay plain black - chosen by the uploader at
+  // post time. Defaults to true (matches the app's original behavior)
+  // for posts uploaded before this setting existed.
+  final bool blurBackground;
   final List<TextOverlayData> textOverlays;
   // True once a post's speed/filter/text/sticker effects have been baked
   // directly into the delivered video file itself (via Cloudinary
@@ -884,6 +897,9 @@ class _FeedItem {
         filterType =
             (doc.data() as Map<String, dynamic>)['filterType'] as String? ??
                 'none',
+        blurBackground =
+            (doc.data() as Map<String, dynamic>)['blurBackground'] as bool? ??
+                true,
         textOverlays = ((doc.data() as Map<String, dynamic>)['textOverlays']
                     as List<dynamic>?)
                 ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
@@ -923,6 +939,9 @@ class _FeedItem {
         filterType =
             (doc.data() as Map<String, dynamic>)['filterType'] as String? ??
                 'none',
+        blurBackground =
+            (doc.data() as Map<String, dynamic>)['blurBackground'] as bool? ??
+                true,
         textOverlays = ((doc.data() as Map<String, dynamic>)['textOverlays']
                     as List<dynamic>?)
                 ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
@@ -1323,6 +1342,7 @@ class _VideoPostItem extends StatefulWidget {
   // Playback effects chosen at upload time (see video_effects_screen.dart).
   final double videoSpeed;
   final String filterType;
+  final bool blurBackground;
   final List<TextOverlayData> textOverlays;
   // True once speed/filter/text/sticker effects are baked directly into
   // videoUrl itself (Cloudinary transformations applied at upload time) -
@@ -1348,6 +1368,7 @@ class _VideoPostItem extends StatefulWidget {
     this.repostByPhoto,
     this.videoSpeed = 1.0,
     this.filterType = 'none',
+    this.blurBackground = true,
     this.textOverlays = const [],
     this.effectsBaked = false,
   });
@@ -2335,23 +2356,29 @@ class _VideoPostItemState extends State<_VideoPostItem>
                 else ...[
                   // Backdrop: the same video, zoomed to fill and heavily
                   // blurred, so the empty letterbox/pillarbox area picks up
-                  // the video's own colours instead of showing flat black.
-                  ClipRect(
-                    child: ImageFiltered(
-                      imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                      child: FittedBox(
-                        fit: BoxFit.cover,
-                        child: SizedBox(
-                          width: _controller!.value.size.width,
-                          height: _controller!.value.size.height,
-                          child: VideoPlayer(_controller!),
+                  // the video's own colours instead of showing flat black -
+                  // only when the uploader chose this at post time
+                  // (widget.blurBackground); otherwise that space stays
+                  // plain black, which some people prefer.
+                  if (widget.blurBackground) ...[
+                    ClipRect(
+                      child: ImageFiltered(
+                        imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                        child: FittedBox(
+                          fit: BoxFit.cover,
+                          child: SizedBox(
+                            width: _controller!.value.size.width,
+                            height: _controller!.value.size.height,
+                            child: VideoPlayer(_controller!),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  // Darken the backdrop a little so the real video and the
-                  // overlaid text/buttons stay easy to read.
-                  Container(color: Colors.black.withOpacity(0.4)),
+                    // Darken the backdrop a little so the real video and
+                    // the overlaid text/buttons stay easy to read.
+                    Container(color: Colors.black.withOpacity(0.4)),
+                  ] else
+                    Container(color: Colors.black),
                   // Show the video at its real aspect ratio, centered -
                   // never cropped, so it always looks like what was
                   // originally uploaded.
@@ -2676,6 +2703,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           postId: widget.postId,
                           soundId: soundId,
                           soundLabel: soundLabel,
+                          reactionCount: liveReactions.length,
+                          replyToPostId:
+                              livePostData?['replyToPostId'] as String?,
+                          replyToOwnerId:
+                              livePostData?['replyToOwnerId'] as String?,
+                          replyToOwnerName:
+                              livePostData?['replyToOwnerName'] as String?,
                           compact: true,
                         ),
                       )
@@ -2686,6 +2720,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         postId: widget.postId,
                         soundId: soundId,
                         soundLabel: soundLabel,
+                        reactionCount: liveReactions.length,
+                        replyToPostId:
+                            livePostData?['replyToPostId'] as String?,
+                        replyToOwnerId:
+                            livePostData?['replyToOwnerId'] as String?,
+                        replyToOwnerName:
+                            livePostData?['replyToOwnerName'] as String?,
                       ),
               ),
 
@@ -3010,6 +3051,21 @@ class _VideoPostItemState extends State<_VideoPostItem>
     );
   }
 
+  // Looks up a user's display name for the "Replying to @X" banner, since
+  // _VideoPostItem only has their uid, not their display name, on hand.
+  Future<String> _fetchDisplayName(String userId) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .get();
+      final String? name = doc.data()?['displayName'] as String?;
+      return (name != null && name.trim().isNotEmpty) ? name : 'user';
+    } catch (_) {
+      return 'user';
+    }
+  }
+
   // Shows a bottom sheet with "Report" (always) and "Block user" (only for
   // other people's posts) options.
   void _showReportBlockSheet(BuildContext context) {
@@ -3050,6 +3106,28 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   );
                 },
               ),
+              if (!isOwnPost)
+                ListTile(
+                  leading: const Icon(Icons.reply, color: Color(0xFF35E1F2)),
+                  title: const Text('Reply with video',
+                      style: TextStyle(color: Colors.white)),
+                  onTap: () async {
+                    Navigator.pop(sheetContext);
+                    final String replyOwnerName =
+                        await _fetchDisplayName(widget.userId);
+                    if (!context.mounted) return;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => UploadScreen(
+                          replyToPostId: widget.postId,
+                          replyToOwnerId: widget.userId,
+                          replyToOwnerName: replyOwnerName,
+                        ),
+                      ),
+                    );
+                  },
+                ),
               if (!isOwnPost)
                 ListTile(
                   leading: const Icon(Icons.block, color: Colors.redAccent),
@@ -4246,6 +4324,18 @@ class _OwnerInfo extends StatelessWidget {
   final String postId;
   final String? soundId;
   final String soundLabel;
+  // "Orbit Ring": how many reactions this video has, drawn as a partial
+  // gradient ring around the avatar - a quick, glanceable read on how
+  // this specific video is landing, without needing to check the like
+  // count separately. Purely visual, computed from data already on hand
+  // (no extra reads).
+  final int reactionCount;
+  // "Reply Video Chain": when this video is itself a reply to someone
+  // else's post, these carry who it's replying to, so a small "Replying
+  // to @X" chip can link back to the original.
+  final String? replyToPostId;
+  final String? replyToOwnerId;
+  final String? replyToOwnerName;
   // When true, renders a much smaller version (smaller avatar/text, no
   // sound credit or view count, single-line caption) for use inside the
   // repost nested card, where space is tight.
@@ -4258,6 +4348,10 @@ class _OwnerInfo extends StatelessWidget {
     required this.postId,
     this.soundId,
     this.soundLabel = '',
+    this.reactionCount = 0,
+    this.replyToPostId,
+    this.replyToOwnerId,
+    this.replyToOwnerName,
     this.compact = false,
   });
 
@@ -4351,37 +4445,104 @@ class _OwnerInfo extends StatelessWidget {
           children: [
             Row(
               children: [
-                GestureDetector(
-                  onTap: () => _openProfile(context),
-                  child: Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                // Plain avatar (no overlapping badge, so it stays fully
+                // visible) with the Follow/Following control as its own
+                // small circle right beside it - Fly's own take on the
+                // follow control, instead of the pill-shaped button every
+                // other app uses. The badge carries Fly's signature
+                // blue-cyan gradient (same as the comment icon and orbit
+                // menu) so it reads as distinctly "Fly".
+                // "Orbit Ring" - a thin gradient arc around the avatar
+                // showing how this video's reaction count compares to a
+                // rough popularity scale (fuller ring = more reactions).
+                // Purely visual, computed from data already streamed to
+                // this widget - no extra Firestore reads.
+                CustomPaint(
+                  painter: _OrbitRingPainter(
+                    // sqrt scaling so the ring fills up meaningfully even
+                    // at modest reaction counts, instead of looking empty
+                    // until a video goes viral.
+                    progress: (sqrt(reactionCount.clamp(0, 400)) / 20)
+                        .clamp(0.0, 1.0),
+                    strokeWidth: compact ? 2 : 2.5,
+                  ),
+                  child: GestureDetector(
+                    onTap: () => _openProfile(context),
+                    child: Padding(
+                      padding: EdgeInsets.all(compact ? 4 : 5),
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                          ),
+                        ),
+                        child: CircleAvatar(
+                          radius: compact ? 13 : 18,
+                          backgroundColor: Colors.grey[850],
+                          backgroundImage:
+                              (photoUrl != null && photoUrl.isNotEmpty)
+                                  ? NetworkImage(photoUrl)
+                                  : null,
+                          child: (photoUrl == null || photoUrl.isEmpty)
+                              ? Text(
+                                  displayName.isNotEmpty
+                                      ? displayName[0].toUpperCase()
+                                      : '?',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: compact ? 12 : 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                )
+                              : null,
+                        ),
                       ),
-                    ),
-                    child: CircleAvatar(
-                      radius: compact ? 13 : 18,
-                      backgroundColor: Colors.grey[850],
-                      backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
-                          ? NetworkImage(photoUrl)
-                          : null,
-                      child: (photoUrl == null || photoUrl.isEmpty)
-                          ? Text(
-                              displayName.isNotEmpty
-                                  ? displayName[0].toUpperCase()
-                                  : '?',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: compact ? 12 : 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            )
-                          : null,
                     ),
                   ),
                 ),
+                if (myId != null && myId != userId && userId.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  StreamBuilder<DocumentSnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(userId)
+                        .collection('followers')
+                        .doc(myId)
+                        .snapshots(),
+                    builder: (context, followSnap) {
+                      final bool isFollowing = followSnap.data?.exists ?? false;
+                      return GestureDetector(
+                        onTap: () => _toggleFollow(myId, isFollowing),
+                        child: Container(
+                          width: compact ? 22 : 26,
+                          height: compact ? 22 : 26,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: isFollowing
+                                ? null
+                                : const LinearGradient(
+                                    colors: [
+                                      Color(0xFF2E6BFF),
+                                      Color(0xFF35E1F2),
+                                    ],
+                                  ),
+                            color: isFollowing ? const Color(0xFF3A3B3C) : null,
+                            border: isFollowing
+                                ? Border.all(color: Colors.white38, width: 1)
+                                : null,
+                          ),
+                          child: Icon(
+                            isFollowing ? Icons.check : Icons.add,
+                            color: Colors.white,
+                            size: compact ? 13 : 16,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
                 const SizedBox(width: 10),
                 Flexible(
                   child: GestureDetector(
@@ -4400,48 +4561,44 @@ class _OwnerInfo extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                // Follow / Following toggle next to the name (hidden on my own videos)
-                if (myId != null && myId != userId && userId.isNotEmpty)
-                  StreamBuilder<DocumentSnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(userId)
-                        .collection('followers')
-                        .doc(myId)
-                        .snapshots(),
-                    builder: (context, followSnap) {
-                      final bool isFollowing = followSnap.data?.exists ?? false;
-                      return GestureDetector(
-                        onTap: () => _toggleFollow(myId, isFollowing),
-                        child: Container(
-                          padding: EdgeInsets.symmetric(
-                              horizontal: compact ? 10 : 14,
-                              vertical: compact ? 3 : 5),
-                          decoration: BoxDecoration(
-                            // Red when not following, grey once following
-                            color: isFollowing
-                                ? const Color(0xFF3A3B3C)
-                                : const Color(0xFFFF4B6E),
-                            borderRadius: BorderRadius.circular(6),
-                            border: isFollowing
-                                ? Border.all(color: Colors.white38, width: 1)
-                                : null,
-                          ),
-                          child: Text(
-                            isFollowing ? 'Following' : 'Follow',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: compact ? 11 : 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
               ],
             ),
+            if (replyToPostId != null && replyToOwnerName != null) ...[
+              SizedBox(height: compact ? 3 : 6),
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SingleVideoScreen(
+                        postId: replyToPostId!,
+                        userId: replyToOwnerId ?? '',
+                        videoUrl: '',
+                        caption: '',
+                        userEmail: '',
+                        videoType: 'short',
+                      ),
+                    ),
+                  );
+                },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.reply,
+                        color: Colors.white70, size: compact ? 12 : 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Replying to @$replyToOwnerName',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: compact ? 10 : 12,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (caption.isNotEmpty) ...[
               SizedBox(height: compact ? 4 : 8),
               _CaptionWithHashtags(
@@ -4532,6 +4689,48 @@ class _OwnerInfo extends StatelessWidget {
       },
     );
   }
+}
+
+// Paints the "Orbit Ring" - a partial gradient arc around a video's
+// avatar, filled proportionally to that video's reaction count. Fly's
+// own take on the standard static gradient story-ring border every
+// other short-video app uses, since this one actually changes based on
+// engagement instead of just being decorative.
+class _OrbitRingPainter extends CustomPainter {
+  final double progress; // 0.0 - 1.0
+  final double strokeWidth;
+
+  _OrbitRingPainter({required this.progress, required this.strokeWidth});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Offset center = Offset(size.width / 2, size.height / 2);
+    final double radius = (size.width - strokeWidth) / 2;
+    final Rect rect = Rect.fromCircle(center: center, radius: radius);
+
+    final Paint track = Paint()
+      ..color = Colors.white24
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth;
+    canvas.drawCircle(center, radius, track);
+
+    if (progress <= 0) return;
+
+    final Paint arc = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..shader = const SweepGradient(
+        colors: [Color(0xFF2E6BFF), Color(0xFF35E1F2), Color(0xFF2E6BFF)],
+      ).createShader(rect);
+
+    canvas.drawArc(rect, -pi / 2, 2 * pi * progress, false, arc);
+  }
+
+  @override
+  bool shouldRepaint(covariant _OrbitRingPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.strokeWidth != strokeWidth;
 }
 
 // Notification bell with a red badge showing the unseen notification count
