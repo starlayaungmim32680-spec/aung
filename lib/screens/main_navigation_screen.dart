@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -348,6 +349,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   void _selectTab(int index) {
+    if (index == 0 && _currentIndex == 0) {
+      // Already on Home - tapping Home again scrolls the feed back to the
+      // top, the same behavior as the phone's Back button.
+      homeFeedScrollToTopSignal.value++;
+      return;
+    }
     setState(() {
       _currentIndex = index;
     });
@@ -673,147 +680,188 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
+  // Handles the phone's system Back button/gesture app-wide, Facebook-style:
+  // - Off Home: jump back to Home first instead of exiting.
+  // - On Home, feed scrolled down: scroll the feed back to its first video.
+  // - On Home, already at the first video: let the app actually exit.
+  Future<void> _handleBackPress() async {
+    if (_currentIndex != 0) {
+      if (_currentIndex <= 2) {
+        // Home lives inside the Shorts/Home/Chat swipe group as local
+        // page 1 - animate back to it rather than a hard jump.
+        _swipePageController.animateToPage(
+          1,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOut,
+        );
+      } else {
+        // Upload/Profile sit outside the swipe group.
+        setState(() => _currentIndex = 0);
+      }
+      return;
+    }
+
+    if (!homeFeedAtTop.value) {
+      // Feed is scrolled down - scroll back to the first video and
+      // consume this Back press instead of exiting.
+      homeFeedScrollToTopSignal.value++;
+      return;
+    }
+
+    // Already on Home and already at the first video - exit the app.
+    SystemNavigator.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final double scale = _uiScale(context);
     final double bottomSafe = MediaQuery.of(context).padding.bottom;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // Home/Shorts/Chat swipe as one continuous horizontal group,
-          // Home in the middle - swipe left from Home for Shorts, right
-          // from Home for Chat, and back again either direction. Upload
-          // and Profile stay outside this group (tap-only from the orbit
-          // menu below), shown directly instead of via the PageView.
-          //
-          // NOTE: unlike the old "only the active tab is built" setup,
-          // a real swipeable PageView needs its neighbor page already
-          // built underneath your finger as you drag - so Shorts and Home
-          // (both autoplaying video) can be alive at the same time while
-          // swiping between them. Worth checking for overlapping audio
-          // when swiping quickly between the two.
-          _currentIndex <= 2
-              ? PageView(
-                  controller: _swipePageController,
-                  onPageChanged: (localIndex) {
-                    setState(() {
-                      _currentIndex = _localToCurrentIndex[localIndex];
-                    });
-                  },
-                  children: const [
-                    ShortsScreen(),
-                    HomeScreen(),
-                    ChatScreen(),
-                  ],
-                )
-              : _screens[_currentIndex],
-          // One-time hint teaching people the Home/Shorts/Chat swipe
-          // exists - two pulsing arrows at the screen edges plus a short
-          // caption, auto-dismissing on their own after a few seconds.
-          if (_showSwipeHint)
-            IgnorePointer(
-              child: AnimatedOpacity(
-                opacity: _showSwipeHint ? 1 : 0,
-                duration: const Duration(milliseconds: 400),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      left: 8,
-                      top: 0,
-                      bottom: 0,
-                      child: Center(
-                        child: TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0, end: 1),
-                          duration: const Duration(milliseconds: 900),
-                          curve: Curves.easeInOut,
-                          builder: (context, t, child) => Transform.translate(
-                            offset: Offset(-6 + 6 * (1 - (2 * t - 1).abs()), 0),
-                            child: child,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBackPress();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // Home/Shorts/Chat swipe as one continuous horizontal group,
+            // Home in the middle - swipe left from Home for Shorts, right
+            // from Home for Chat, and back again either direction. Upload
+            // and Profile stay outside this group (tap-only from the orbit
+            // menu below), shown directly instead of via the PageView.
+            //
+            // NOTE: unlike the old "only the active tab is built" setup,
+            // a real swipeable PageView needs its neighbor page already
+            // built underneath your finger as you drag - so Shorts and Home
+            // (both autoplaying video) can be alive at the same time while
+            // swiping between them. Worth checking for overlapping audio
+            // when swiping quickly between the two.
+            _currentIndex <= 2
+                ? PageView(
+                    controller: _swipePageController,
+                    onPageChanged: (localIndex) {
+                      setState(() {
+                        _currentIndex = _localToCurrentIndex[localIndex];
+                      });
+                    },
+                    children: const [
+                      ShortsScreen(),
+                      HomeScreen(),
+                      ChatScreen(),
+                    ],
+                  )
+                : _screens[_currentIndex],
+            // One-time hint teaching people the Home/Shorts/Chat swipe
+            // exists - two pulsing arrows at the screen edges plus a short
+            // caption, auto-dismissing on their own after a few seconds.
+            if (_showSwipeHint)
+              IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _showSwipeHint ? 1 : 0,
+                  duration: const Duration(milliseconds: 400),
+                  child: Stack(
+                    children: [
+                      Positioned(
+                        left: 8,
+                        top: 0,
+                        bottom: 0,
+                        child: Center(
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0, end: 1),
+                            duration: const Duration(milliseconds: 900),
+                            curve: Curves.easeInOut,
+                            builder: (context, t, child) => Transform.translate(
+                              offset:
+                                  Offset(-6 + 6 * (1 - (2 * t - 1).abs()), 0),
+                              child: child,
+                            ),
+                            child: const Icon(Icons.chevron_left,
+                                color: Colors.white70, size: 34),
                           ),
-                          child: const Icon(Icons.chevron_left,
-                              color: Colors.white70, size: 34),
                         ),
                       ),
-                    ),
-                    Positioned(
-                      right: 8,
-                      top: 0,
-                      bottom: 0,
-                      child: Center(
-                        child: TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0, end: 1),
-                          duration: const Duration(milliseconds: 900),
-                          curve: Curves.easeInOut,
-                          builder: (context, t, child) => Transform.translate(
-                            offset: Offset(6 - 6 * (1 - (2 * t - 1).abs()), 0),
-                            child: child,
+                      Positioned(
+                        right: 8,
+                        top: 0,
+                        bottom: 0,
+                        child: Center(
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0, end: 1),
+                            duration: const Duration(milliseconds: 900),
+                            curve: Curves.easeInOut,
+                            builder: (context, t, child) => Transform.translate(
+                              offset:
+                                  Offset(6 - 6 * (1 - (2 * t - 1).abs()), 0),
+                              child: child,
+                            ),
+                            child: const Icon(Icons.chevron_right,
+                                color: Colors.white70, size: 34),
                           ),
-                          child: const Icon(Icons.chevron_right,
-                              color: Colors.white70, size: 34),
                         ),
                       ),
-                    ),
-                    Align(
-                      alignment: const Alignment(0, 0.72),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: const Text(
-                          'Swipe left for Shorts \u2022 Swipe right for Chat',
-                          style: TextStyle(color: Colors.white, fontSize: 12),
+                      Align(
+                        alignment: const Alignment(0, 0.72),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Text(
+                            'Swipe left for Shorts \u2022 Swipe right for Chat',
+                            style: TextStyle(color: Colors.white, fontSize: 12),
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          // Small menu pills (Home/Reels/Chat/Upload/Profile/Live) - always
-          // fixed at the very bottom, regardless of where the big button is.
-          if (_isMenuOpen)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 8 + bottomSafe,
-              child: SizedBox(
-                height: 64 * scale,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  children: List.generate(
-                    _menuItems.length,
-                    (i) => Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
-                      child: _buildMenuItem(i),
+            // Small menu pills (Home/Reels/Chat/Upload/Profile/Live) - always
+            // fixed at the very bottom, regardless of where the big button is.
+            if (_isMenuOpen)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 8 + bottomSafe,
+                child: SizedBox(
+                  height: 64 * scale,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    children: List.generate(
+                      _menuItems.length,
+                      (i) => Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        child: _buildMenuItem(i),
+                      ),
                     ),
                   ),
                 ),
               ),
+            // Big orbit button - free to be dragged anywhere on screen,
+            // including up over the video.
+            Positioned(
+              right: _buttonRight,
+              bottom: _buttonBottom + bottomSafe,
+              child: GestureDetector(
+                onPanStart: _onPanStart,
+                onPanUpdate: _onPanUpdate,
+                onPanEnd: _onPanEnd,
+                child: _buildMainButton(context),
+              ),
             ),
-          // Big orbit button - free to be dragged anywhere on screen,
-          // including up over the video.
-          Positioned(
-            right: _buttonRight,
-            bottom: _buttonBottom + bottomSafe,
-            child: GestureDetector(
-              onPanStart: _onPanStart,
-              onPanUpdate: _onPanUpdate,
-              onPanEnd: _onPanEnd,
-              child: _buildMainButton(context),
-            ),
-          ),
 
-          // A minimized call, if there is one - tap to jump straight back
-          // into VideoCallScreen, which reclaims the still-running Room
-          // (see active_call.dart) instead of reconnecting.
-          const _MinimizedCallBar(),
-        ],
+            // A minimized call, if there is one - tap to jump straight back
+            // into VideoCallScreen, which reclaims the still-running Room
+            // (see active_call.dart) instead of reconnecting.
+            const _MinimizedCallBar(),
+          ],
+        ),
       ),
     );
   }
