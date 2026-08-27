@@ -48,6 +48,16 @@ const Map<String, String> kReactions = {
   'angry': '😡',
 };
 
+// Two small cross-screen signals that let MainNavigationScreen's back-button
+// handling talk to whichever HomeScreen is currently mounted, without
+// needing a GlobalKey into its private State:
+//   - homeFeedAtTop tracks whether the video feed is currently scrolled to
+//     its very first video.
+//   - homeFeedScrollToTopSignal is "pinged" (value incremented) to make the
+//     feed animate back to the first video.
+final ValueNotifier<bool> homeFeedAtTop = ValueNotifier<bool>(true);
+final ValueNotifier<int> homeFeedScrollToTopSignal = ValueNotifier<int>(0);
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -81,6 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     // Stop the phone from dimming/locking while videos are playing.
     WakelockPlus.enable();
+    homeFeedScrollToTopSignal.addListener(_onScrollToTopSignal);
     _postsStream = FirebaseFirestore.instance
         .collection('posts')
         .orderBy('createdAt', descending: true)
@@ -124,10 +135,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     WakelockPlus.disable();
+    homeFeedScrollToTopSignal.removeListener(_onScrollToTopSignal);
     _followingSub?.cancel();
     _blockedSub?.cancel();
     _pageController.dispose();
     super.dispose();
+  }
+
+  // Called when MainNavigationScreen pings homeFeedScrollToTopSignal (the
+  // phone's Back button while the feed is scrolled down) - animates back
+  // to the very first video, Facebook-style.
+  void _onScrollToTopSignal() {
+    if (!mounted || !_pageController.hasClients) return;
+    _pageController.animateToPage(
+      0,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOut,
+    );
   }
 
   void _goToNextVideo(int totalCount) {
@@ -335,6 +359,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               scrollDirection: Axis.vertical,
                               itemCount: slots.length,
                               onPageChanged: (index) {
+                                // Track whether the feed is scrolled to its
+                                // very first video, for the Back-button
+                                // scroll-to-top behavior in
+                                // MainNavigationScreen.
+                                homeFeedAtTop.value = index == 0;
                                 // Preloading only makes sense for actual
                                 // videos - a shelf slot has no single video
                                 // of its own.
