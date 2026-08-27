@@ -2780,7 +2780,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
                 Positioned(
                   right: 12,
                   bottom: 120,
+                  // Fly's action dock: Like/Comment/Share/Save float
+                  // directly over the video (no background panel), sitting
+                  // close together, each with its own icon design and a
+                  // soft glow chip that lights up when active.
                   child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       // Like (long-press for reactions)
                       GestureDetector(
@@ -2789,37 +2794,40 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             setState(() => _showReactionPicker = true),
                         child: Column(
                           children: [
-                            SizedBox(
-                              width: 40,
-                              height: 40,
-                              child: Center(
-                                child: myReaction == 'like'
-                                    ? const _PopInLikeBadge(
-                                        key: ValueKey('like'),
-                                        diameter: 40,
-                                      )
-                                    : myReaction != null
-                                        ? _PopInEmoji(
-                                            key: ValueKey(myReaction),
-                                            emoji: kReactions[myReaction]!,
-                                          )
-                                        : const Icon(
-                                            Icons.favorite,
-                                            color: Colors.white,
-                                            size: 34,
-                                            shadows: [
-                                              Shadow(
-                                                  color: Colors.black,
-                                                  blurRadius: 8)
-                                            ],
-                                          ),
+                            _FlyActionGlow(
+                              active: myReaction != null,
+                              child: SizedBox(
+                                width: 38,
+                                height: 38,
+                                child: Center(
+                                  child: myReaction == 'like'
+                                      ? const _PopInLikeBadge(
+                                          key: ValueKey('like'),
+                                          diameter: 34,
+                                        )
+                                      : myReaction != null
+                                          ? _PopInEmoji(
+                                              key: ValueKey(myReaction),
+                                              emoji: kReactions[myReaction]!,
+                                            )
+                                          : const Icon(
+                                              Icons.favorite,
+                                              color: Colors.white,
+                                              size: 27,
+                                              shadows: [
+                                                Shadow(
+                                                    color: Colors.black,
+                                                    blurRadius: 8),
+                                              ],
+                                            ),
+                                ),
                               ),
                             ),
                             _countLabel(_formatCount(liveReactions.length)),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 6),
                       // Comment
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('comments'),
@@ -2830,14 +2838,23 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             onTap: _openComments,
                             child: Column(
                               children: [
-                                const _CommentBubbleIcon(size: 28),
+                                _FlyActionGlow(
+                                  active: false,
+                                  child: SizedBox(
+                                    width: 38,
+                                    height: 38,
+                                    child: Center(
+                                      child: _FlyCommentIcon(size: 24),
+                                    ),
+                                  ),
+                                ),
                                 _countLabel(_formatCount(count)),
                               ],
                             ),
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 6),
                       // Share
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('shares'),
@@ -2848,15 +2865,14 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             onTap: _openShareSheet,
                             child: Column(
                               children: [
-                                Transform.flip(
-                                  flipX: true,
-                                  child: const Icon(
-                                    Icons.reply,
-                                    color: Colors.white,
-                                    size: 34,
-                                    shadows: [
-                                      Shadow(color: Colors.black, blurRadius: 8)
-                                    ],
+                                _FlyActionGlow(
+                                  active: false,
+                                  child: SizedBox(
+                                    width: 38,
+                                    height: 38,
+                                    child: Center(
+                                      child: _FlySwooshShareIcon(size: 26),
+                                    ),
                                   ),
                                 ),
                                 _countLabel(_formatCount(count)),
@@ -2865,7 +2881,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 6),
                       // Save / bookmark
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('saves'),
@@ -2880,15 +2896,26 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             onTap: () => _toggleSave(isSaved),
                             child: Column(
                               children: [
-                                Icon(
-                                  isSaved
-                                      ? Icons.bookmark
-                                      : Icons.bookmark_border,
-                                  color: Colors.white,
-                                  size: 32,
-                                  shadows: const [
-                                    Shadow(color: Colors.black, blurRadius: 8)
-                                  ],
+                                _FlyActionGlow(
+                                  active: isSaved,
+                                  child: SizedBox(
+                                    width: 38,
+                                    height: 38,
+                                    child: Center(
+                                      child: Icon(
+                                        isSaved
+                                            ? Icons.bookmark
+                                            : Icons.bookmark_border,
+                                        color: Colors.white,
+                                        size: 24,
+                                        shadows: const [
+                                          Shadow(
+                                              color: Colors.black,
+                                              blurRadius: 8),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                                 _countLabel(_formatCount(count)),
                               ],
@@ -2896,15 +2923,26 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 6),
                       // More options (Report / Block)
                       GestureDetector(
                         onTap: () => _showReportBlockSheet(context),
-                        child: const Icon(
-                          Icons.more_horiz,
-                          color: Colors.white,
-                          size: 30,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 8)],
+                        child: _FlyActionGlow(
+                          active: false,
+                          child: const SizedBox(
+                            width: 34,
+                            height: 34,
+                            child: Center(
+                              child: Icon(
+                                Icons.more_horiz,
+                                color: Colors.white,
+                                size: 22,
+                                shadows: [
+                                  Shadow(color: Colors.black, blurRadius: 8),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -4798,6 +4836,195 @@ class _NotificationBell extends StatelessWidget {
       },
     );
   }
+}
+
+// Shared "glow chip" used behind each icon in Fly's action dock: a soft
+// cyan radial glow fades in behind the icon when that action is active
+// (liked / saved), giving each button its own subtle focus state instead
+// of the plain flat icons most short-video apps use.
+class _FlyActionGlow extends StatelessWidget {
+  final bool active;
+  final Widget child;
+
+  const _FlyActionGlow({required this.active, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: active
+            ? RadialGradient(
+                colors: [
+                  const Color(0xFF35E1E8).withOpacity(0.35),
+                  const Color(0xFF35E1E8).withOpacity(0.0),
+                ],
+              )
+            : null,
+      ),
+      child: child,
+    );
+  }
+}
+
+// Fly's own comment icon (used in the main action dock): a speech bubble
+// drawn with the app's cyan-to-blue gradient (the same gradient family as
+// the logo / story ring) instead of a plain white outline, plus a small
+// solid dot accent — giving it its own identity rather than a generic
+// chat-bubble icon shared by other apps.
+class _FlyCommentIcon extends StatelessWidget {
+  final double size;
+  const _FlyCommentIcon({this.size = 24});
+
+  @override
+  Widget build(BuildContext context) {
+    final double boxSize = size * (80 / 60);
+    return SizedBox(
+      width: boxSize,
+      height: boxSize,
+      child: CustomPaint(painter: _FlyCommentPainter()),
+    );
+  }
+}
+
+class _FlyCommentPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Rect rect = Offset.zero & size;
+    final Shader gradientShader = const LinearGradient(
+      colors: [Color(0xFF35E1E8), Color(0xFF5B7CFA)],
+    ).createShader(rect);
+
+    // Soft dark backdrop shadow so the gradient stroke still reads clearly
+    // over light video frames (there's no glass panel behind it anymore).
+    final Paint shadowPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5.0
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.black.withOpacity(0.35)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
+    final RRect shadowBubble = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        size.width * 0.08,
+        size.height * 0.14,
+        size.width * 0.84,
+        size.height * 0.6,
+      ),
+      Radius.circular(size.height * 0.3),
+    );
+    canvas.drawRRect(shadowBubble, shadowPaint);
+
+    final Paint strokePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.4
+      ..strokeCap = StrokeCap.round
+      ..shader = gradientShader;
+
+    final RRect bubble = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        size.width * 0.08,
+        size.height * 0.14,
+        size.width * 0.84,
+        size.height * 0.6,
+      ),
+      Radius.circular(size.height * 0.3),
+    );
+    canvas.drawRRect(bubble, strokePaint);
+
+    final Paint fillPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..shader = gradientShader;
+    final Path tail = Path()
+      ..moveTo(size.width * 0.26, size.height * 0.72)
+      ..lineTo(size.width * 0.18, size.height * 0.94)
+      ..lineTo(size.width * 0.42, size.height * 0.74)
+      ..close();
+    canvas.drawPath(tail, fillPaint);
+
+    // Small accent dot — Fly's identity mark on the bubble.
+    canvas.drawCircle(
+      Offset(size.width * 0.86, size.height * 0.18),
+      size.width * 0.065,
+      Paint()..color = const Color(0xFF35E1E8),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _FlyCommentPainter oldDelegate) => false;
+}
+
+// Fly's own share icon (used in the main action dock): a paper-plane with a
+// soft tapering gradient motion trail, echoing the app's short-video "fast"
+// feel — used instead of a plain flipped Material "reply" arrow like other
+// apps use for share.
+class _FlySwooshShareIcon extends StatelessWidget {
+  final double size;
+  const _FlySwooshShareIcon({this.size = 26});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(painter: _FlySwooshSharePainter()),
+    );
+  }
+}
+
+class _FlySwooshSharePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Soft dark backdrop shadow so the plane still reads clearly over
+    // light video frames (there's no glass panel behind it anymore).
+    final Path shadowPlane = Path()
+      ..moveTo(size.width * 0.10, size.height * 0.55)
+      ..lineTo(size.width * 0.85, size.height * 0.15)
+      ..lineTo(size.width * 0.55, size.height * 0.90)
+      ..lineTo(size.width * 0.46, size.height * 0.60)
+      ..close();
+    canvas.drawPath(
+      shadowPlane,
+      Paint()
+        ..style = PaintingStyle.fill
+        ..color = Colors.black.withOpacity(0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+
+    // Tapering trail behind the plane, fading out with each line.
+    for (int i = 0; i < 3; i++) {
+      final double t = i / 2;
+      final Paint trailPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.6 - i * 0.7
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0xFF35E1E8).withOpacity(0.55 - i * 0.18);
+      canvas.drawLine(
+        Offset(size.width * (0.66 - t * 0.10), size.height * (0.36 + t * 0.10)),
+        Offset(size.width * (0.86 - t * 0.10), size.height * (0.20 + t * 0.10)),
+        trailPaint,
+      );
+    }
+
+    final Shader gradientShader = const LinearGradient(
+      colors: [Color(0xFF35E1E8), Color(0xFF5B7CFA)],
+    ).createShader(Offset.zero & size);
+    final Paint planePaint = Paint()
+      ..style = PaintingStyle.fill
+      ..shader = gradientShader;
+
+    final Path plane = Path()
+      ..moveTo(size.width * 0.10, size.height * 0.55)
+      ..lineTo(size.width * 0.85, size.height * 0.15)
+      ..lineTo(size.width * 0.55, size.height * 0.90)
+      ..lineTo(size.width * 0.46, size.height * 0.60)
+      ..close();
+    canvas.drawPath(plane, planePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _FlySwooshSharePainter oldDelegate) => false;
 }
 
 // A round speech-bubble icon: a circular outline with a small pointed tail,
