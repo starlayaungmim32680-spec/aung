@@ -1412,6 +1412,23 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // the next one. The user can still swipe away manually at any time.
   static const int _maxLoopsBeforeAutoSkip = 3;
 
+  // Wraps [child] in a ColorFiltered matrix ONLY when the uploader actually
+  // picked a filter at post time. Most videos have none, so this skips the
+  // ColorFiltered layer entirely rather than applying a technically-identity
+  // matrix - some devices render even an identity ColorFilter with a very
+  // slight colour/gamma shift, and the goal is the video looking exactly
+  // like what was uploaded, with nothing added.
+  Widget _withOptionalFilter(Widget child) {
+    final String effectiveFilter =
+        widget.effectsBaked ? 'none' : widget.filterType;
+    if (effectiveFilter == 'none') return child;
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(kVideoFilterMatrices[effectiveFilter] ??
+          kVideoFilterMatrices['none']!),
+      child: child,
+    );
+  }
+
   VideoPlayerController? _controller;
   bool _isInitialized = false;
   bool _endTriggered = false;
@@ -2356,14 +2373,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                ColorFiltered(
-                                  colorFilter: ColorFilter.matrix(
-                                      widget.effectsBaked
-                                          ? kVideoFilterMatrices['none']!
-                                          : (kVideoFilterMatrices[
-                                                  widget.filterType] ??
-                                              kVideoFilterMatrices['none']!)),
-                                  child: FittedBox(
+                                _withOptionalFilter(
+                                  FittedBox(
                                     fit: BoxFit.cover,
                                     child: SizedBox(
                                       width: _controller!.value.size.width,
@@ -2383,43 +2394,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     ),
                   )
                 else ...[
-                  // Backdrop: the same video, zoomed to fill and heavily
-                  // blurred, so the empty letterbox/pillarbox area picks up
-                  // the video's own colours instead of showing flat black -
-                  // only when the uploader chose this at post time
-                  // (widget.blurBackground); otherwise that space stays
-                  // plain black, which some people prefer.
-                  if (widget.blurBackground) ...[
-                    ClipRect(
-                      child: ImageFiltered(
-                        imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          child: SizedBox(
-                            width: _controller!.value.size.width,
-                            height: _controller!.value.size.height,
-                            child: VideoPlayer(_controller!),
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Darken the backdrop a little so the real video and
-                    // the overlaid text/buttons stay easy to read.
-                    Container(color: Colors.black.withOpacity(0.4)),
-                  ] else
-                    Container(color: Colors.black),
-                  // Show the video at its real aspect ratio, centered -
-                  // never cropped, so it always looks like what was
-                  // originally uploaded.
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: _controller!.value.aspectRatio,
-                      child: ColorFiltered(
-                        colorFilter: ColorFilter.matrix(widget.effectsBaked
-                            ? kVideoFilterMatrices['none']!
-                            : (kVideoFilterMatrices[widget.filterType] ??
-                                kVideoFilterMatrices['none']!)),
-                        child: VideoPlayer(_controller!),
+                  // Fill the whole screen edge-to-edge - crop whatever
+                  // doesn't fit rather than leaving any empty space around
+                  // the video, so there's never a background color/glow to
+                  // pick.
+                  Positioned.fill(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _controller!.value.size.width,
+                        height: _controller!.value.size.height,
+                        child: _withOptionalFilter(VideoPlayer(_controller!)),
                       ),
                     ),
                   ),
