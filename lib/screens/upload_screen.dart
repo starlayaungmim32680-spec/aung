@@ -14,6 +14,7 @@ import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'content_filter.dart';
+import 'home_screen.dart' show navigateToHomeSignal;
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -690,6 +691,9 @@ class _UploadScreenState extends State<UploadScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Posted successfully!')),
         );
+        // Jump straight to the Home tab to see the new post, instead of
+        // leaving the person on the Upload screen to find it themselves.
+        navigateToHomeSignal.value++;
       }
     } catch (e) {
       if (mounted) {
@@ -1054,25 +1058,6 @@ class _UploadScreenState extends State<UploadScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          // Lets each person choose whether empty space around their video
-          // (for aspect ratios that don't fill the screen exactly) gets a
-          // blurred backdrop of the video's own colors, or stays plain
-          // black - a look-and-feel choice, not everyone likes the blur.
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Blur background to fill screen',
-                  style: TextStyle(color: Colors.grey[300], fontSize: 13),
-                ),
-              ),
-              Switch(
-                value: _blurBackground,
-                activeColor: const Color(0xFF35E1F2),
-                onChanged: (value) => setState(() => _blurBackground = value),
-              ),
-            ],
-          ),
           if (_errorMessage != null) ...[
             const SizedBox(height: 12),
             Text(

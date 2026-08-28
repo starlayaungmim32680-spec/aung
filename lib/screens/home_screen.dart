@@ -57,6 +57,11 @@ const Map<String, String> kReactions = {
 //     feed animate back to the first video.
 final ValueNotifier<bool> homeFeedAtTop = ValueNotifier<bool>(true);
 final ValueNotifier<int> homeFeedScrollToTopSignal = ValueNotifier<int>(0);
+// Pinged by UploadScreen right after a post finishes uploading, so
+// MainNavigationScreen can jump the person straight from Upload to the
+// Home tab, at the newest video, instead of leaving them on the Upload
+// screen to find it themselves.
+final ValueNotifier<int> navigateToHomeSignal = ValueNotifier<int>(0);
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

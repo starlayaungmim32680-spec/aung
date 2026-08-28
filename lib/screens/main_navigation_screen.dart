@@ -111,11 +111,26 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _listenForNewMessages();
     _listenForIncomingCalls();
     CoinService.instance.awardDailyLogin();
+    navigateToHomeSignal.addListener(_onNavigateToHomeSignal);
     // Call-reliability permissions (battery optimization, overlay,
     // full-screen intent, autostart) are intentionally NOT requested here
     // - they're only requested when a call actually starts, from
     // video_call_screen.dart, so opening the app never triggers a
     // permission prompt on its own. See call_permissions.dart.
+  }
+
+  // Called when UploadScreen pings navigateToHomeSignal right after a post
+  // finishes uploading - jumps from Upload straight to the Home tab, at
+  // the newest video, instead of leaving the person on the Upload screen.
+  void _onNavigateToHomeSignal() {
+    if (!mounted) return;
+    setState(() => _currentIndex = 0);
+    if (_swipePageController.hasClients) {
+      _swipePageController.jumpToPage(1); // Home's page in the swipe group
+    }
+    // The feed orders newest first, so the just-uploaded video is the
+    // very first item - scroll straight to it.
+    homeFeedScrollToTopSignal.value++;
   }
 
   // Builds a short "ding" notification sound as a WAV byte buffer
@@ -321,6 +336,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _chatSubscription?.cancel();
     _callSubscription?.cancel();
     _dingPlayer.dispose();
+    navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
     super.dispose();
   }
 
