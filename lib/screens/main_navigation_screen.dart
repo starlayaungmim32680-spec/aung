@@ -31,14 +31,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   bool _isMenuOpen = false;
 
   double _buttonRight = 24;
-  // Home/Shorts/Chat are swipeable as one horizontal group, Home in the
-  // middle (Shorts <- Home -> Chat) - Upload/Profile stay tap-only via the
-  // orbit menu, not part of this swipe group.
+  // Home/Chat are swipeable as a horizontal group (Home first, swipe left
+  // for Chat) - Upload/Profile stay tap-only via the orbit menu, not part
+  // of this swipe group. The standalone Shorts/Reels tab was removed -
+  // videos only live on Home now.
   late final PageController _swipePageController;
-  static const List<int> _localToCurrentIndex = [1, 0, 2]; // Shorts, Home, Chat
-  // One-time onboarding hint teaching people they can swipe between
-  // Home/Shorts/Chat, since that gesture isn't discoverable on its own -
-  // shown once ever per account, then never again.
+  static const List<int> _localToCurrentIndex = [0, 1]; // Home, Chat
+  // One-time onboarding hint teaching people they can swipe from Home to
+  // Chat, since that gesture isn't discoverable on its own - shown once
+  // ever per account, then never again.
   bool _showSwipeHint = false;
   double _buttonBottom = 90;
   double _dragDistance = 0;
@@ -59,7 +60,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   final List<Widget> _screens = const [
     HomeScreen(),
-    ShortsScreen(),
     ChatScreen(),
     UploadScreen(),
     ProfileScreen(),
@@ -70,11 +70,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       'icon': Icons.home_rounded,
       'label': 'Home',
       'colors': [Color(0xFFFF4B6E), Color(0xFFD32F4F)],
-    },
-    {
-      'icon': Icons.theaters_rounded,
-      'label': 'Reels',
-      'colors': [Color(0xFFFF7A3D), Color(0xFFE64A19)],
     },
     {
       'icon': Icons.chat_bubble_rounded,
@@ -106,7 +101,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
-    _swipePageController = PageController(initialPage: 1); // start on Home
+    _swipePageController = PageController(initialPage: 0); // start on Home
     _maybeShowSwipeHintOnce();
     _listenForNewMessages();
     _listenForIncomingCalls();
@@ -126,7 +121,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     if (!mounted) return;
     setState(() => _currentIndex = 0);
     if (_swipePageController.hasClients) {
-      _swipePageController.jumpToPage(1); // Home's page in the swipe group
+      _swipePageController.jumpToPage(0); // Home's page in the swipe group
     }
     // The feed orders newest first, so the just-uploaded video is the
     // very first item - scroll straight to it.
@@ -374,25 +369,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     setState(() {
       _currentIndex = index;
     });
-    // Keep the swipeable Home/Shorts/Chat group in sync when one of them
-    // is picked from the orbit menu instead of swiped to directly.
-    if (index <= 2 && _swipePageController.hasClients) {
+    // Keep the swipeable Home/Chat group in sync when one of them is
+    // picked from the orbit menu instead of swiped to directly.
+    if (index <= 1 && _swipePageController.hasClients) {
       _swipePageController.animateToPage(
-        _currentToLocalIndex(index),
+        index, // Home=0, Chat=1 - same order in both the menu and the swipe group
         duration: const Duration(milliseconds: 280),
         curve: Curves.easeOutCubic,
       );
-    }
-  }
-
-  int _currentToLocalIndex(int currentIndex) {
-    switch (currentIndex) {
-      case 1: // Shorts
-        return 0;
-      case 2: // Chat
-        return 2;
-      default: // Home
-        return 1;
     }
   }
 
@@ -702,11 +686,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // - On Home, already at the first video: let the app actually exit.
   Future<void> _handleBackPress() async {
     if (_currentIndex != 0) {
-      if (_currentIndex <= 2) {
-        // Home lives inside the Shorts/Home/Chat swipe group as local
-        // page 1 - animate back to it rather than a hard jump.
+      if (_currentIndex <= 1) {
+        // Home lives inside the Home/Chat swipe group as local page 0 -
+        // animate back to it rather than a hard jump.
         _swipePageController.animateToPage(
-          1,
+          0,
           duration: const Duration(milliseconds: 260),
           curve: Curves.easeOut,
         );
@@ -743,19 +727,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // Home/Shorts/Chat swipe as one continuous horizontal group,
-            // Home in the middle - swipe left from Home for Shorts, right
-            // from Home for Chat, and back again either direction. Upload
-            // and Profile stay outside this group (tap-only from the orbit
-            // menu below), shown directly instead of via the PageView.
+            // Home/Chat swipe as one continuous horizontal group, Home first
+            // - swipe left from Home for Chat, and back again the other way.
+            // Upload and Profile stay outside this group (tap-only from the
+            // orbit menu below), shown directly instead of via the PageView.
+            // The standalone Shorts/Reels tab was removed - videos only live
+            // on Home now.
             //
-            // NOTE: unlike the old "only the active tab is built" setup,
-            // a real swipeable PageView needs its neighbor page already
-            // built underneath your finger as you drag - so Shorts and Home
-            // (both autoplaying video) can be alive at the same time while
-            // swiping between them. Worth checking for overlapping audio
-            // when swiping quickly between the two.
-            _currentIndex <= 2
+            // NOTE: unlike the old "only the active tab is built" setup, a
+            // real swipeable PageView needs its neighbor page already built
+            // underneath your finger as you drag.
+            _currentIndex <= 1
                 ? PageView(
                     controller: _swipePageController,
                     onPageChanged: (localIndex) {
@@ -764,15 +746,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       });
                     },
                     children: const [
-                      ShortsScreen(),
                       HomeScreen(),
                       ChatScreen(),
                     ],
                   )
                 : _screens[_currentIndex],
-            // One-time hint teaching people the Home/Shorts/Chat swipe
-            // exists - two pulsing arrows at the screen edges plus a short
-            // caption, auto-dismissing on their own after a few seconds.
+            // One-time hint teaching people the Home -> Chat swipe exists -
+            // a pulsing arrow at the screen edge plus a short caption,
+            // auto-dismissing on its own after a few seconds.
             if (_showSwipeHint)
               IgnorePointer(
                 child: AnimatedOpacity(
@@ -780,25 +761,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   duration: const Duration(milliseconds: 400),
                   child: Stack(
                     children: [
-                      Positioned(
-                        left: 8,
-                        top: 0,
-                        bottom: 0,
-                        child: Center(
-                          child: TweenAnimationBuilder<double>(
-                            tween: Tween(begin: 0, end: 1),
-                            duration: const Duration(milliseconds: 900),
-                            curve: Curves.easeInOut,
-                            builder: (context, t, child) => Transform.translate(
-                              offset:
-                                  Offset(-6 + 6 * (1 - (2 * t - 1).abs()), 0),
-                              child: child,
-                            ),
-                            child: const Icon(Icons.chevron_left,
-                                color: Colors.white70, size: 34),
-                          ),
-                        ),
-                      ),
+                      // Only a right-edge hint now - Home is the first page
+                      // in the swipe group (no page to its left anymore).
                       Positioned(
                         right: 8,
                         top: 0,
@@ -828,7 +792,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             borderRadius: BorderRadius.circular(20),
                           ),
                           child: const Text(
-                            'Swipe left for Shorts \u2022 Swipe right for Chat',
+                            'Swipe left for Chat',
                             style: TextStyle(color: Colors.white, fontSize: 12),
                           ),
                         ),
@@ -837,7 +801,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   ),
                 ),
               ),
-            // Small menu pills (Home/Reels/Chat/Upload/Profile/Live) - always
+            // Small menu pills (Home/Chat/Upload/Profile/Live) - always
             // fixed at the very bottom, regardless of where the big button is.
             if (_isMenuOpen)
               Positioned(
