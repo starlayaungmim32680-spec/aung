@@ -3024,13 +3024,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             _FlyActionGlow(
                               active: myReaction != null,
                               child: SizedBox(
-                                width: 38,
-                                height: 38,
+                                width: 46,
+                                height: 46,
                                 child: Center(
                                   child: myReaction == 'like'
                                       ? const _PopInLikeBadge(
                                           key: ValueKey('like'),
-                                          diameter: 34,
+                                          diameter: 40,
                                         )
                                       : myReaction != null
                                           ? _PopInEmoji(
@@ -3040,7 +3040,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                           : const Icon(
                                               Icons.favorite,
                                               color: Colors.white,
-                                              size: 27,
+                                              size: 32,
                                               shadows: [
                                                 Shadow(
                                                     color: Colors.black,
@@ -3068,10 +3068,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                 _FlyActionGlow(
                                   active: false,
                                   child: SizedBox(
-                                    width: 38,
-                                    height: 38,
+                                    width: 46,
+                                    height: 46,
                                     child: Center(
-                                      child: _FlyCommentIcon(size: 24),
+                                      child: _FlyCommentIcon(size: 30),
                                     ),
                                   ),
                                 ),
@@ -3095,10 +3095,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                 _FlyActionGlow(
                                   active: false,
                                   child: SizedBox(
-                                    width: 38,
-                                    height: 38,
+                                    width: 46,
+                                    height: 46,
                                     child: Center(
-                                      child: _FlySwooshShareIcon(size: 26),
+                                      child: _FlySwooshShareIcon(size: 30),
                                     ),
                                   ),
                                 ),
@@ -3126,15 +3126,15 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                 _FlyActionGlow(
                                   active: isSaved,
                                   child: SizedBox(
-                                    width: 38,
-                                    height: 38,
+                                    width: 46,
+                                    height: 46,
                                     child: Center(
                                       child: Icon(
                                         isSaved
                                             ? Icons.bookmark
                                             : Icons.bookmark_border,
                                         color: Colors.white,
-                                        size: 24,
+                                        size: 30,
                                         shadows: const [
                                           Shadow(
                                               color: Colors.black,
@@ -3157,13 +3157,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         child: _FlyActionGlow(
                           active: false,
                           child: const SizedBox(
-                            width: 34,
-                            height: 34,
+                            width: 40,
+                            height: 40,
                             child: Center(
                               child: Icon(
                                 Icons.more_horiz,
                                 color: Colors.white,
-                                size: 22,
+                                size: 26,
                                 shadows: [
                                   Shadow(color: Colors.black, blurRadius: 8),
                                 ],
@@ -5169,6 +5169,19 @@ class _FlyCommentPainter extends CustomPainter {
       ..lineTo(size.width * 0.42, size.height * 0.74)
       ..close();
     canvas.drawPath(tail, fillPaint);
+
+    // Three small dots inside the bubble - the classic "comment/typing"
+    // mark, so the icon reads as a comment bubble at a glance.
+    final Paint dotsPaint = Paint()..color = Colors.white;
+    final double dotY = size.height * 0.44;
+    final double dotRadius = size.width * 0.045;
+    for (final double dotX in [0.32, 0.5, 0.68]) {
+      canvas.drawCircle(
+        Offset(size.width * dotX, dotY),
+        dotRadius,
+        dotsPaint,
+      );
+    }
 
     // Small accent dot — Fly's identity mark on the bubble.
     canvas.drawCircle(
