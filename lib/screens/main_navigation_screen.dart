@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -28,11 +27,9 @@ class MainNavigationScreen extends StatefulWidget {
 class _MainNavigationScreenState extends State<MainNavigationScreen>
     with SingleTickerProviderStateMixin {
   int _currentIndex = 0;
-  bool _isMenuOpen = false;
 
-  double _buttonRight = 24;
   // Home/Chat are swipeable as a horizontal group (Home first, swipe left
-  // for Chat) - Upload/Profile stay tap-only via the orbit menu, not part
+  // for Chat) - Upload/Profile stay tap-only via the bottom bar, not part
   // of this swipe group. The standalone Shorts/Reels tab was removed -
   // videos only live on Home now.
   late final PageController _swipePageController;
@@ -41,8 +38,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Chat, since that gesture isn't discoverable on its own - shown once
   // ever per account, then never again.
   bool _showSwipeHint = false;
-  double _buttonBottom = 90;
-  double _dragDistance = 0;
 
   late AnimationController _rotationController;
 
@@ -335,12 +330,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     super.dispose();
   }
 
-  void _toggleMenu() {
-    setState(() {
-      _isMenuOpen = !_isMenuOpen;
-    });
-  }
-
   Future<void> _maybeShowSwipeHintOnce() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -427,159 +416,12 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     );
   }
 
-  // Scales button/icon/text sizes to the screen width so the menu feels
-  // right-sized on small phones and large phones alike (baseline ~390dp,
-  // clamped so nothing gets comically tiny or huge).
+  // Scales button/icon/text sizes to the screen width so the bottom bar
+  // feels right-sized on small phones and large phones alike (baseline
+  // ~390dp, clamped so nothing gets comically tiny or huge).
   double _uiScale(BuildContext context) {
     final double width = MediaQuery.of(context).size.width;
     return (width / 390).clamp(0.85, 1.2);
-  }
-
-  void _onPanStart(DragStartDetails details) {
-    _dragDistance = 0;
-  }
-
-  void _onPanUpdate(DragUpdateDetails details) {
-    setState(() {
-      _buttonRight -= details.delta.dx;
-      _buttonBottom -= details.delta.dy;
-      _dragDistance += details.delta.distance;
-
-      final screenSize = MediaQuery.of(context).size;
-      final safePadding = MediaQuery.of(context).padding;
-      final double buttonSize = 56 * _uiScale(context);
-
-      // Free to move anywhere on screen (including over the video), only
-      // kept clear of the notch/status bar and system nav bar.
-      final double minRight = safePadding.left;
-      const double minBottom = 0;
-      final double maxRight = screenSize.width - buttonSize - safePadding.right;
-      final double maxBottom =
-          screenSize.height - buttonSize - safePadding.top - safePadding.bottom;
-
-      if (_buttonRight < minRight) _buttonRight = minRight;
-      if (_buttonBottom < minBottom) _buttonBottom = minBottom;
-      if (_buttonRight > maxRight) _buttonRight = maxRight;
-      if (_buttonBottom > maxBottom) _buttonBottom = maxBottom;
-    });
-  }
-
-  void _onPanEnd(DragEndDetails details) {
-    if (_dragDistance < 5) {
-      _toggleMenu();
-    }
-  }
-
-  // Accent color for the glowing glass button (teal/cyan)
-  static const Color _glowColor = Color(0xFF2EF2C7);
-
-  Widget _buildMainButton(BuildContext context) {
-    final double scale = _uiScale(context);
-    final double size = 56 * scale;
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        // Dark frosted-glass look
-        color: const Color(0xFF1B1F22).withOpacity(0.85),
-        border: Border.all(
-          color: _glowColor.withOpacity(0.25),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: _glowColor.withOpacity(0.35),
-            blurRadius: 18,
-            spreadRadius: 1,
-          ),
-        ],
-      ),
-      child: ClipOval(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-          child: Center(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              transitionBuilder: (child, anim) => ScaleTransition(
-                scale: anim,
-                child: FadeTransition(opacity: anim, child: child),
-              ),
-              child:
-                  _isMenuOpen ? _buildCloseIcon(scale) : _buildOrbitIcon(scale),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Glowing close (X) icon shown when the menu is open
-  Widget _buildCloseIcon(double scale) {
-    return Icon(
-      Icons.close_rounded,
-      key: const ValueKey('close'),
-      color: _glowColor,
-      size: 26 * scale,
-      shadows: [
-        Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 14),
-      ],
-    );
-  }
-
-  // Rotating orbit rings with a sparkle in the center, shown when the menu
-  // is closed
-  Widget _buildOrbitIcon(double scale) {
-    return SizedBox(
-      key: const ValueKey('orbit'),
-      width: 30 * scale,
-      height: 30 * scale,
-      child: AnimatedBuilder(
-        animation: _rotationController,
-        builder: (context, child) {
-          final double t = _rotationController.value;
-          return Stack(
-            alignment: Alignment.center,
-            children: [
-              _orbitRing(angle: t * 2 * pi, squeeze: 1.0, scale: scale),
-              _orbitRing(
-                  angle: -t * 2 * pi + pi / 3, squeeze: 0.45, scale: scale),
-              Icon(
-                Icons.auto_awesome_rounded,
-                color: _glowColor,
-                size: 13 * scale,
-                shadows: [
-                  Shadow(color: _glowColor.withOpacity(0.9), blurRadius: 10),
-                ],
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  // A single elliptical orbit ring: a circle rotated and squeezed on one
-  // axis so it reads as an ellipse crossing the center
-  Widget _orbitRing(
-      {required double angle, required double squeeze, required double scale}) {
-    return Transform.rotate(
-      angle: angle,
-      child: Transform.scale(
-        scaleX: squeeze,
-        child: Container(
-          width: 28 * scale,
-          height: 28 * scale,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: _glowColor.withOpacity(0.9),
-              width: 1.6,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 
   // Menu item button. Size stays constant whether active or not — only the
@@ -717,146 +559,122 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     final double scale = _uiScale(context);
     final double bottomSafe = MediaQuery.of(context).padding.bottom;
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      // Force the transparent status/nav bar style here explicitly - some
-      // Android versions/devices reset it back to the opaque default when
-      // this screen becomes active again (e.g. after a route push/pop),
-      // even though it's already set once in main(). Keeping it pinned
-      // here is what makes it stick specifically on this Home/Chat/
-      // Upload/Profile screen too, not just on FullScreenVideoScreen.
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarIconBrightness: Brightness.light,
-        systemNavigationBarContrastEnforced: false,
-      ),
-      child: PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, result) {
-          if (didPop) return;
-          _handleBackPress();
-        },
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Stack(
-            children: [
-              // Home/Chat swipe as one continuous horizontal group, Home first
-              // - swipe left from Home for Chat, and back again the other way.
-              // Upload and Profile stay outside this group (tap-only from the
-              // orbit menu below), shown directly instead of via the PageView.
-              // The standalone Shorts/Reels tab was removed - videos only live
-              // on Home now.
-              //
-              // NOTE: unlike the old "only the active tab is built" setup, a
-              // real swipeable PageView needs its neighbor page already built
-              // underneath your finger as you drag.
-              _currentIndex <= 1
-                  ? PageView(
-                      controller: _swipePageController,
-                      onPageChanged: (localIndex) {
-                        setState(() {
-                          _currentIndex = _localToCurrentIndex[localIndex];
-                        });
-                      },
-                      children: const [
-                        HomeScreen(),
-                        ChatScreen(),
-                      ],
-                    )
-                  : _screens[_currentIndex],
-              // One-time hint teaching people the Home -> Chat swipe exists -
-              // a pulsing arrow at the screen edge plus a short caption,
-              // auto-dismissing on its own after a few seconds.
-              if (_showSwipeHint)
-                IgnorePointer(
-                  child: AnimatedOpacity(
-                    opacity: _showSwipeHint ? 1 : 0,
-                    duration: const Duration(milliseconds: 400),
-                    child: Stack(
-                      children: [
-                        // Only a right-edge hint now - Home is the first page
-                        // in the swipe group (no page to its left anymore).
-                        Positioned(
-                          right: 8,
-                          top: 0,
-                          bottom: 0,
-                          child: Center(
-                            child: TweenAnimationBuilder<double>(
-                              tween: Tween(begin: 0, end: 1),
-                              duration: const Duration(milliseconds: 900),
-                              curve: Curves.easeInOut,
-                              builder: (context, t, child) =>
-                                  Transform.translate(
-                                offset:
-                                    Offset(6 - 6 * (1 - (2 * t - 1).abs()), 0),
-                                child: child,
-                              ),
-                              child: const Icon(Icons.chevron_right,
-                                  color: Colors.white70, size: 34),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBackPress();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // Home/Chat swipe as one continuous horizontal group, Home first
+            // - swipe left from Home for Chat, and back again the other way.
+            // Upload and Profile stay outside this group (tap-only from the
+            // orbit menu below), shown directly instead of via the PageView.
+            // The standalone Shorts/Reels tab was removed - videos only live
+            // on Home now.
+            //
+            // NOTE: unlike the old "only the active tab is built" setup, a
+            // real swipeable PageView needs its neighbor page already built
+            // underneath your finger as you drag.
+            _currentIndex <= 1
+                ? PageView(
+                    controller: _swipePageController,
+                    onPageChanged: (localIndex) {
+                      setState(() {
+                        _currentIndex = _localToCurrentIndex[localIndex];
+                      });
+                    },
+                    children: const [
+                      HomeScreen(),
+                      ChatScreen(),
+                    ],
+                  )
+                : _screens[_currentIndex],
+            // One-time hint teaching people the Home -> Chat swipe exists -
+            // a pulsing arrow at the screen edge plus a short caption,
+            // auto-dismissing on its own after a few seconds.
+            if (_showSwipeHint)
+              IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: _showSwipeHint ? 1 : 0,
+                  duration: const Duration(milliseconds: 400),
+                  child: Stack(
+                    children: [
+                      // Only a right-edge hint now - Home is the first page
+                      // in the swipe group (no page to its left anymore).
+                      Positioned(
+                        right: 8,
+                        top: 0,
+                        bottom: 0,
+                        child: Center(
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween(begin: 0, end: 1),
+                            duration: const Duration(milliseconds: 900),
+                            curve: Curves.easeInOut,
+                            builder: (context, t, child) => Transform.translate(
+                              offset:
+                                  Offset(6 - 6 * (1 - (2 * t - 1).abs()), 0),
+                              child: child,
                             ),
+                            child: const Icon(Icons.chevron_right,
+                                color: Colors.white70, size: 34),
                           ),
-                        ),
-                        Align(
-                          alignment: const Alignment(0, 0.72),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: const Text(
-                              'Swipe left for Chat',
-                              style:
-                                  TextStyle(color: Colors.white, fontSize: 12),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              // Small menu pills (Home/Chat/Upload/Profile/Live) - always
-              // fixed at the very bottom, regardless of where the big button is.
-              if (_isMenuOpen)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 8 + bottomSafe,
-                  child: SizedBox(
-                    height: 64 * scale,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      children: List.generate(
-                        _menuItems.length,
-                        (i) => Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          child: _buildMenuItem(i),
                         ),
                       ),
+                      Align(
+                        alignment: const Alignment(0, 0.72),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Text(
+                            'Swipe left for Chat',
+                            style: TextStyle(color: Colors.white, fontSize: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            // Facebook-style bottom navigation bar: Home/Chat/Upload/
+            // Profile/Live always visible in a fixed row at the very
+            // bottom, evenly spaced - no button to tap to reveal them.
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: EdgeInsets.only(bottom: bottomSafe, top: 6 * scale),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF0B0B0B),
+                  border: Border(
+                    top: BorderSide(color: Colors.white12, width: 0.5),
+                  ),
+                ),
+                child: SizedBox(
+                  height: 52 * scale,
+                  child: Row(
+                    children: List.generate(
+                      _menuItems.length,
+                      (i) => Expanded(child: Center(child: _buildMenuItem(i))),
                     ),
                   ),
                 ),
-              // Big orbit button - free to be dragged anywhere on screen,
-              // including up over the video.
-              Positioned(
-                right: _buttonRight,
-                bottom: _buttonBottom + bottomSafe,
-                child: GestureDetector(
-                  onPanStart: _onPanStart,
-                  onPanUpdate: _onPanUpdate,
-                  onPanEnd: _onPanEnd,
-                  child: _buildMainButton(context),
-                ),
               ),
+            ),
 
-              // A minimized call, if there is one - tap to jump straight back
-              // into VideoCallScreen, which reclaims the still-running Room
-              // (see active_call.dart) instead of reconnecting.
-              const _MinimizedCallBar(),
-            ],
-          ),
+            // A minimized call, if there is one - tap to jump straight back
+            // into VideoCallScreen, which reclaims the still-running Room
+            // (see active_call.dart) instead of reconnecting.
+            const _MinimizedCallBar(),
+          ],
         ),
       ),
     );
