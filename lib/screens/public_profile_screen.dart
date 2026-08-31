@@ -9,6 +9,7 @@ import 'call_push_service.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
 import 'gifting.dart';
+import 'profile_screen.dart' show SkyNoteBubble;
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -67,6 +68,9 @@ class PublicProfileScreen extends StatelessWidget {
                   ? profile!['displayName']
                   : 'User';
           final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+          final String? skyNoteText = profile?['skyNoteText'] as String?;
+          final DateTime? skyNoteCreatedAt =
+              (profile?['skyNoteCreatedAt'] as Timestamp?)?.toDate();
 
           return StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -144,6 +148,33 @@ class PublicProfileScreen extends StatelessWidget {
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
+                              // Sky Note - only shown to people who follow
+                              // this person, same as Instagram Notes; a
+                              // stranger just sees nothing here, not even
+                              // an empty placeholder.
+                              if (!isMe && myId != null)
+                                StreamBuilder<DocumentSnapshot>(
+                                  stream: FirebaseFirestore.instance
+                                      .collection('users')
+                                      .doc(userId)
+                                      .collection('followers')
+                                      .doc(myId)
+                                      .snapshots(),
+                                  builder: (context, followSnap) {
+                                    final bool amFollowing =
+                                        followSnap.data?.exists ?? false;
+                                    if (!amFollowing) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return Padding(
+                                      padding: const EdgeInsets.only(top: 10),
+                                      child: SkyNoteBubble(
+                                        text: skyNoteText,
+                                        createdAt: skyNoteCreatedAt,
+                                      ),
+                                    );
+                                  },
+                                ),
                               const SizedBox(height: 16),
 
                               // Stats row: posts / followers / following

@@ -170,6 +170,100 @@ class ProfileScreen extends StatelessWidget {
     }
   }
 
+  // Opens the "Sky Note" composer - a short thought that floats near the
+  // profile photo like a little cloud, then fades away after 24 hours.
+  Future<void> _editSkyNote(BuildContext context, String? currentText) async {
+    final TextEditingController controller =
+        TextEditingController(text: currentText ?? '');
+    final String? result = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "What's floating in your mind?",
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Shows near your photo for 24 hours, then fades away on '
+                'its own.',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                maxLength: 60,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'e.g. feeling excited today \u2601\ufe0f',
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  filled: true,
+                  fillColor: Colors.white10,
+                  counterStyle: const TextStyle(color: Colors.white38),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  if ((currentText ?? '').trim().isNotEmpty)
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, ''),
+                      child: const Text('Clear',
+                          style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  const Spacer(),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF35E1E8),
+                      foregroundColor: Colors.black,
+                    ),
+                    child: const Text('Share'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (result == null || !context.mounted) return; // dismissed
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    await FirebaseFirestore.instance.collection('users').doc(uid).set(
+      {
+        'skyNoteText': result,
+        'skyNoteCreatedAt':
+            result.isEmpty ? null : FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+  }
+
   // Confirms and deletes one of the user's own posts
   Future<void> _confirmDelete(BuildContext context, String postId) async {
     final bool? confirm = await showDialog<bool>(
@@ -348,6 +442,9 @@ class ProfileScreen extends StatelessWidget {
                   ? profile!['displayName']
                   : (email.contains('@') ? email.split('@').first : email);
           final String? photoUrl = profile?['photoUrl'] as String?;
+          final String? skyNoteText = profile?['skyNoteText'] as String?;
+          final DateTime? skyNoteCreatedAt =
+              (profile?['skyNoteCreatedAt'] as Timestamp?)?.toDate();
 
           return StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -475,6 +572,17 @@ class ProfileScreen extends StatelessWidget {
                                 email,
                                 style: TextStyle(
                                     color: Colors.grey[500], fontSize: 13),
+                              ),
+                              const SizedBox(height: 10),
+                              // "Sky Note": a short thought that floats
+                              // near your photo like a little cloud - Fly's
+                              // own take on a status, instead of a plain
+                              // permanent bio line. Fades away on its own
+                              // after 24 hours, the same as a story.
+                              SkyNoteBubble(
+                                text: skyNoteText,
+                                createdAt: skyNoteCreatedAt,
+                                onTap: () => _editSkyNote(context, skyNoteText),
                               ),
                               const SizedBox(height: 16),
                               // Edit profile button
@@ -645,6 +753,107 @@ class ProfileScreen extends StatelessWidget {
 // One tile in the profile grid: either the user's own upload, or a video
 // they shared (repost). originalUserId/postId always point at the actual
 // video/post so likes, comments, and views stay attributed to the original.
+// "Sky Note" bubble: a short thought that gently drifts up and down near
+// the profile photo like a little cloud, instead of a plain permanent bio
+// line - Fly's own spin on a status, tied to the app's flying/sky theme.
+// Empty or older than 24 hours, it shows a soft invite to share one
+// instead.
+class SkyNoteBubble extends StatefulWidget {
+  final String? text;
+  final DateTime? createdAt;
+  // Null when this bubble is just being viewed on someone else's profile
+  // (read-only) - editing only happens on your own profile.
+  final VoidCallback? onTap;
+
+  const SkyNoteBubble({
+    super.key,
+    required this.text,
+    required this.createdAt,
+    this.onTap,
+  });
+
+  @override
+  State<SkyNoteBubble> createState() => _SkyNoteBubbleState();
+}
+
+class _SkyNoteBubbleState extends State<SkyNoteBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 3),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  bool get _isLive {
+    final String? text = widget.text;
+    final DateTime? createdAt = widget.createdAt;
+    if (text == null || text.trim().isEmpty || createdAt == null) {
+      return false;
+    }
+    return DateTime.now().difference(createdAt) < const Duration(hours: 24);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isLive = _isLive;
+    // On someone else's profile (no onTap given), an expired/empty note
+    // just means nothing shows at all - the "share a thought" invite is
+    // only for the profile's own owner.
+    if (!isLive && widget.onTap == null) {
+      return const SizedBox.shrink();
+    }
+    final Widget bubble = AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final double dy = 3 * (_controller.value - 0.5);
+        return Transform.translate(offset: Offset(0, dy), child: child);
+      },
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 220),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isLive
+                ? const Color(0xFF35E1E8).withOpacity(0.6)
+                : Colors.white24,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.cloud_outlined,
+              size: 15,
+              color: isLive ? const Color(0xFF35E1E8) : Colors.white54,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                isLive ? widget.text!.trim() : 'Share a thought',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isLive ? Colors.white : Colors.white54,
+                  fontSize: 12,
+                  fontStyle: isLive ? FontStyle.normal : FontStyle.italic,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (widget.onTap == null) return bubble;
+    return GestureDetector(onTap: widget.onTap, child: bubble);
+  }
+}
+
 class _ProfileGridItem {
   final String postId;
   final String videoUrl;
