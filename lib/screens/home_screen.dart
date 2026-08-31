@@ -57,6 +57,12 @@ const Map<String, String> kReactions = {
 //     feed animate back to the first video.
 final ValueNotifier<bool> homeFeedAtTop = ValueNotifier<bool>(true);
 final ValueNotifier<int> homeFeedScrollToTopSignal = ValueNotifier<int>(0);
+// True while browsing the Home video feed should hide MainNavigationScreen's
+// bottom bar - set to false while actively swiping down to later videos,
+// back to true when swiping back up towards earlier ones. Facebook-style:
+// the bar tucks away for an immersive view, then comes back the moment you
+// scroll the other way.
+final ValueNotifier<bool> homeFeedScrollingDown = ValueNotifier<bool>(false);
 // Pinged by UploadScreen right after a post finishes uploading, so
 // MainNavigationScreen can jump the person straight from Upload to the
 // Home tab, at the newest video, instead of leaving them on the Upload
@@ -72,6 +78,11 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final PageController _pageController = PageController();
+  // Last page index seen in the feed's onPageChanged, so it can tell
+  // whether a swipe went forward (later videos) or backward (earlier
+  // ones) - drives the bottom bar's hide-on-scroll-down behavior in
+  // MainNavigationScreen (homeFeedScrollingDown).
+  int _lastPageIndex = 0;
 
   // Created ONCE here, not inside build(). Building a new
   // .snapshots() stream on every rebuild makes StreamBuilder drop its
@@ -317,6 +328,16 @@ class _HomeScreenState extends State<HomeScreen> {
                               // scroll-to-top behavior in
                               // MainNavigationScreen.
                               homeFeedAtTop.value = index == 0;
+                              // Hide MainNavigationScreen's bottom bar
+                              // while swiping down to later videos, bring
+                              // it back the moment the swipe direction
+                              // reverses - Facebook-style.
+                              if (index > _lastPageIndex) {
+                                homeFeedScrollingDown.value = true;
+                              } else if (index < _lastPageIndex) {
+                                homeFeedScrollingDown.value = false;
+                              }
+                              _lastPageIndex = index;
                               // Preloading only makes sense for actual
                               // videos - a shelf slot has no single video
                               // of its own.
@@ -3309,6 +3330,99 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     ],
                   ),
                 ),
+              // "Fly Frame": a small cinematic-style black band top and
+              // bottom, each with a thin glowing cyan line right at the
+              // screen edge - Fly's own branded framing instead of plain
+              // flat black, and it also keeps the status bar clock and
+              // the phone's (now-transparent) gesture/nav bar icons easy
+              // to read over whatever's playing underneath. The video's
+              // own size/fit is untouched - this sits on top of it, not
+              // cut out of it. Positioned (not Align+Container) so the
+              // bar's width is pinned unambiguously edge-to-edge.
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 34,
+                child: IgnorePointer(
+                  child: Stack(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.black.withOpacity(0.85),
+                              Colors.black.withOpacity(0.0),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        height: 1.4,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFF35E1E8).withOpacity(0.0),
+                                const Color(0xFF35E1E8).withOpacity(0.55),
+                                const Color(0xFF5B7CFA).withOpacity(0.55),
+                                const Color(0xFF35E1E8).withOpacity(0.0),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: 34,
+                child: IgnorePointer(
+                  child: Stack(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [
+                              Colors.black.withOpacity(0.85),
+                              Colors.black.withOpacity(0.0),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        height: 1.4,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFF35E1E8).withOpacity(0.0),
+                                const Color(0xFF35E1E8).withOpacity(0.55),
+                                const Color(0xFF5B7CFA).withOpacity(0.55),
+                                const Color(0xFF35E1E8).withOpacity(0.0),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         );
