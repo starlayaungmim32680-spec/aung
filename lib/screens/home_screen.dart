@@ -285,163 +285,225 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
 
-              // Video now renders truly full-screen, with the header
-              // (search/tabs/bell/stories/live) as a transparent overlay on
-              // top of it - Stack instead of Column, so the header no
-              // longer reserves its own dedicated space above the video.
-              return Column(
+              // Video renders truly full-screen (including behind the
+              // status bar and the header), with the search bar/tabs/bell/
+              // stories/live row floating on top of it as an overlay -
+              // Stack instead of Column, so the header no longer reserves
+              // its own dedicated space above the video. A subtle top
+              // scrim keeps the header legible over bright video frames.
+              return Stack(
                 children: [
-                  SafeArea(
-                    bottom: false,
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _feedTab('Following', true),
-                                    const SizedBox(width: 10),
-                                    Container(
-                                      width: 1,
-                                      height: 14,
-                                      color: Colors.white24,
-                                    ),
-                                    const SizedBox(width: 10),
-                                    _feedTab('For You', false),
-                                  ],
-                                ),
+                  Positioned.fill(
+                    child: visibleItems.isEmpty
+                        ? const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(32),
+                              child: Text(
+                                'Nothing here yet.\n'
+                                'Follow some accounts and their videos '
+                                'will show up here.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey),
                               ),
-                              Positioned(
-                                left: 12,
-                                top: 0,
-                                child: GestureDetector(
-                                  onTap: () => Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => const SearchScreen(),
+                            ),
+                          )
+                        : PageView.builder(
+                            controller: _pageController,
+                            scrollDirection: Axis.vertical,
+                            itemCount: slots.length,
+                            onPageChanged: (index) {
+                              // Track whether the feed is scrolled to its
+                              // very first video, for the Back-button
+                              // scroll-to-top behavior in
+                              // MainNavigationScreen.
+                              homeFeedAtTop.value = index == 0;
+                              // Preloading only makes sense for actual
+                              // videos - a shelf slot has no single video
+                              // of its own.
+                              final _FeedItem? current = slots.itemAt(index);
+                              if (current == null) return;
+                              final Set<String> keep = {current.videoUrl};
+                              final _FeedItem? next = slots.itemAt(index + 1);
+                              if (next != null) {
+                                keep.add(next.videoUrl);
+                                VideoPreloadCache.preload(next.videoUrl);
+                              }
+                              final _FeedItem? prev = slots.itemAt(index - 1);
+                              if (prev != null) {
+                                keep.add(prev.videoUrl);
+                                VideoPreloadCache.preload(prev.videoUrl);
+                              }
+                              VideoPreloadCache.evictExcept(keep);
+                            },
+                            itemBuilder: (context, index) {
+                              final List<int>? shelfRealIndices =
+                                  slots.shelfAt(index);
+                              if (shelfRealIndices != null) {
+                                return _ShortsShelfPage(
+                                  entries: shelfRealIndices
+                                      .map((i) => MapEntry(i, visibleItems[i]))
+                                      .toList(),
+                                  onTapItem: (realIndex) {
+                                    _pageController.animateToPage(
+                                      slots.displayIndexForReal(realIndex),
+                                      duration:
+                                          const Duration(milliseconds: 300),
+                                      curve: Curves.easeInOut,
+                                    );
+                                  },
+                                );
+                              }
+
+                              final item = slots.itemAt(index)!;
+
+                              // key includes the doc id (post id for own
+                              // posts, repost id for reposts) so Flutter
+                              // doesn't reuse a _VideoPostItem's State for
+                              // a different feed entry, even when the same
+                              // video appears twice (once as someone's
+                              // original post, once as a repost).
+                              return _VideoPostItem(
+                                key: ValueKey(item.feedKey),
+                                postId: item.postId,
+                                userId: item.originalUserId,
+                                videoUrl: item.videoUrl,
+                                caption: item.caption,
+                                userEmail: item.userEmail,
+                                reactions: item.reactions,
+                                videoType: item.videoType,
+                                onVideoEnd: () => _goToNextVideo(slots.length),
+                                repostNote: item.isRepost ? item.note : null,
+                                repostByName:
+                                    item.isRepost ? item.sharedByName : null,
+                                repostByUserId:
+                                    item.isRepost ? item.sharedByUserId : null,
+                                repostByPhoto:
+                                    item.isRepost ? item.sharedByPhoto : null,
+                                videoSpeed: item.videoSpeed,
+                                filterType: item.filterType,
+                                blurBackground: item.blurBackground,
+                                textOverlays: item.textOverlays,
+                                effectsBaked: item.effectsBaked,
+                                // The header/stories bar above eats into
+                                // this compact view's height - tapping
+                                // opens the same video full-screen
+                                // instead, starting right on this item.
+                                onTapToExpand: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => FullScreenVideoScreen(
+                                      items: visibleItems,
+                                      initialIndex:
+                                          slots.realIndexAt(index) ?? 0,
                                     ),
                                   ),
-                                  child: const Icon(Icons.search,
-                                      color: Colors.white, size: 26),
                                 ),
-                              ),
-                              Positioned(
-                                right: 12,
-                                top: 0,
-                                child: _NotificationBell(),
-                              ),
-                            ],
+                              );
+                            },
+                          ),
+                  ),
+                  // Header: search/tabs/bell/stories/live (plus its scrim),
+                  // floating over the video like Facebook's story tray -
+                  // visible while on the first video, then slides up and
+                  // fades away as soon as you swipe to the next one, so
+                  // later videos get the full screen to themselves.
+                  // Swiping back up to the very first video brings it back
+                  // down into view.
+                  ValueListenableBuilder<bool>(
+                    valueListenable: homeFeedAtTop,
+                    builder: (context, atTop, child) {
+                      return IgnorePointer(
+                        ignoring: !atTop,
+                        child: AnimatedSlide(
+                          offset: atTop ? Offset.zero : const Offset(0, -1),
+                          duration: const Duration(milliseconds: 260),
+                          curve: Curves.easeInOut,
+                          child: AnimatedOpacity(
+                            opacity: atTop ? 1 : 0,
+                            duration: const Duration(milliseconds: 200),
+                            child: child,
                           ),
                         ),
-                        const StoriesBar(),
-                        const LiveBadgeBar(),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: SafeArea(
-                      top: false,
-                      child: visibleItems.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(32),
-                                child: Text(
-                                  'Nothing here yet.\n'
-                                  'Follow some accounts and their videos '
-                                  'will show up here.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: Colors.grey),
+                      );
+                    },
+                    child: Column(
+                      children: [
+                        Stack(
+                          children: [
+                            // Soft top-down black scrim so the search
+                            // icon/tabs/bell/stories row stay readable
+                            // over whatever's playing underneath.
+                            IgnorePointer(
+                              child: Container(
+                                height: 160,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withOpacity(0.55),
+                                      Colors.black.withOpacity(0.0),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            )
-                          : PageView.builder(
-                              controller: _pageController,
-                              scrollDirection: Axis.vertical,
-                              itemCount: slots.length,
-                              onPageChanged: (index) {
-                                // Track whether the feed is scrolled to its
-                                // very first video, for the Back-button
-                                // scroll-to-top behavior in
-                                // MainNavigationScreen.
-                                homeFeedAtTop.value = index == 0;
-                                // Preloading only makes sense for actual
-                                // videos - a shelf slot has no single video
-                                // of its own.
-                                final _FeedItem? current = slots.itemAt(index);
-                                if (current == null) return;
-                                final Set<String> keep = {current.videoUrl};
-                                final _FeedItem? next = slots.itemAt(index + 1);
-                                if (next != null) {
-                                  keep.add(next.videoUrl);
-                                  VideoPreloadCache.preload(next.videoUrl);
-                                }
-                                final _FeedItem? prev = slots.itemAt(index - 1);
-                                if (prev != null) {
-                                  keep.add(prev.videoUrl);
-                                  VideoPreloadCache.preload(prev.videoUrl);
-                                }
-                                VideoPreloadCache.evictExcept(keep);
-                              },
-                              itemBuilder: (context, index) {
-                                final List<int>? shelfRealIndices =
-                                    slots.shelfAt(index);
-                                if (shelfRealIndices != null) {
-                                  return _ShortsShelfPage(
-                                    entries: shelfRealIndices
-                                        .map(
-                                            (i) => MapEntry(i, visibleItems[i]))
-                                        .toList(),
-                                    onTapItem: (realIndex) {
-                                      _pageController.animateToPage(
-                                        slots.displayIndexForReal(realIndex),
-                                        duration:
-                                            const Duration(milliseconds: 300),
-                                        curve: Curves.easeInOut,
-                                      );
-                                    },
-                                  );
-                                }
-
-                                final item = slots.itemAt(index)!;
-
-                                // key includes the doc id (post id for own
-                                // posts, repost id for reposts) so Flutter
-                                // doesn't reuse a _VideoPostItem's State for
-                                // a different feed entry, even when the same
-                                // video appears twice (once as someone's
-                                // original post, once as a repost).
-                                return _VideoPostItem(
-                                  key: ValueKey(item.feedKey),
-                                  postId: item.postId,
-                                  userId: item.originalUserId,
-                                  videoUrl: item.videoUrl,
-                                  caption: item.caption,
-                                  userEmail: item.userEmail,
-                                  reactions: item.reactions,
-                                  videoType: item.videoType,
-                                  onVideoEnd: () =>
-                                      _goToNextVideo(slots.length),
-                                  repostNote: item.isRepost ? item.note : null,
-                                  repostByName:
-                                      item.isRepost ? item.sharedByName : null,
-                                  repostByUserId: item.isRepost
-                                      ? item.sharedByUserId
-                                      : null,
-                                  repostByPhoto:
-                                      item.isRepost ? item.sharedByPhoto : null,
-                                  videoSpeed: item.videoSpeed,
-                                  filterType: item.filterType,
-                                  blurBackground: item.blurBackground,
-                                  textOverlays: item.textOverlays,
-                                  effectsBaked: item.effectsBaked,
-                                );
-                              },
                             ),
+                            SafeArea(
+                              bottom: false,
+                              child: Column(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        Center(
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              _feedTab('Following', true),
+                                              const SizedBox(width: 10),
+                                              Container(
+                                                width: 1,
+                                                height: 14,
+                                                color: Colors.white24,
+                                              ),
+                                              const SizedBox(width: 10),
+                                              _feedTab('For You', false),
+                                            ],
+                                          ),
+                                        ),
+                                        Positioned(
+                                          left: 12,
+                                          top: 0,
+                                          child: GestureDetector(
+                                            onTap: () => Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) =>
+                                                    const SearchScreen(),
+                                              ),
+                                            ),
+                                            child: const Icon(Icons.search,
+                                                color: Colors.white, size: 26),
+                                          ),
+                                        ),
+                                        Positioned(
+                                          right: 12,
+                                          top: 0,
+                                          child: _NotificationBell(),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const StoriesBar(),
+                                  const LiveBadgeBar(),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -449,6 +511,96 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           );
         },
+      ),
+    );
+  }
+}
+
+// Opened by tapping a video on the (slightly shorter) Home feed - the same
+// videos, but truly edge-to-edge: no search bar/tabs/stories row above it
+// eating into the available height. Swiping up/down still moves between
+// videos, starting from whichever one was tapped.
+class FullScreenVideoScreen extends StatefulWidget {
+  final List<_FeedItem> items;
+  final int initialIndex;
+
+  const FullScreenVideoScreen({
+    super.key,
+    required this.items,
+    required this.initialIndex,
+  });
+
+  @override
+  State<FullScreenVideoScreen> createState() => _FullScreenVideoScreenState();
+}
+
+class _FullScreenVideoScreenState extends State<FullScreenVideoScreen> {
+  late final PageController _pageController =
+      PageController(initialPage: widget.initialIndex);
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _goToNextVideo() {
+    final int? currentPage = _pageController.page?.round();
+    if (currentPage != null && currentPage < widget.items.length - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: PageView.builder(
+          controller: _pageController,
+          scrollDirection: Axis.vertical,
+          itemCount: widget.items.length,
+          onPageChanged: (index) {
+            final Set<String> keep = {widget.items[index].videoUrl};
+            if (index + 1 < widget.items.length) {
+              keep.add(widget.items[index + 1].videoUrl);
+              VideoPreloadCache.preload(widget.items[index + 1].videoUrl);
+            }
+            if (index - 1 >= 0) {
+              keep.add(widget.items[index - 1].videoUrl);
+              VideoPreloadCache.preload(widget.items[index - 1].videoUrl);
+            }
+            VideoPreloadCache.evictExcept(keep);
+          },
+          itemBuilder: (context, index) {
+            final item = widget.items[index];
+            return _VideoPostItem(
+              key: ValueKey('fullscreen_${item.feedKey}'),
+              postId: item.postId,
+              userId: item.originalUserId,
+              videoUrl: item.videoUrl,
+              caption: item.caption,
+              userEmail: item.userEmail,
+              reactions: item.reactions,
+              videoType: item.videoType,
+              onVideoEnd: _goToNextVideo,
+              repostNote: item.isRepost ? item.note : null,
+              repostByName: item.isRepost ? item.sharedByName : null,
+              repostByUserId: item.isRepost ? item.sharedByUserId : null,
+              repostByPhoto: item.isRepost ? item.sharedByPhoto : null,
+              videoSpeed: item.videoSpeed,
+              filterType: item.filterType,
+              blurBackground: item.blurBackground,
+              textOverlays: item.textOverlays,
+              effectsBaked: item.effectsBaked,
+              // No onTapToExpand here - already fullscreen, so a tap does
+              // the normal play/pause toggle instead.
+            );
+          },
+        ),
       ),
     );
   }
@@ -710,6 +862,19 @@ class _FeedSlots {
     if (offset == _realPerShelf) return null; // shelf slot
     final int realIndex = block * _realPerShelf + offset;
     return realIndex < items.length ? items[realIndex] : null;
+  }
+
+  // The index into [items] that slot [index] shows, or null on a shelf
+  // slot - lets a tap on a real video know where it sits in the plain,
+  // shelf-free item list (used to open FullScreenVideoScreen at the same
+  // video).
+  int? realIndexAt(int index) {
+    if (index < 0 || index >= length) return null;
+    final int block = index ~/ (_realPerShelf + 1);
+    final int offset = index % (_realPerShelf + 1);
+    if (offset == _realPerShelf) return null; // shelf slot
+    final int realIndex = block * _realPerShelf + offset;
+    return realIndex < items.length ? realIndex : null;
   }
 
   // Up to 4 upcoming short-video indices (into [items]) to preview in the
@@ -1385,6 +1550,12 @@ class _VideoPostItem extends StatefulWidget {
   // effects would show twice. False for older posts uploaded before this
   // existed, which still need the client-side overlay/color-filter below.
   final bool effectsBaked;
+  // When set, a single tap on the video calls this instead of the normal
+  // play/pause toggle - used on the compact Home feed to open the video
+  // in FullScreenVideoScreen (see below), where the header/stories bar no
+  // longer eats into the video's height. Left null inside that fullscreen
+  // screen itself, so tapping there behaves normally (play/pause).
+  final VoidCallback? onTapToExpand;
 
   const _VideoPostItem({
     super.key,
@@ -1405,6 +1576,7 @@ class _VideoPostItem extends StatefulWidget {
     this.blurBackground = true,
     this.textOverlays = const [],
     this.effectsBaked = false,
+    this.onTapToExpand,
   });
 
   @override
@@ -1614,6 +1786,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
   void _handleScreenTap() {
     if (_showReactionPicker) {
       setState(() => _showReactionPicker = false);
+      return;
+    }
+    if (widget.onTapToExpand != null) {
+      widget.onTapToExpand!();
       return;
     }
     _togglePlayPause();
@@ -2399,20 +2575,52 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     ),
                   )
                 else ...[
-                  // Fill the whole screen edge-to-edge - crop whatever
-                  // doesn't fit rather than leaving any empty space around
-                  // the video, so there's never a background color/glow to
-                  // pick.
-                  Positioned.fill(
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _controller!.value.size.width,
-                        height: _controller!.value.size.height,
-                        child: _withOptionalFilter(VideoPlayer(_controller!)),
-                      ),
-                    ),
-                  ),
+                  // "Smart Fit": compare the video's own shape to the
+                  // phone's screen shape. When they're close (a normal
+                  // vertical video on a normal vertical phone), fill the
+                  // screen edge-to-edge - the sliver that gets cropped off
+                  // is barely noticeable. When they're very different (a
+                  // landscape recording, a square video), show the video
+                  // in full instead, with plain black behind it, rather
+                  // than cropping away a big chunk of what was actually
+                  // filmed.
+                  Builder(builder: (context) {
+                    final Size screenSize = MediaQuery.of(context).size;
+                    final double screenRatio =
+                        screenSize.width / screenSize.height;
+                    final double videoRatio = _controller!.value.aspectRatio;
+                    final double mismatch = videoRatio > screenRatio
+                        ? videoRatio / screenRatio
+                        : screenRatio / videoRatio;
+                    final bool shouldCover = mismatch < 1.35;
+
+                    if (shouldCover) {
+                      return Positioned.fill(
+                        child: FittedBox(
+                          fit: BoxFit.cover,
+                          child: SizedBox(
+                            width: _controller!.value.size.width,
+                            height: _controller!.value.size.height,
+                            child:
+                                _withOptionalFilter(VideoPlayer(_controller!)),
+                          ),
+                        ),
+                      );
+                    }
+
+                    return Stack(
+                      children: [
+                        Container(color: Colors.black),
+                        Center(
+                          child: AspectRatio(
+                            aspectRatio: videoRatio,
+                            child:
+                                _withOptionalFilter(VideoPlayer(_controller!)),
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
                   if (!widget.effectsBaked)
                     for (final overlay in widget.textOverlays)
                       _positionedOverlayText(overlay),
