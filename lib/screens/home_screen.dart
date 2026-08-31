@@ -296,15 +296,66 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               }
 
-              // Video renders truly full-screen (including behind the
-              // status bar and the header), with the search bar/tabs/bell/
-              // stories/live row floating on top of it as an overlay -
-              // Stack instead of Column, so the header no longer reserves
-              // its own dedicated space above the video. A subtle top
-              // scrim keeps the header legible over bright video frames.
-              return Stack(
+              // Header (search bar/tabs/bell/stories/live) gets its own
+              // fixed area at the top, and the video feed gets the rest -
+              // Column, not a Stack overlay, so the two never overlap:
+              // Stories/search always have their own space, and the video
+              // never renders underneath them.
+              return Column(
                 children: [
-                  Positioned.fill(
+                  SafeArea(
+                    bottom: false,
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              Center(
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _feedTab('Following', true),
+                                    const SizedBox(width: 10),
+                                    Container(
+                                      width: 1,
+                                      height: 14,
+                                      color: Colors.white24,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    _feedTab('For You', false),
+                                  ],
+                                ),
+                              ),
+                              Positioned(
+                                left: 12,
+                                top: 0,
+                                child: GestureDetector(
+                                  onTap: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const SearchScreen(),
+                                    ),
+                                  ),
+                                  child: const Icon(Icons.search,
+                                      color: Colors.white, size: 26),
+                                ),
+                              ),
+                              Positioned(
+                                right: 12,
+                                top: 0,
+                                child: _NotificationBell(),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const StoriesBar(),
+                        const LiveBadgeBar(),
+                      ],
+                    ),
+                  ),
+                  Expanded(
                     child: visibleItems.isEmpty
                         ? const Center(
                             child: Padding(
@@ -405,10 +456,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 blurBackground: item.blurBackground,
                                 textOverlays: item.textOverlays,
                                 effectsBaked: item.effectsBaked,
-                                // The header/stories bar above eats into
-                                // this compact view's height - tapping
-                                // opens the same video full-screen
-                                // instead, starting right on this item.
+                                // Tapping opens the same video full-screen,
+                                // starting right on this item.
                                 onTapToExpand: () => Navigator.push(
                                   context,
                                   MaterialPageRoute(
@@ -422,110 +471,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               );
                             },
                           ),
-                  ),
-                  // Header: search/tabs/bell/stories/live (plus its scrim),
-                  // floating over the video like Facebook's story tray -
-                  // visible while on the first video, then slides up and
-                  // fades away as soon as you swipe to the next one, so
-                  // later videos get the full screen to themselves.
-                  // Swiping back up to the very first video brings it back
-                  // down into view.
-                  ValueListenableBuilder<bool>(
-                    valueListenable: homeFeedAtTop,
-                    builder: (context, atTop, child) {
-                      return IgnorePointer(
-                        ignoring: !atTop,
-                        child: AnimatedSlide(
-                          offset: atTop ? Offset.zero : const Offset(0, -1),
-                          duration: const Duration(milliseconds: 260),
-                          curve: Curves.easeInOut,
-                          child: AnimatedOpacity(
-                            opacity: atTop ? 1 : 0,
-                            duration: const Duration(milliseconds: 200),
-                            child: child,
-                          ),
-                        ),
-                      );
-                    },
-                    child: Column(
-                      children: [
-                        Stack(
-                          children: [
-                            // Soft top-down black scrim so the search
-                            // icon/tabs/bell/stories row stay readable
-                            // over whatever's playing underneath.
-                            IgnorePointer(
-                              child: Container(
-                                height: 160,
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [
-                                      Colors.black.withOpacity(0.55),
-                                      Colors.black.withOpacity(0.0),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                            SafeArea(
-                              bottom: false,
-                              child: Column(
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 4),
-                                    child: Stack(
-                                      alignment: Alignment.center,
-                                      children: [
-                                        Center(
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              _feedTab('Following', true),
-                                              const SizedBox(width: 10),
-                                              Container(
-                                                width: 1,
-                                                height: 14,
-                                                color: Colors.white24,
-                                              ),
-                                              const SizedBox(width: 10),
-                                              _feedTab('For You', false),
-                                            ],
-                                          ),
-                                        ),
-                                        Positioned(
-                                          left: 12,
-                                          top: 0,
-                                          child: GestureDetector(
-                                            onTap: () => Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) =>
-                                                    const SearchScreen(),
-                                              ),
-                                            ),
-                                            child: const Icon(Icons.search,
-                                                color: Colors.white, size: 26),
-                                          ),
-                                        ),
-                                        Positioned(
-                                          right: 12,
-                                          top: 0,
-                                          child: _NotificationBell(),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const StoriesBar(),
-                                  const LiveBadgeBar(),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
                   ),
                 ],
               );
@@ -1609,6 +1554,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // How many times a video replays on its own before we auto-advance to
   // the next one. The user can still swipe away manually at any time.
   static const int _maxLoopsBeforeAutoSkip = 3;
+  // Height of the solid black caption/username/sound panel below the
+  // video (see build()) - the video is sized to leave exactly this much
+  // room, rather than the panel floating on top of it.
+  static const double _kCaptionPanelHeight = 128;
 
   // Wraps [child] in a ColorFiltered matrix ONLY when the uploader actually
   // picked a filter at post time. Most videos have none, so this skips the
@@ -2615,31 +2564,38 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         : screenRatio / videoRatio;
                     final bool shouldCover = mismatch < 1.35;
 
-                    if (shouldCover) {
-                      return Positioned.fill(
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          child: SizedBox(
-                            width: _controller!.value.size.width,
-                            height: _controller!.value.size.height,
-                            child:
-                                _withOptionalFilter(VideoPlayer(_controller!)),
-                          ),
-                        ),
-                      );
-                    }
+                    final Widget videoContent = shouldCover
+                        ? FittedBox(
+                            fit: BoxFit.cover,
+                            child: SizedBox(
+                              width: _controller!.value.size.width,
+                              height: _controller!.value.size.height,
+                              child: _withOptionalFilter(
+                                  VideoPlayer(_controller!)),
+                            ),
+                          )
+                        : Stack(
+                            children: [
+                              Container(color: Colors.black),
+                              Center(
+                                child: AspectRatio(
+                                  aspectRatio: videoRatio,
+                                  child: _withOptionalFilter(
+                                      VideoPlayer(_controller!)),
+                                ),
+                              ),
+                            ],
+                          );
 
-                    return Stack(
-                      children: [
-                        Container(color: Colors.black),
-                        Center(
-                          child: AspectRatio(
-                            aspectRatio: videoRatio,
-                            child:
-                                _withOptionalFilter(VideoPlayer(_controller!)),
-                          ),
-                        ),
-                      ],
+                    // Leave room at the bottom for the caption/profile
+                    // panel below - the video fills the screen only down
+                    // to where that panel starts, not underneath it.
+                    return Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: _kCaptionPanelHeight,
+                      child: ClipRect(child: videoContent),
                     );
                   }),
                   if (!widget.effectsBaked)
@@ -2926,6 +2882,23 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     ],
                   ),
                 ),
+
+              // A solid black panel of its own for the caption/username/
+              // sound row - not just text floating over the video with a
+              // shadow, but its own distinctly separate area underneath
+              // (the video above is sized to leave exactly this much
+              // room, see the Smart Fit Builder above).
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: _kCaptionPanelHeight,
+                child: IgnorePointer(
+                  child: Container(
+                    color: const Color(0xFF000000),
+                  ),
+                ),
+              ),
 
               Positioned(
                 left: 16,
