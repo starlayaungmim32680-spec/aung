@@ -14,6 +14,7 @@ import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'content_filter.dart';
+import 'package:flutter_compress/flutter_compress.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 
 class UploadScreen extends StatefulWidget {
@@ -53,6 +54,10 @@ class _UploadScreenState extends State<UploadScreen> {
 
   final TextEditingController _captionController = TextEditingController();
   Uint8List? _videoBytes;
+  // Kept alongside _videoBytes so _uploadPost() can run it through
+  // flutter_compress right before uploading (compression needs a real file
+  // path, not just bytes in memory).
+  File? _videoFile;
   VideoPlayerController? _previewController;
   int? _trimStartSeconds;
   int? _trimEndSeconds;
@@ -198,6 +203,7 @@ class _UploadScreenState extends State<UploadScreen> {
     setState(() {
       _videoType = null;
       _videoBytes = null;
+      _videoFile = null;
       _previewController = null;
       _trimStartSeconds = null;
       _trimEndSeconds = null;
@@ -318,6 +324,7 @@ class _UploadScreenState extends State<UploadScreen> {
 
     setState(() {
       _videoBytes = bytes;
+      _videoFile = result.originalFile;
       _previewController = controller;
       _trimStartSeconds = result.startSeconds;
       _trimEndSeconds = result.endSeconds;
@@ -476,6 +483,35 @@ class _UploadScreenState extends State<UploadScreen> {
       _errorMessage = null;
     });
 
+    // Shrink the video before it ever leaves the phone - phones routinely
+    // shoot at bitrates/resolutions far higher than a short vertical clip
+    // needs, and every extra megabyte here costs upload data for the
+    // person posting, storage on Cloudinary, and delivery bandwidth for
+    // every single view afterwards. Shown as "Preparing..." in the UI
+    // (see the progress section below) since _uploadProgress is still 0
+    // at this point. Falls back to the original bytes if compression
+    // fails for any reason, so a bad video/format never blocks posting.
+    Uint8List uploadBytes = _videoBytes!;
+    final File? sourceFile = _videoFile;
+    if (sourceFile != null) {
+      try {
+        final VideoCompressResult compressed =
+            await FlutterCompress.instance.compress(
+          sourceFile.path,
+          const VideoCompressConfig(
+            qualityPercent: 60,
+            maxWidth: 1280,
+            maxHeight: 1280,
+            keepOriginalIfLarger: true,
+          ),
+        );
+        uploadBytes = await File(compressed.outputPath).readAsBytes();
+      } catch (e) {
+        // Keep going with the uncompressed bytes - a compression failure
+        // shouldn't stop someone from posting.
+      }
+    }
+
     final http.Client client = http.Client();
     try {
       final Uri uploadUrl =
@@ -487,7 +523,7 @@ class _UploadScreenState extends State<UploadScreen> {
             ..files.add(
               http.MultipartFile.fromBytes(
                 'file',
-                _videoBytes!,
+                uploadBytes,
                 filename: 'video.mp4',
               ),
             );
@@ -675,6 +711,7 @@ class _UploadScreenState extends State<UploadScreen> {
           _uploadProgress = 0;
           _videoType = null;
           _videoBytes = null;
+          _videoFile = null;
           _previewController = null;
           _trimStartSeconds = null;
           _trimEndSeconds = null;

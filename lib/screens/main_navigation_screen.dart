@@ -646,10 +646,32 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
             // Facebook-style bottom navigation bar: Home/Chat/Upload/
             // Profile/Live always visible in a fixed row at the very
             // bottom, evenly spaced - no button to tap to reveal them.
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
+            // While on Home, it tucks away as soon as you swipe down to
+            // later videos (immersive view), and slides back the moment you
+            // swipe back up - it always stays visible on every other tab.
+            ValueListenableBuilder<bool>(
+              valueListenable: homeFeedScrollingDown,
+              builder: (context, scrollingDown, child) {
+                final bool visible = _currentIndex != 0 || !scrollingDown;
+                return Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: IgnorePointer(
+                    ignoring: !visible,
+                    child: AnimatedSlide(
+                      offset: visible ? Offset.zero : const Offset(0, 1),
+                      duration: const Duration(milliseconds: 240),
+                      curve: Curves.easeInOut,
+                      child: AnimatedOpacity(
+                        opacity: visible ? 1 : 0,
+                        duration: const Duration(milliseconds: 200),
+                        child: child,
+                      ),
+                    ),
+                  ),
+                );
+              },
               child: Container(
                 padding: EdgeInsets.only(bottom: bottomSafe, top: 6 * scale),
                 decoration: const BoxDecoration(

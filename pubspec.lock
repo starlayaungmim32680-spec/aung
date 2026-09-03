@@ -502,6 +502,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.1.5"
+  flutter_compress:
+    dependency: "direct main"
+    description:
+      name: flutter_compress
+      sha256: "7bb15751e55eaa4d51b57f7f4508127e4fd5ea4c6e1766cc2a817466999d9d3f"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.5.1"
   flutter_lints:
     dependency: "direct dev"
     description:
