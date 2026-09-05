@@ -21,6 +21,13 @@ class ActiveCall {
   static String? otherPhoto;
   static bool startWithCamera = false;
   static DateTime? connectedAt;
+  // Whether the call currently minimized here started as an incoming
+  // call (VideoCallScreen's own widget.fromIncomingCall at the moment it
+  // was minimized) - carried across the minimize -> banner -> reopen
+  // cycle so that reopened screen still knows to use the popUntil route-
+  // safety treatment on hang-up/re-minimize, the same way the original
+  // screen did. See video_call_screen.dart's _exitVideoCallRoute().
+  static bool fromIncomingCall = false;
 
   static StreamSubscription<DocumentSnapshot>? _statusSub;
 
@@ -33,6 +40,7 @@ class ActiveCall {
     required String? activeOtherPhoto,
     required bool activeStartWithCamera,
     required DateTime activeConnectedAt,
+    required bool activeFromIncomingCall,
   }) {
     room = activeRoom;
     roomName = activeRoomName;
@@ -40,6 +48,7 @@ class ActiveCall {
     otherPhoto = activeOtherPhoto;
     startWithCamera = activeStartWithCamera;
     connectedAt = activeConnectedAt;
+    fromIncomingCall = activeFromIncomingCall;
 
     _statusSub?.cancel();
     _statusSub = FirebaseFirestore.instance
@@ -68,6 +77,7 @@ class ActiveCall {
     otherName = null;
     otherPhoto = null;
     connectedAt = null;
+    fromIncomingCall = false;
     return r;
   }
 
@@ -84,6 +94,7 @@ class ActiveCall {
     otherName = null;
     otherPhoto = null;
     connectedAt = null;
+    fromIncomingCall = false;
     if (rn != null) await CallKitService.endCall(rn);
   }
 }

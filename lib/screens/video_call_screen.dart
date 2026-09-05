@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -91,6 +92,39 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   VideoTrack? _remoteVideoTrack;
   String? _remoteName;
   bool _remoteJoined = false;
+
+  // Local video PiP window position/size - see build()'s comment for why
+  // these are plain state instead of a fixed Positioned. ValueNotifiers
+  // (not plain fields + setState) are what make drag/pinch feel light -
+  // updating them only rebuilds the AnimatedBuilder around the PiP box
+  // itself, not the whole screen (remote video, controls, etc.) setState
+  // would have rebuilt on every single pixel/frame of movement.
+  static const double _kLocalVideoBaseWidth = 110;
+  static const double _kLocalVideoBaseHeight = 160;
+  static const double _kMinLocalVideoScale = 0.6;
+  static const double _kMaxLocalVideoScale = 2.2;
+  final ValueNotifier<Offset?> _localVideoOffsetNotifier =
+      ValueNotifier<Offset?>(null);
+  final ValueNotifier<double> _localVideoScaleNotifier =
+      ValueNotifier<double>(1.0);
+  // Raw two-finger pinch tracking - keyed by Flutter's own per-touch
+  // pointer id, so it doesn't matter which finger lifts first. Only
+  // populated while a finger is actually down on the PiP box itself.
+  final Map<int, Offset> _activeLocalVideoPointers = {};
+  double? _pinchStartDistance;
+  double? _pinchStartScale;
+
+  // Messenger-style large/small swap - which participant's video shows
+  // full-screen vs in the floating box. Tap-to-swap is detected manually
+  // from the same raw pointer stream that drives drag/pinch above,
+  // rather than a second GestureDetector.onTap: a short, mostly-
+  // stationary single-finger touch counts as a tap; anything that moves
+  // far enough or involves a second finger clears these and is treated
+  // as a drag/pinch instead, so the three gestures can't misfire into
+  // each other.
+  bool _localIsLarge = false;
+  Offset? _tapCandidateStart;
+  DateTime? _tapCandidateStartTime;
 
   StreamSubscription<DocumentSnapshot>? _callStatusSub;
   bool _hangingUp = false;
@@ -600,6 +634,10 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     setState(() {
       _cameraEnabled = next;
       _localVideoTrack = next ? (localPub?.track as LocalVideoTrack?) : null;
+      // No local video left to show large if the camera just turned off -
+      // fall back to the default (remote large) layout rather than
+      // leaving the swap stuck on a track that no longer exists.
+      if (!next) _localIsLarge = false;
     });
   }
 
@@ -643,6 +681,14 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     if (!mounted) return;
     await _room?.disconnect();
     if (!mounted) return;
+    _exitVideoCallRoute();
+  }
+
+  // Shared by _leaveCall() and _minimizeCall() - both are "this screen is
+  // done being shown" moments, just for different reasons (hanging up vs
+  // tucking the call away to keep browsing Fly), and both need the exact
+  // same route-safety treatment to avoid a black screen.
+  void _exitVideoCallRoute() {
     if (widget.fromIncomingCall) {
       // A plain pop() left the person receiving the call on a black
       // screen sometimes - their VideoCallScreen was pushed via the
@@ -651,7 +697,10 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       // something about that path leaves an extra, empty route behind.
       // popUntil the first route sidesteps needing to know exactly why:
       // whatever's stacked above the base MainNavigationScreen gets
-      // cleared, always landing on a real, populated screen.
+      // cleared, always landing on a real, populated screen. This same
+      // treatment matters just as much when minimizing (see
+      // _minimizeCall) as it does when actually hanging up - the empty
+      // route left behind doesn't care which way this screen closes.
       Navigator.of(context).popUntil((route) => route.isFirst);
     } else {
       // The caller placed this call from wherever they were (e.g. a
@@ -680,12 +729,25 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       activeOtherPhoto: widget.otherPhoto,
       activeStartWithCamera: _cameraEnabled,
       activeConnectedAt: _connectedAt ?? DateTime.now(),
+      // Carried through so that if this call gets reopened later via the
+      // "return to call" banner (see MainNavigationScreen) and hung up
+      // or re-minimized from there, that new VideoCallScreen instance
+      // still knows to use the popUntil treatment above - without this,
+      // an incoming call minimized here would forget it was ever an
+      // incoming call, fall back to the plain-pop path below, and
+      // expose the same empty route popUntil exists to hide.
+      activeFromIncomingCall: widget.fromIncomingCall,
     );
     // PiP only makes sense while this screen itself is what's showing -
     // once minimized in-app, leaving Fly entirely should just background
     // normally, not try to shrink a screen that's no longer open.
     _clearCallActiveNatively();
-    Navigator.pop(context);
+    // Same route-safety treatment _leaveCall() uses - a plain pop() here
+    // was the actual black-screen cause for a minimized incoming call:
+    // it skipped the popUntil cleanup entirely, leaving the same empty
+    // route _leaveCall's own comment describes, just exposed a step
+    // earlier (on minimize) instead of at hang-up.
+    _exitVideoCallRoute();
   }
 
   @override
@@ -695,6 +757,8 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     _durationTimer?.cancel();
     _noAnswerTimer?.cancel();
     _proximitySub?.cancel();
+    _localVideoOffsetNotifier.dispose();
+    _localVideoScaleNotifier.dispose();
     // Turn the screen-off-on-proximity behavior back off - otherwise it
     // stays active app-wide even outside calls.
     ProximitySensor.setProximityScreenOff(false).catchError((_) {});
@@ -730,93 +794,319 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       child: Scaffold(
         backgroundColor: const Color(0xFF0E0E0E),
         body: SafeArea(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: _buildRemoteView(),
-              ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Local video PiP window position/size now live in state
+              // (_localVideoOffsetNotifier/_localVideoScaleNotifier) instead of
+              // being a fixed Positioned(top:16, right:16) - groundwork
+              // for drag/pinch/tap-to-swap. The lazy-init below only
+              // fires once, the first time this screen's size is known,
+              // reproducing the exact same top-right corner the fixed
+              // version used to sit in - after that, the drag handler
+              // below owns this value, so this must never overwrite a
+              // position the person has already dragged to.
+              _localVideoOffsetNotifier.value ??= Offset(
+                constraints.maxWidth - 16 - _kLocalVideoBaseWidth,
+                16,
+              );
 
-              // My own camera preview - only when my camera is on
-              if (_cameraEnabled && _localVideoTrack != null)
-                Positioned(
-                  top: 16,
-                  right: 16,
-                  child: Container(
-                    width: 110,
-                    height: 160,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white24, width: 1),
-                      color: Colors.grey[900],
+              // If swapped, show local full-screen instead of remote -
+              // guarded by localAvailable so a stale swap flag can never
+              // try to render a local track that no longer exists (see
+              // _toggleCamera's reset for the normal way this clears).
+              final bool localAvailable =
+                  _cameraEnabled && _localVideoTrack != null;
+              final bool showLocalLarge = _localIsLarge && localAvailable;
+
+              return Stack(
+                children: [
+                  Positioned.fill(
+                    child: showLocalLarge
+                        ? VideoTrackRenderer(_localVideoTrack!)
+                        : _buildRemoteView(),
+                  ),
+
+                  // My own camera preview - only when my camera is on.
+                  // AnimatedBuilder + Listenable.merge (not setState)
+                  // scopes drag/pinch updates to just this box - the
+                  // video call screen felt heavy/sluggish before this,
+                  // because setState was rebuilding the entire Stack
+                  // (remote video, controls, everything) on every pixel/
+                  // frame of movement. VideoTrackRenderer is passed in
+                  // as `child` so it's built once and reused across
+                  // drags/pinches rather than recreated every update.
+                  if (localAvailable)
+                    AnimatedBuilder(
+                      animation: Listenable.merge([
+                        _localVideoOffsetNotifier,
+                        _localVideoScaleNotifier
+                      ]),
+                      // Whichever participant is currently the "small"
+                      // one - local by default, or remote after a swap.
+                      // A plain Icon fallback covers the rare case where
+                      // it's swapped to show remote but no remote track
+                      // has arrived yet (e.g. right as the other person
+                      // rejoins) - matches the size/color this box's own
+                      // "no camera" look uses elsewhere in the app.
+                      child: showLocalLarge
+                          ? (_remoteVideoTrack != null
+                              ? VideoTrackRenderer(_remoteVideoTrack!)
+                              : const Center(
+                                  child: Icon(Icons.person,
+                                      color: Colors.white38, size: 32),
+                                ))
+                          : VideoTrackRenderer(_localVideoTrack!),
+                      builder: (context, videoChild) {
+                        final Offset resolvedOffset =
+                            _localVideoOffsetNotifier.value ?? Offset.zero;
+                        final double scale = _localVideoScaleNotifier.value;
+                        final double width = _kLocalVideoBaseWidth * scale;
+                        final double height = _kLocalVideoBaseHeight * scale;
+                        return Positioned(
+                          left: resolvedOffset.dx,
+                          top: resolvedOffset.dy,
+                          child: Listener(
+                            // A raw pointer Listener (not GestureDetector
+                            // .onPanUpdate/.onScaleUpdate) is what makes
+                            // this track fingers instantly - Gesture-
+                            // Detector's pan/scale recognizers wait for
+                            // the touch to clear a small "slop" distance
+                            // before they count as a drag/pinch at all,
+                            // which is exactly the lag/stiffness felt
+                            // before Step 2 switched to this. Listener
+                            // has no such threshold, and tracking every
+                            // active finger by its own pointer id here
+                            // (rather than a GestureDetector recognizer)
+                            // is what lets one raw stream of pointer
+                            // events drive both one-finger drag and
+                            // two-finger pinch without the two gestures
+                            // fighting each other.
+                            behavior: HitTestBehavior.opaque,
+                            onPointerDown: (event) {
+                              _activeLocalVideoPointers[event.pointer] =
+                                  event.position;
+                              if (_activeLocalVideoPointers.length == 1) {
+                                // First finger down - a tap candidate
+                                // until proven otherwise (moves too far,
+                                // takes too long, or a second finger
+                                // joins turning it into a pinch).
+                                _tapCandidateStart = event.position;
+                                _tapCandidateStartTime = DateTime.now();
+                              } else if (_activeLocalVideoPointers.length ==
+                                  2) {
+                                _tapCandidateStart = null;
+                                _tapCandidateStartTime = null;
+                                final List<Offset> positions =
+                                    _activeLocalVideoPointers.values.toList();
+                                _pinchStartDistance =
+                                    (positions[0] - positions[1]).distance;
+                                _pinchStartScale =
+                                    _localVideoScaleNotifier.value;
+                              }
+                            },
+                            onPointerMove: (event) {
+                              _activeLocalVideoPointers[event.pointer] =
+                                  event.position;
+
+                              // Two fingers down - resize, using the
+                              // ratio between the current and the
+                              // finger-to-finger distance recorded the
+                              // moment the second finger touched down.
+                              // Using absolute screen positions (not
+                              // this widget's own local coordinates) for
+                              // the distance calculation keeps it stable
+                              // even as the box's own size changes mid-
+                              // pinch, which would otherwise move the
+                              // coordinate system out from under the
+                              // fingers frame to frame.
+                              if (_activeLocalVideoPointers.length >= 2 &&
+                                  _pinchStartDistance != null &&
+                                  _pinchStartDistance! > 0) {
+                                final List<Offset> positions =
+                                    _activeLocalVideoPointers.values.toList();
+                                final double currentDistance =
+                                    (positions[0] - positions[1]).distance;
+                                final double rawScale = _pinchStartScale! *
+                                    (currentDistance / _pinchStartDistance!);
+                                _localVideoScaleNotifier.value = rawScale.clamp(
+                                  _kMinLocalVideoScale,
+                                  _kMaxLocalVideoScale,
+                                );
+
+                                // Re-clamp position too - growing the
+                                // box can push its far edge past the
+                                // screen boundary even if its top-left
+                                // corner never moved.
+                                final double newWidth = _kLocalVideoBaseWidth *
+                                    _localVideoScaleNotifier.value;
+                                final double newHeight =
+                                    _kLocalVideoBaseHeight *
+                                        _localVideoScaleNotifier.value;
+                                final Offset current =
+                                    _localVideoOffsetNotifier.value!;
+                                _localVideoOffsetNotifier.value = Offset(
+                                  current.dx.clamp(
+                                    0.0,
+                                    max(0.0, constraints.maxWidth - newWidth),
+                                  ),
+                                  current.dy.clamp(
+                                    0.0,
+                                    max(0.0, constraints.maxHeight - newHeight),
+                                  ),
+                                );
+                                return;
+                              }
+
+                              // Exactly one finger - same drag as Step 2.
+                              if (_activeLocalVideoPointers.length == 1) {
+                                final double currentWidth =
+                                    _kLocalVideoBaseWidth *
+                                        _localVideoScaleNotifier.value;
+                                final double currentHeight =
+                                    _kLocalVideoBaseHeight *
+                                        _localVideoScaleNotifier.value;
+                                final Offset next =
+                                    _localVideoOffsetNotifier.value! +
+                                        event.delta;
+                                _localVideoOffsetNotifier.value = Offset(
+                                  next.dx.clamp(
+                                    0.0,
+                                    max(0.0,
+                                        constraints.maxWidth - currentWidth),
+                                  ),
+                                  next.dy.clamp(
+                                    0.0,
+                                    max(0.0,
+                                        constraints.maxHeight - currentHeight),
+                                  ),
+                                );
+                              }
+                            },
+                            onPointerUp: (event) {
+                              _activeLocalVideoPointers.remove(event.pointer);
+                              if (_activeLocalVideoPointers.length < 2) {
+                                _pinchStartDistance = null;
+                                _pinchStartScale = null;
+                              }
+                              // Resolve the tap candidate only once every
+                              // finger is off the box - a two-finger
+                              // pinch already cleared it in
+                              // onPointerDown above, so what's left here
+                              // is only ever a genuine single-finger
+                              // touch. A short, barely-moved touch (a
+                              // real tap, not the start of a drag) flips
+                              // which participant is large/small.
+                              if (_activeLocalVideoPointers.isEmpty &&
+                                  _tapCandidateStart != null &&
+                                  _tapCandidateStartTime != null) {
+                                final double moved =
+                                    (event.position - _tapCandidateStart!)
+                                        .distance;
+                                final Duration elapsed = DateTime.now()
+                                    .difference(_tapCandidateStartTime!);
+                                if (moved < 10 &&
+                                    elapsed <
+                                        const Duration(milliseconds: 350)) {
+                                  setState(() {
+                                    _localIsLarge = !_localIsLarge;
+                                  });
+                                }
+                              }
+                              _tapCandidateStart = null;
+                              _tapCandidateStartTime = null;
+                            },
+                            onPointerCancel: (event) {
+                              _activeLocalVideoPointers.remove(event.pointer);
+                              if (_activeLocalVideoPointers.length < 2) {
+                                _pinchStartDistance = null;
+                                _pinchStartScale = null;
+                              }
+                              _tapCandidateStart = null;
+                              _tapCandidateStartTime = null;
+                            },
+                            child: Container(
+                              width: width,
+                              height: height,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                border:
+                                    Border.all(color: Colors.white24, width: 1),
+                                color: Colors.grey[900],
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: videoChild,
+                            ),
+                          ),
+                        );
+                      },
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: VideoTrackRenderer(_localVideoTrack!),
-                  ),
-                ),
 
-              // Drawing layer - always shows strokes; captures touch in draw mode
-              Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: !_drawMode,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final size =
-                          Size(constraints.maxWidth, constraints.maxHeight);
-                      return GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: (d) => _onDrawStart(d.localPosition, size),
-                        onPanUpdate: (d) =>
-                            _onDrawUpdate(d.localPosition, size),
-                        onPanEnd: (d) => _onDrawEnd(),
-                        child: CustomPaint(
-                          painter: _DrawPainter(_strokes),
-                          size: Size.infinite,
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-
-              // Switch-camera button (only when my camera is on)
-              if (_cameraEnabled && !_connecting && _error == null)
-                Positioned(
-                  top: 16,
-                  left: 16,
-                  child: GestureDetector(
-                    onTap: _switchCamera,
-                    child: Container(
-                      width: 46,
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24, width: 1),
+                  // Drawing layer - always shows strokes; captures touch in draw mode
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: !_drawMode,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final size =
+                              Size(constraints.maxWidth, constraints.maxHeight);
+                          return GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onPanStart: (d) =>
+                                _onDrawStart(d.localPosition, size),
+                            onPanUpdate: (d) =>
+                                _onDrawUpdate(d.localPosition, size),
+                            onPanEnd: (d) => _onDrawEnd(),
+                            child: CustomPaint(
+                              painter: _DrawPainter(_strokes),
+                              size: Size.infinite,
+                            ),
+                          );
+                        },
                       ),
-                      child: const Icon(Icons.cameraswitch,
-                          color: Colors.white, size: 24),
                     ),
                   ),
-                ),
 
-              // Draw toolbar (colors + clear) - shown when in draw mode
-              if (_drawMode && _error == null)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 110,
-                  child: Center(child: _buildDrawToolbar()),
-                ),
+                  // Switch-camera button (only when my camera is on)
+                  if (_cameraEnabled && !_connecting && _error == null)
+                    Positioned(
+                      top: 16,
+                      left: 16,
+                      child: GestureDetector(
+                        onTap: _switchCamera,
+                        child: Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white24, width: 1),
+                          ),
+                          child: const Icon(Icons.cameraswitch,
+                              color: Colors.white, size: 24),
+                        ),
+                      ),
+                    ),
 
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 30,
-                child: _buildControls(),
-              ),
+                  // Draw toolbar (colors + clear) - shown when in draw mode
+                  if (_drawMode && _error == null)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 110,
+                      child: Center(child: _buildDrawToolbar()),
+                    ),
 
-              _buildMinimizeButton(),
-            ],
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 30,
+                    child: _buildControls(),
+                  ),
+
+                  _buildMinimizeButton(),
+                ],
+              );
+            },
           ),
         ),
       ),

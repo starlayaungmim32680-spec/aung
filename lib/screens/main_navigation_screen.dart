@@ -787,6 +787,7 @@ class _MinimizedCallBarState extends State<_MinimizedCallBar> {
                     otherName: ActiveCall.otherName,
                     otherPhoto: ActiveCall.otherPhoto,
                     startWithCamera: ActiveCall.startWithCamera,
+                    fromIncomingCall: ActiveCall.fromIncomingCall,
                   ),
                 ),
               );
