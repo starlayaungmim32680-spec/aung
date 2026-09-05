@@ -154,9 +154,26 @@ class CallKitService {
     );
     try {
       await FlutterCallkitIncoming.startCall(params);
-    } catch (_) {
-      // Best-effort - the call still works over Fly's own foreground
-      // service even if this fails, just without the extra protection.
+    } catch (e) {
+      // TEMPORARY DIAGNOSTIC - was a silent catch (_) {}. Logging the
+      // real exception here to find out whether this self-managed
+      // Telecom ConnectionService registration is actually failing,
+      // which would explain background audio dropping for the caller
+      // even though CallForegroundService.kt keeps the process alive.
+      // Still best-effort either way - the call still works over Fly's
+      // own foreground service even if this fails, just without the
+      // extra protection, so nothing here should block the call.
+      debugPrint('startCall FAILED: $e');
+      // Also written into the call doc itself so it can be checked from
+      // Firebase Console's Firestore data viewer when adb/USB debugging
+      // isn't available on the test device - remove this write once the
+      // diagnosis is done, it isn't meant to be a permanent field.
+      try {
+        await FirebaseFirestore.instance
+            .collection('calls')
+            .doc(roomName)
+            .update({'debugStartCallError': e.toString()});
+      } catch (_) {}
     }
   }
 

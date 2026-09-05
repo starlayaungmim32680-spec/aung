@@ -147,19 +147,30 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     });
   }
 
-  // Since the call can't reliably survive leaving Fly entirely (see the
-  // long chase in the conversation history), the fallback goal is
-  // simpler and safer: end it cleanly for BOTH sides right away instead
-  // of leaving the other person connected to a call that's effectively
-  // dead on this end - avoids wasted call minutes and a one-sided
-  // "zombie" connection. Skipped when the person used the explicit
-  // in-app minimize button (_isMinimizing), since that's a deliberate
-  // "keep the call running, I'm just browsing Fly" action, not leaving.
+  // Leaving Fly for the Home screen or another app (AppLifecycleState.
+  // paused) no longer ends the call - CallForegroundService.kt is already
+  // running by this point (started in _markCallActiveNatively when the
+  // call connected) and is what keeps this process alive in the
+  // background, exactly like a real phone call. Nothing here needs to
+  // disconnect the Room, dispose the listener, or stop the service - all
+  // of that is left completely alone, so coming back to Fly (via the
+  // "Fly call in progress" notification or the app icon) simply resumes
+  // this same, still-connected screen. For a video call specifically,
+  // MainActivity.kt's onUserLeaveHint() already tries Picture-in-Picture
+  // first, so this path is mainly what covers voice calls and any device
+  // where PiP isn't available - video's local camera preview may freeze
+  // without a visible Surface in that fallback case (an Android OS
+  // limitation, not something fixable in Dart), but audio keeps working
+  // either way since the foreground service holds the microphone.
+  //
+  // AppLifecycleState.detached means the engine itself is being torn
+  // down (not just backgrounded) - nothing would be listening to resume
+  // into afterwards, so the call is ended cleanly here rather than left
+  // as a one-sided "zombie" connection on the other participant's side.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_isMinimizing) return;
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.detached) {
       _endCall();
     }
   }

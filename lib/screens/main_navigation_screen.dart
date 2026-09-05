@@ -551,6 +551,25 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
 
     // Already on Home and already at the first video - exit the app.
+    //
+    // If a call is minimized right now (ActiveCall.hasActiveCall), that
+    // exit must not go through SystemNavigator.pop() - that calls
+    // Activity.finish() natively, and MainActivity doesn't cache its
+    // FlutterEngine, so finishing it destroys the whole Dart isolate:
+    // LiveKit's Room, the WebRTC audio pipeline, everything. Pressing
+    // Home never hits this at all (Home only pauses/stops the Activity,
+    // it doesn't finish it), which is why backing all the way out used
+    // to silently kill an in-progress call's audio while its foreground
+    // notification and CallKit's own native call notification kept
+    // showing right through it - both of those are separate native
+    // Android components that don't depend on the engine being alive.
+    // moveToBackground (the same method channel call the in-call
+    // minimize button already uses) backgrounds the task exactly like
+    // Home does, leaving the engine - and the call - untouched.
+    if (ActiveCall.hasActiveCall) {
+      kBackgroundChannel.invokeMethod('moveToBackground');
+      return;
+    }
     SystemNavigator.pop();
   }
 
