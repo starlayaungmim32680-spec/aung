@@ -14,6 +14,7 @@ import 'public_profile_screen.dart';
 import 'video_call_screen.dart';
 import '../call_kit_service.dart';
 import 'call_push_service.dart';
+import 'presence_badge.dart';
 
 // Cloudinary upload details (unsigned)
 const String kCloudinaryImageUrl =
@@ -129,6 +130,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     final String displayName =
                         userData['displayName'] ?? 'User';
                     final String photoUrl = userData['photoUrl'] ?? '';
+                    final bool isOnline = isUserOnline(userData);
 
                     return ListTile(
                       onTap: () {
@@ -140,33 +142,44 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         );
                       },
-                      leading: Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                      leading: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: LinearGradient(
+                                colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                              ),
+                            ),
+                            child: CircleAvatar(
+                              radius: 24,
+                              backgroundColor: Colors.grey[850],
+                              backgroundImage: photoUrl.isNotEmpty
+                                  ? NetworkImage(photoUrl)
+                                  : null,
+                              child: photoUrl.isEmpty
+                                  ? Text(
+                                      displayName.isNotEmpty
+                                          ? displayName[0].toUpperCase()
+                                          : '?',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 18,
+                                      ),
+                                    )
+                                  : null,
+                            ),
                           ),
-                        ),
-                        child: CircleAvatar(
-                          radius: 24,
-                          backgroundColor: Colors.grey[850],
-                          backgroundImage: photoUrl.isNotEmpty
-                              ? NetworkImage(photoUrl)
-                              : null,
-                          child: photoUrl.isEmpty
-                              ? Text(
-                                  displayName.isNotEmpty
-                                      ? displayName[0].toUpperCase()
-                                      : '?',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 18,
-                                  ),
-                                )
-                              : null,
-                        ),
+                          if (isOnline)
+                            const Positioned(
+                              right: -2,
+                              bottom: -2,
+                              child: SparkleStarBadge(),
+                            ),
+                        ],
                       ),
                       title: Text(
                         displayName,

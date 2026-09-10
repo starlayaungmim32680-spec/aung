@@ -25,7 +25,7 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _currentIndex = 0;
 
   // Home/Chat are swipeable as a horizontal group (Home first, swipe left
@@ -52,6 +52,18 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Message notification sound (generated in code, no audio file)
   final AudioPlayer _dingPlayer = AudioPlayer();
   Uint8List? _dingBytes;
+
+  // Online-status ("is this user online right now") for the sparkle-star
+  // badge on Chat/Profile. Fly only uses Firestore (no Realtime Database),
+  // so there's no true onDisconnect hook - instead this refreshes
+  // `lastActive` every 20s while the app is foregrounded. Backgrounding
+  // the app does NOT instantly mark it offline (see
+  // didChangeAppLifecycleState below) - the badge instead treats a user
+  // as online only if `lastActive` is within the last 60s (see
+  // chat_screen.dart/public_profile_screen.dart), so someone briefly
+  // switching apps stays "online" for a bit, and a force-killed/crashed
+  // app naturally goes stale instead of staying stuck "online" forever.
+  Timer? _presenceHeartbeatTimer;
 
   final List<Widget> _screens = const [
     HomeScreen(),
@@ -92,6 +104,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _setOnlineStatus(true);
+    _presenceHeartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _setOnlineStatus(true);
+    });
     _rotationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
@@ -319,8 +336,46 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _isShowingIncomingCall = false;
   }
 
+  // Writes this device's online status + a fresh `lastActive` timestamp to
+  // the current user's Firestore doc, so the sparkle-star badge can show
+  // live status for other users (see chat_screen.dart/
+  // public_profile_screen.dart). Best-effort: a failure here (e.g.
+  // offline) just means the badge is briefly stale for other users, not a
+  // crash.
+  void _setOnlineStatus(bool online) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      'isOnline': online,
+      'lastActive': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true)).catchError((_) {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _setOnlineStatus(true);
+      _presenceHeartbeatTimer ??=
+          Timer.periodic(const Duration(seconds: 20), (_) {
+        _setOnlineStatus(true);
+      });
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      // Deliberately does NOT write isOnline:false here - being
+      // backgrounded shouldn't instantly flip someone to "offline". The
+      // heartbeat simply stops (nothing left to send it once suspended),
+      // so `lastActive` naturally goes stale and the 60s staleness check
+      // treats them as offline on its own once enough time has passed.
+      _presenceHeartbeatTimer?.cancel();
+      _presenceHeartbeatTimer = null;
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _presenceHeartbeatTimer?.cancel();
     _rotationController.dispose();
     _swipePageController.dispose();
     _chatSubscription?.cancel();

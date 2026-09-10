@@ -10,6 +10,7 @@ import 'home_screen.dart';
 import 'media_utils.dart';
 import 'gifting.dart';
 import 'profile_screen.dart' show SkyNoteBubble;
+import 'presence_badge.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -71,6 +72,7 @@ class PublicProfileScreen extends StatelessWidget {
           final String? skyNoteText = profile?['skyNoteText'] as String?;
           final DateTime? skyNoteCreatedAt =
               (profile?['skyNoteCreatedAt'] as Timestamp?)?.toDate();
+          final bool isOnline = isUserOnline(profile);
 
           return StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -108,36 +110,47 @@ class PublicProfileScreen extends StatelessWidget {
                           padding: const EdgeInsets.all(20),
                           child: Column(
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      Color(0xFFFF4B6E),
-                                      Color(0xFF9C4DFF)
-                                    ],
+                              Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(3),
+                                    decoration: const BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          Color(0xFFFF4B6E),
+                                          Color(0xFF9C4DFF)
+                                        ],
+                                      ),
+                                    ),
+                                    child: CircleAvatar(
+                                      radius: 44,
+                                      backgroundColor: Colors.grey[850],
+                                      backgroundImage: photoUrl.isNotEmpty
+                                          ? NetworkImage(photoUrl)
+                                          : null,
+                                      child: photoUrl.isEmpty
+                                          ? Text(
+                                              displayName.isNotEmpty
+                                                  ? displayName[0].toUpperCase()
+                                                  : '?',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 36,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
                                   ),
-                                ),
-                                child: CircleAvatar(
-                                  radius: 44,
-                                  backgroundColor: Colors.grey[850],
-                                  backgroundImage: photoUrl.isNotEmpty
-                                      ? NetworkImage(photoUrl)
-                                      : null,
-                                  child: photoUrl.isEmpty
-                                      ? Text(
-                                          displayName.isNotEmpty
-                                              ? displayName[0].toUpperCase()
-                                              : '?',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 36,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        )
-                                      : null,
-                                ),
+                                  if (isOnline)
+                                    const Positioned(
+                                      right: 2,
+                                      bottom: 2,
+                                      child: SparkleStarBadge(size: 22),
+                                    ),
+                                ],
                               ),
                               const SizedBox(height: 12),
                               Text(
