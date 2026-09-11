@@ -56,13 +56,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Online-status ("is this user online right now") for the sparkle-star
   // badge on Chat/Profile. Fly only uses Firestore (no Realtime Database),
   // so there's no true onDisconnect hook - instead this refreshes
-  // `lastActive` every 20s while the app is foregrounded. Backgrounding
-  // the app does NOT instantly mark it offline (see
-  // didChangeAppLifecycleState below) - the badge instead treats a user
-  // as online only if `lastActive` is within the last 60s (see
-  // chat_screen.dart/public_profile_screen.dart), so someone briefly
-  // switching apps stays "online" for a bit, and a force-killed/crashed
-  // app naturally goes stale instead of staying stuck "online" forever.
+  // `lastActive` every 20s, and keeps running through backgrounding/
+  // screen-lock too, via PresenceForegroundService.kt (started below).
+  // The badge still treats a user as online only if `lastActive` is
+  // within the last 60s (see chat_screen.dart/public_profile_screen.dart)
+  // rather than trusting `isOnline` alone, so a force-killed/crashed app,
+  // or a device where the foreground service still gets killed by an
+  // aggressive OEM despite everything, naturally goes stale instead of
+  // staying stuck "online" forever.
   Timer? _presenceHeartbeatTimer;
 
   final List<Widget> _screens = const [
@@ -109,6 +110,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _presenceHeartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       _setOnlineStatus(true);
     });
+    // Keeps Fly's process alive (screen off/locked included) via a real
+    // Android foreground service, so the heartbeat above doesn't get
+    // suspended by the OS the moment the screen locks - see
+    // PresenceForegroundService.kt for why this is needed and what the
+    // person sees (a persistent, silent "You're online" notification -
+    // unavoidable by Android's own rule for any foreground service).
+    kBackgroundChannel.invokeMethod('startPresenceService').catchError((_) {});
     _rotationController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 3),
@@ -354,21 +362,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    // The heartbeat Timer (started once in initState) now keeps running
+    // through backgrounding/screen-lock too, since
+    // PresenceForegroundService.kt keeps the process alive for exactly
+    // that reason - there's nothing to stop/restart here for it. This
+    // resumed call is just an extra correctness nudge (e.g. after a
+    // brief OS freeze that a real device might still impose despite the
+    // foreground service).
     if (state == AppLifecycleState.resumed) {
       _setOnlineStatus(true);
-      _presenceHeartbeatTimer ??=
-          Timer.periodic(const Duration(seconds: 20), (_) {
-        _setOnlineStatus(true);
-      });
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      // Deliberately does NOT write isOnline:false here - being
-      // backgrounded shouldn't instantly flip someone to "offline". The
-      // heartbeat simply stops (nothing left to send it once suspended),
-      // so `lastActive` naturally goes stale and the 60s staleness check
-      // treats them as offline on its own once enough time has passed.
-      _presenceHeartbeatTimer?.cancel();
-      _presenceHeartbeatTimer = null;
     }
   }
 
@@ -376,6 +378,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _presenceHeartbeatTimer?.cancel();
+    kBackgroundChannel.invokeMethod('stopPresenceService').catchError((_) {});
     _rotationController.dispose();
     _swipePageController.dispose();
     _chatSubscription?.cancel();

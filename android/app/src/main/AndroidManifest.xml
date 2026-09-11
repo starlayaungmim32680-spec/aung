@@ -26,6 +26,10 @@
          which is exactly why voice call audio was still cutting out. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- For PresenceForegroundService.kt - keeps Fly's process alive
+         (screen off/locked included) so the online-status heartbeat in
+         main_navigation_screen.dart keeps refreshing while logged in. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.BIND_TELECOM_CONNECTION_SERVICE" />
     <!-- Lets voice calls turn the screen off automatically when the phone
          is held to the ear (proximity_sensor's setProximityScreenOff) -
@@ -73,6 +77,14 @@
             android:name=".CallForegroundService"
             android:exported="false"
             android:foregroundServiceType="phoneCall|microphone|camera" />
+        <!-- Keeps Fly's process alive for as long as someone is logged
+             in (not just during a call) - started/stopped by
+             MainActivity.kt right after login / on logout. See
+             PresenceForegroundService.kt. -->
+        <service
+            android:name=".PresenceForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

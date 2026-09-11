@@ -25,6 +25,14 @@ import io.flutter.plugin.common.MethodChannel
 //     for why this needs to be a real, separate Service rather than
 //     relying on flutter_callkit_incoming's own internal one.
 //
+//  2b. "startPresenceService"/"stopPresenceService" - the same idea as
+//      #2, but for as long as the person is logged in (not just during
+//      a call), via a separate PresenceForegroundService.kt, so the
+//      Chat/Profile online-status heartbeat in
+//      main_navigation_screen.dart keeps running with the screen off.
+//      Independent of the call service - either can run without the
+//      other.
+//
 //  3. Picture-in-Picture for video calls - when there's an active video
 //     call and the person leaves Fly entirely (Home button, switching
 //     apps), onUserLeaveHint() automatically shrinks Fly's own window
@@ -43,6 +51,7 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "fly/background"
     private var callActive = false
     private var callIsVideo = false
+    private var presenceActive = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,9 +96,28 @@ class MainActivity : FlutterActivity() {
                         stopCallForegroundService()
                         result.success(null)
                     }
+                    "startPresenceService" -> {
+                        presenceActive = true
+                        startPresenceForegroundService()
+                        result.success(null)
+                    }
+                    "stopPresenceService" -> {
+                        presenceActive = false
+                        stopPresenceForegroundService()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun startPresenceForegroundService() {
+        val intent = Intent(this, PresenceForegroundService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun stopPresenceForegroundService() {
+        stopService(Intent(this, PresenceForegroundService::class.java))
     }
 
     private fun startCallForegroundService(isVideo: Boolean) {
@@ -124,10 +152,11 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        // Safety net - never leave the foreground service (and its
+        // Safety net - never leave a foreground service (and its
         // persistent notification) running past the Activity's own
-        // lifecycle if a call somehow never explicitly cleared it.
+        // lifecycle if it somehow never got explicitly cleared.
         if (callActive) stopCallForegroundService()
+        if (presenceActive) stopPresenceForegroundService()
         super.onDestroy()
     }
 }
