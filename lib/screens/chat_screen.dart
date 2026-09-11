@@ -121,75 +121,148 @@ class _ChatScreenState extends State<ChatScreen> {
                   );
                 }
 
-                return ListView.builder(
-                  itemCount: users.length,
-                  itemBuilder: (context, index) {
-                    final userData =
-                        users[index].data() as Map<String, dynamic>;
-                    final String otherUserId = users[index].id;
-                    final String displayName =
-                        userData['displayName'] ?? 'User';
-                    final String photoUrl = userData['photoUrl'] ?? '';
-                    final bool isOnline = isUserOnline(userData);
+                // Whoever you most recently messaged OR called should sit
+                // at the top of the list, like every other chat app - this
+                // reads the same `chats` docs that sending a message
+                // (lastMessageAt) and starting a call (lastCallAt, see
+                // _startVideoCall below) already write.
+                return StreamBuilder<QuerySnapshot>(
+                  stream: currentUser == null
+                      ? null
+                      : FirebaseFirestore.instance
+                          .collection('chats')
+                          .where('participants', arrayContains: currentUser.uid)
+                          .snapshots(),
+                  builder: (context, chatSnap) {
+                    final Map<String, DateTime> lastActivity = {};
+                    for (final doc in chatSnap.data?.docs ?? []) {
+                      final data = doc.data() as Map<String, dynamic>;
+                      final participants =
+                          (data['participants'] as List?)?.cast<String>() ??
+                              const [];
+                      final String otherId = participants.firstWhere(
+                        (id) => id != currentUser?.uid,
+                        orElse: () => '',
+                      );
+                      if (otherId.isEmpty) continue;
+                      final DateTime? msgAt =
+                          (data['lastMessageAt'] as Timestamp?)?.toDate();
+                      final DateTime? callAt =
+                          (data['lastCallAt'] as Timestamp?)?.toDate();
+                      DateTime? latest = msgAt;
+                      if (callAt != null &&
+                          (latest == null || callAt.isAfter(latest))) {
+                        latest = callAt;
+                      }
+                      if (latest != null) lastActivity[otherId] = latest;
+                    }
 
-                    return ListTile(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) =>
-                                PublicProfileScreen(userId: otherUserId),
-                          ),
-                        );
-                      },
-                      leading: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              gradient: LinearGradient(
-                                colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
-                              ),
-                            ),
-                            child: CircleAvatar(
-                              radius: 24,
-                              backgroundColor: Colors.grey[850],
-                              backgroundImage: photoUrl.isNotEmpty
-                                  ? NetworkImage(photoUrl)
-                                  : null,
-                              child: photoUrl.isEmpty
-                                  ? Text(
-                                      displayName.isNotEmpty
-                                          ? displayName[0].toUpperCase()
-                                          : '?',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 18,
+                    final sortedUsers = List.of(users)
+                      ..sort((a, b) {
+                        final DateTime? aTime = lastActivity[a.id];
+                        final DateTime? bTime = lastActivity[b.id];
+                        if (aTime != null && bTime != null) {
+                          return bTime.compareTo(aTime);
+                        }
+                        if (aTime != null) return -1;
+                        if (bTime != null) return 1;
+                        // Neither has chatted/called yet - keep a stable,
+                        // deterministic order instead of an unstable sort
+                        // leaving them to flicker between rebuilds.
+                        return a.id.compareTo(b.id);
+                      });
+
+                    final onlineUsers = _searchQuery.isNotEmpty
+                        ? const <QueryDocumentSnapshot>[]
+                        : sortedUsers
+                            .where((doc) => isUserOnline(
+                                doc.data() as Map<String, dynamic>))
+                            .toList();
+
+                    return Column(
+                      children: [
+                        if (onlineUsers.isNotEmpty)
+                          _OnlineNowStrip(users: onlineUsers),
+                        Expanded(
+                          child: ListView.builder(
+                            itemCount: sortedUsers.length,
+                            itemBuilder: (context, index) {
+                              final userData = sortedUsers[index].data()
+                                  as Map<String, dynamic>;
+                              final String otherUserId = sortedUsers[index].id;
+                              final String displayName =
+                                  userData['displayName'] ?? 'User';
+                              final String photoUrl =
+                                  userData['photoUrl'] ?? '';
+                              final bool isOnline = isUserOnline(userData);
+
+                              return ListTile(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => PublicProfileScreen(
+                                          userId: otherUserId),
+                                    ),
+                                  );
+                                },
+                                leading: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(2),
+                                      decoration: const BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        gradient: LinearGradient(
+                                          colors: [
+                                            Color(0xFFFF4B6E),
+                                            Color(0xFF9C4DFF)
+                                          ],
+                                        ),
                                       ),
-                                    )
-                                  : null,
-                            ),
+                                      child: CircleAvatar(
+                                        radius: 24,
+                                        backgroundColor: Colors.grey[850],
+                                        backgroundImage: photoUrl.isNotEmpty
+                                            ? NetworkImage(photoUrl)
+                                            : null,
+                                        child: photoUrl.isEmpty
+                                            ? Text(
+                                                displayName.isNotEmpty
+                                                    ? displayName[0]
+                                                        .toUpperCase()
+                                                    : '?',
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 18,
+                                                ),
+                                              )
+                                            : null,
+                                      ),
+                                    ),
+                                    if (isOnline)
+                                      const Positioned(
+                                        right: -2,
+                                        bottom: -2,
+                                        child: SparkleStarBadge(),
+                                      ),
+                                  ],
+                                ),
+                                title: Text(
+                                  displayName,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                trailing: const Icon(Icons.chevron_right,
+                                    color: Colors.grey),
+                              );
+                            },
                           ),
-                          if (isOnline)
-                            const Positioned(
-                              right: -2,
-                              bottom: -2,
-                              child: SparkleStarBadge(),
-                            ),
-                        ],
-                      ),
-                      title: Text(
-                        displayName,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
                         ),
-                      ),
-                      trailing:
-                          const Icon(Icons.chevron_right, color: Colors.grey),
+                      ],
                     );
                   },
                 );
@@ -197,6 +270,98 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Horizontal strip of currently-online users, shown above the main Chat
+// list - Fly's own take on the "Active now" row other chat apps show,
+// using the sparkle-star badge instead of a plain green dot.
+class _OnlineNowStrip extends StatelessWidget {
+  final List<QueryDocumentSnapshot> users;
+
+  const _OnlineNowStrip({required this.users});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 92,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        itemCount: users.length,
+        itemBuilder: (context, index) {
+          final data = users[index].data() as Map<String, dynamic>;
+          final String userId = users[index].id;
+          final String displayName = data['displayName'] ?? 'User';
+          final String photoUrl = data['photoUrl'] ?? '';
+
+          return GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PublicProfileScreen(userId: userId),
+                ),
+              );
+            },
+            child: Container(
+              width: 68,
+              margin: const EdgeInsets.only(right: 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(
+                            colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                          ),
+                        ),
+                        child: CircleAvatar(
+                          radius: 26,
+                          backgroundColor: Colors.grey[850],
+                          backgroundImage: photoUrl.isNotEmpty
+                              ? NetworkImage(photoUrl)
+                              : null,
+                          child: photoUrl.isEmpty
+                              ? Text(
+                                  displayName.isNotEmpty
+                                      ? displayName[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 18,
+                                  ),
+                                )
+                              : null,
+                        ),
+                      ),
+                      const Positioned(
+                        right: -2,
+                        bottom: -2,
+                        child: SparkleStarBadge(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -676,6 +841,15 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'status': 'ringing',
       'createdAt': FieldValue.serverTimestamp(),
     });
+
+    // Also marks this as a chat "activity" (separate from lastMessageAt,
+    // which is only for actual text/media messages) so the Chat list can
+    // bump this person to the top even if no message was ever sent - see
+    // _ChatScreenState's sorting in this same file.
+    await FirebaseFirestore.instance.collection('chats').doc(_chatId).set({
+      'participants': [myId, widget.otherUserId],
+      'lastCallAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
     // Best-effort - wakes the other person's phone even if they've
     // closed Fly entirely. The call still works normally without this
