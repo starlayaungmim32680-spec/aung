@@ -12,10 +12,16 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends State<LoginScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
+  late final AnimationController _bounceController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat(reverse: true);
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
@@ -25,6 +31,38 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _loadRecentAccounts();
+    // Just triggers a rebuild so the mascot's emoji/speech bubble (see
+    // _mascotEmoji/_mascotMessage below) updates the instant a field is
+    // focused - Flutter doesn't rebuild on focus changes on its own.
+    _emailFocusNode.addListener(_onFocusChange);
+    _passwordFocusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (mounted) setState(() {});
+  }
+
+  // A small, friendly guide (the same "Flyla" character from
+  // onboarding_screen.dart) that reacts to whatever the person is doing
+  // right now - which field they're in, or what went wrong - instead of
+  // a plain red error line. Meant to help both first-time and experienced
+  // users alike: an experienced user can just ignore it and type, but
+  // someone unsure what to enter (or why a login failed) gets a clear,
+  // friendly nudge instead of a cold error code.
+  String get _mascotEmoji {
+    if (_isLoading) return '🚀';
+    if (_errorMessage != null) return '😅';
+    if (_passwordFocusNode.hasFocus) return '🙈';
+    if (_emailFocusNode.hasFocus) return '👀';
+    return '👋';
+  }
+
+  String get _mascotMessage {
+    if (_isLoading) return 'Hold on, logging you in...';
+    if (_errorMessage != null) return _errorMessage!;
+    if (_passwordFocusNode.hasFocus) return 'Now type your secret password!';
+    if (_emailFocusNode.hasFocus) return 'Type your email here!';
+    return "Hi! I'm Flyla - let's get you signed in!";
   }
 
   Future<void> _loadRecentAccounts() async {
@@ -50,7 +88,9 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _emailFocusNode.dispose();
     _passwordFocusNode.dispose();
+    _bounceController.dispose();
     super.dispose();
   }
 
@@ -161,11 +201,59 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Welcome back',
-                  style: TextStyle(
-                    color: Colors.grey,
-                    fontSize: 16,
+                AnimatedBuilder(
+                  animation: _bounceController,
+                  builder: (context, child) {
+                    final double lift = -8 * _bounceController.value;
+                    return Transform.translate(
+                      offset: Offset(0, lift),
+                      child: child,
+                    );
+                  },
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      _mascotEmoji,
+                      style: const TextStyle(fontSize: 34),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    key: ValueKey(_mascotMessage),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _errorMessage != null
+                          ? Colors.redAccent.withOpacity(0.12)
+                          : const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(14),
+                      border: _errorMessage != null
+                          ? Border.all(color: Colors.redAccent.withOpacity(0.4))
+                          : null,
+                    ),
+                    child: Text(
+                      _mascotMessage,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: _errorMessage != null
+                            ? Colors.redAccent
+                            : Colors.white70,
+                        fontSize: 13,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 48),
@@ -262,6 +350,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ],
                 TextField(
                   controller: _emailController,
+                  focusNode: _emailFocusNode,
                   style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
                     hintText: 'Email',
@@ -304,15 +393,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
-                if (_errorMessage != null) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    _errorMessage!,
-                    style:
-                        const TextStyle(color: Colors.redAccent, fontSize: 13),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
                 const SizedBox(height: 24),
                 SizedBox(
                   width: double.infinity,
