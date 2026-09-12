@@ -16,6 +16,7 @@ import 'upload_screen.dart';
 import 'profile_screen.dart';
 import 'live_screen.dart';
 import 'gifting.dart';
+import 'onboarding_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -122,7 +123,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       duration: const Duration(seconds: 3),
     )..repeat();
     _swipePageController = PageController(initialPage: 0); // start on Home
-    _maybeShowSwipeHintOnce();
+    _maybeShowOnboardingOnce();
     _listenForNewMessages();
     _listenForIncomingCalls();
     CoinService.instance.awardDailyLogin();
@@ -386,6 +387,34 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _dingPlayer.dispose();
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
     super.dispose();
+  }
+
+  // Shows Flyla's onboarding tour to a brand-new user exactly once (same
+  // "remember on the user's doc" pattern as _maybeShowSwipeHintOnce below)
+  // before the swipe hint gets its turn - chained rather than fired at
+  // the same time, so the swipe hint doesn't silently burn its own
+  // one-time flag while the onboarding screen is covering it.
+  Future<void> _maybeShowOnboardingOnce() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final docRef =
+          FirebaseFirestore.instance.collection('users').doc(user.uid);
+      try {
+        final doc = await docRef.get();
+        final bool alreadyShown =
+            (doc.data()?['hasSeenOnboarding'] as bool?) ?? false;
+        if (!alreadyShown && mounted) {
+          await docRef
+              .set({'hasSeenOnboarding': true}, SetOptions(merge: true));
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+          );
+        }
+      } catch (_) {
+        // Non-critical - worst case onboarding just doesn't show once.
+      }
+    }
+    if (mounted) _maybeShowSwipeHintOnce();
   }
 
   Future<void> _maybeShowSwipeHintOnce() async {
