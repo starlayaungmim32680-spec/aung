@@ -16,6 +16,33 @@ class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
   Future<void> _logout(BuildContext context) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Log out of Fly?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          "You'll need to sign in again to use Fly. If you're trying to "
+          'switch to a different account, logging out and signing back in '
+          'with another email is how to do that.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Log out',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     await FirebaseAuth.instance.signOut();
     if (context.mounted) {
       Navigator.pushAndRemoveUntil(
