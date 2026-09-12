@@ -22,6 +22,13 @@ class _LoginScreenState extends State<LoginScreen>
     vsync: this,
     duration: const Duration(milliseconds: 1400),
   )..repeat(reverse: true);
+  // Drives the logo's soft glow pulse and twinkling sparkles - a separate,
+  // slower cycle from the mascot's bounce above so the two don't compete
+  // for attention.
+  late final AnimationController _sparkleController = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2, milliseconds: 200),
+  )..repeat();
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
@@ -91,6 +98,7 @@ class _LoginScreenState extends State<LoginScreen>
     _emailFocusNode.dispose();
     _passwordFocusNode.dispose();
     _bounceController.dispose();
+    _sparkleController.dispose();
     super.dispose();
   }
 
@@ -192,12 +200,88 @@ class _LoginScreenState extends State<LoginScreen>
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const SizedBox(height: 60),
-                const Text(
-                  'Fly',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 48,
-                    fontWeight: FontWeight.bold,
+                AnimatedBuilder(
+                  animation: _sparkleController,
+                  builder: (context, child) {
+                    // 0 -> 1 -> 0 pulse, twice as fast as the controller's
+                    // own loop so the glow "breathes" smoothly.
+                    final double pulse =
+                        (1 - (2 * _sparkleController.value - 1).abs());
+                    return Stack(
+                      clipBehavior: Clip.none,
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            boxShadow: [
+                              BoxShadow(
+                                color: Color.lerp(
+                                  const Color(0xFFFF4B6E),
+                                  const Color(0xFF9C4DFF),
+                                  pulse,
+                                )!
+                                    .withOpacity(0.25 + 0.35 * pulse),
+                                blurRadius: 24 + 20 * pulse,
+                                spreadRadius: 2 + 4 * pulse,
+                              ),
+                            ],
+                          ),
+                          child: child,
+                        ),
+                        _Sparkle(
+                          controller: _sparkleController,
+                          interval: const Interval(0.0, 0.5),
+                          top: -6,
+                          left: -18,
+                          size: 16,
+                        ),
+                        _Sparkle(
+                          controller: _sparkleController,
+                          interval: const Interval(0.3, 0.8),
+                          top: 4,
+                          right: -22,
+                          size: 20,
+                        ),
+                        _Sparkle(
+                          controller: _sparkleController,
+                          interval: const Interval(0.6, 1.0),
+                          bottom: -10,
+                          left: 6,
+                          size: 13,
+                        ),
+                      ],
+                    );
+                  },
+                  child: ShaderMask(
+                    shaderCallback: (bounds) => const LinearGradient(
+                      colors: [
+                        Color(0xFFFF4B6E), // pink
+                        Color(0xFFFF9142), // orange
+                        Color(0xFFFFD93D), // yellow
+                        Color(0xFF9C4DFF), // purple
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ).createShader(bounds),
+                    child: const Text(
+                      'Fly',
+                      // ShaderMask needs an opaque color here to paint over -
+                      // the gradient above replaces it, so this white never
+                      // actually shows.
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 54,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                        shadows: [
+                          Shadow(
+                            color: Color(0x55000000),
+                            offset: Offset(0, 3),
+                            blurRadius: 10,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -434,6 +518,56 @@ class _LoginScreenState extends State<LoginScreen>
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// One twinkling sparkle near the logo - fades in/out and grows/shrinks
+// over its own slice (`interval`) of the shared _sparkleController's
+// cycle, so several of these placed around the logo twinkle at
+// staggered moments instead of all at once.
+class _Sparkle extends StatelessWidget {
+  final AnimationController controller;
+  final Interval interval;
+  final double size;
+  final double? top;
+  final double? bottom;
+  final double? left;
+  final double? right;
+
+  const _Sparkle({
+    required this.controller,
+    required this.interval,
+    required this.size,
+    this.top,
+    this.bottom,
+    this.left,
+    this.right,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final animation = CurvedAnimation(parent: controller, curve: interval);
+    return Positioned(
+      top: top,
+      bottom: bottom,
+      left: left,
+      right: right,
+      child: FadeTransition(
+        // 0 -> 1 -> 0 within this sparkle's own slice of the cycle, so it
+        // pops in then fades back out rather than snapping on/off.
+        opacity: TweenSequence<double>([
+          TweenSequenceItem(tween: Tween(begin: 0.0, end: 1.0), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.0), weight: 1),
+        ]).animate(animation),
+        child: ScaleTransition(
+          scale: TweenSequence<double>([
+            TweenSequenceItem(tween: Tween(begin: 0.4, end: 1.0), weight: 1),
+            TweenSequenceItem(tween: Tween(begin: 1.0, end: 0.4), weight: 1),
+          ]).animate(animation),
+          child: Text('✨', style: TextStyle(fontSize: size)),
         ),
       ),
     );
