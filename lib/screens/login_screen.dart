@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'main_navigation_screen.dart';
 import 'signup_screen.dart';
+import 'recent_accounts.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,14 +15,42 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final FocusNode _passwordFocusNode = FocusNode();
   bool _isLoading = false;
   bool _obscurePassword = true;
   String? _errorMessage;
+  List<RecentAccount> _recentAccounts = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecentAccounts();
+  }
+
+  Future<void> _loadRecentAccounts() async {
+    final accounts = await RecentAccountsStore.load();
+    if (mounted) setState(() => _recentAccounts = accounts);
+  }
+
+  void _useRecentAccount(RecentAccount account) {
+    setState(() {
+      _emailController.text = account.email;
+      _passwordController.clear();
+      _errorMessage = null;
+    });
+    _passwordFocusNode.requestFocus();
+  }
+
+  Future<void> _removeRecentAccount(String email) async {
+    await RecentAccountsStore.forget(email);
+    _loadRecentAccounts();
+  }
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _passwordFocusNode.dispose();
     super.dispose();
   }
 
@@ -55,10 +85,28 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final credential = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
+      final user = credential.user;
+      if (user != null) {
+        try {
+          final doc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+          final data = doc.data();
+          await RecentAccountsStore.remember(RecentAccount(
+            email: email,
+            displayName: (data?['displayName'] as String?) ?? '',
+            photoUrl: (data?['photoUrl'] as String?) ?? '',
+          ));
+        } catch (_) {
+          // Not remembering this account locally isn't worth failing the
+          // login over - the person is signed in either way.
+        }
+      }
       if (mounted) _goToHome();
     } on FirebaseAuthException catch (e) {
       setState(() {
@@ -121,6 +169,97 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 48),
+                if (_recentAccounts.isNotEmpty) ...[
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Continue as',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 76,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _recentAccounts.length,
+                      itemBuilder: (context, index) {
+                        final account = _recentAccounts[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: GestureDetector(
+                            onTap: () => _useRecentAccount(account),
+                            child: SizedBox(
+                              width: 64,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 24,
+                                        backgroundColor: Colors.grey[850],
+                                        backgroundImage:
+                                            account.photoUrl.isNotEmpty
+                                                ? NetworkImage(account.photoUrl)
+                                                : null,
+                                        child: account.photoUrl.isEmpty
+                                            ? Text(
+                                                account.displayName.isNotEmpty
+                                                    ? account.displayName[0]
+                                                        .toUpperCase()
+                                                    : account.email[0]
+                                                        .toUpperCase(),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              )
+                                            : null,
+                                      ),
+                                      Positioned(
+                                        right: -6,
+                                        top: -6,
+                                        child: GestureDetector(
+                                          onTap: () => _removeRecentAccount(
+                                              account.email),
+                                          child: Container(
+                                            padding: const EdgeInsets.all(2),
+                                            decoration: const BoxDecoration(
+                                              color: Colors.black,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: Icon(
+                                              Icons.close,
+                                              size: 14,
+                                              color: Colors.grey[400],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    account.displayName.isNotEmpty
+                                        ? account.displayName
+                                        : account.email,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
                 TextField(
                   controller: _emailController,
                   style: const TextStyle(color: Colors.white),
@@ -138,6 +277,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: _passwordController,
+                  focusNode: _passwordFocusNode,
                   obscureText: _obscurePassword,
                   style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
