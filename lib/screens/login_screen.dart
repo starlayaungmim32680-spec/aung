@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'main_navigation_screen.dart';
 import 'signup_screen.dart';
 import 'recent_accounts.dart';
@@ -185,6 +186,111 @@ class _LoginScreenState extends State<LoginScreen>
         return 'Email or password is incorrect.';
       default:
         return 'Login failed - $code';
+    }
+  }
+
+  // Nobody - not Fly, not Firebase - can ever look up or recover someone's
+  // actual password (it's never stored in a reversible form). This is the
+  // standard, secure way every app handles a forgotten password instead:
+  // email them a link to set a brand-new one.
+  Future<void> _showForgotPasswordDialog() async {
+    final resetEmailController =
+        TextEditingController(text: _emailController.text.trim());
+
+    final String? emailToReset = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Reset your password',
+            style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "Enter your account's email and we'll send you a link to "
+              'set a new password.',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: resetEmailController,
+              autofocus: true,
+              keyboardType: TextInputType.emailAddress,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Email',
+                hintStyle: const TextStyle(color: Colors.grey),
+                filled: true,
+                fillColor: Colors.grey[900],
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(ctx, resetEmailController.text.trim()),
+            child: const Text('Send link',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (emailToReset == null || emailToReset.isEmpty || !mounted) return;
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: emailToReset);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Password reset link sent to $emailToReset'),
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(
+            label: 'Open Gmail',
+            onPressed: _openGmailInbox,
+          ),
+        ));
+      }
+    } on FirebaseAuthException catch (e) {
+      final String message = switch (e.code) {
+        'user-not-found' => 'No account found with that email.',
+        'invalid-email' => 'That email address looks invalid.',
+        _ => 'Could not send reset email - try again.',
+      };
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Could not send reset email - try again.')));
+      }
+    }
+  }
+
+  // Opens Gmail's inbox directly, so the person doesn't have to go hunt
+  // for the Gmail app themselves after tapping "Send link". Android
+  // offers this URL to the Gmail app if it's installed (deep link);
+  // otherwise it just opens Gmail in the browser - either way, they land
+  // on their inbox, not a blank compose screen.
+  Future<void> _openGmailInbox() async {
+    final uri = Uri.parse('https://mail.google.com/mail/u/0/#inbox');
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Couldn't open Gmail - please check it manually.")));
+      }
     }
   }
 
@@ -477,7 +583,17 @@ class _LoginScreenState extends State<LoginScreen>
                     ),
                   ),
                 ),
-                const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: _isLoading ? null : _showForgotPasswordDialog,
+                    child: const Text(
+                      'Forgot password?',
+                      style: TextStyle(color: Colors.grey, fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   height: 50,
