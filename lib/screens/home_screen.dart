@@ -281,10 +281,15 @@ class _HomeScreenState extends State<HomeScreen> {
               // instead of swiping through everything in between.
               final _FeedSlots slots = _FeedSlots(visibleItems);
 
-              // Get a head start on the second video so even the very
-              // first swipe (before onPageChanged has ever fired) is fast.
+              // Get a head start on the next two videos so even several
+              // fast swipes in a row (before onPageChanged has caught up)
+              // stay smooth, matching TikTok/Facebook's feel, instead of
+              // just the very first swipe.
               if (visibleItems.length > 1) {
                 VideoPreloadCache.preload(visibleItems[1].videoUrl);
+              }
+              if (visibleItems.length > 2) {
+                VideoPreloadCache.preload(visibleItems[2].videoUrl);
               }
 
               if (feedItems.isEmpty) {
@@ -399,6 +404,16 @@ class _HomeScreenState extends State<HomeScreen> {
                               if (next != null) {
                                 keep.add(next.videoUrl);
                                 VideoPreloadCache.preload(next.videoUrl);
+                              }
+                              // Also start the one after that - by the time
+                              // the person lands on `next`, this one is
+                              // already partway loaded too, so back-to-back
+                              // fast swipes don't hit a spinner.
+                              final _FeedItem? nextNext =
+                                  slots.itemAt(index + 2);
+                              if (nextNext != null) {
+                                keep.add(nextNext.videoUrl);
+                                VideoPreloadCache.preload(nextNext.videoUrl);
                               }
                               final _FeedItem? prev = slots.itemAt(index - 1);
                               if (prev != null) {
@@ -534,6 +549,12 @@ class _FullScreenVideoScreenState extends State<FullScreenVideoScreen> {
             if (index + 1 < widget.items.length) {
               keep.add(widget.items[index + 1].videoUrl);
               VideoPreloadCache.preload(widget.items[index + 1].videoUrl);
+            }
+            // Also start the one after that - keeps fast, repeated swipes
+            // from ever catching up to an unstarted download.
+            if (index + 2 < widget.items.length) {
+              keep.add(widget.items[index + 2].videoUrl);
+              VideoPreloadCache.preload(widget.items[index + 2].videoUrl);
             }
             if (index - 1 >= 0) {
               keep.add(widget.items[index - 1].videoUrl);
@@ -703,10 +724,15 @@ class _ShortsScreenState extends State<ShortsScreen> {
                       return true;
                     }).toList();
 
-              // Get a head start on the second video so even the very
-              // first swipe (before onPageChanged has ever fired) is fast.
+              // Get a head start on the next two videos so even several
+              // fast swipes in a row (before onPageChanged has caught up)
+              // stay smooth, matching TikTok/Facebook's feel, instead of
+              // just the very first swipe.
               if (visibleItems.length > 1) {
                 VideoPreloadCache.preload(visibleItems[1].videoUrl);
+              }
+              if (visibleItems.length > 2) {
+                VideoPreloadCache.preload(visibleItems[2].videoUrl);
               }
 
               if (visibleItems.isEmpty) {
@@ -734,6 +760,15 @@ class _ShortsScreenState extends State<ShortsScreen> {
                               visibleItems[index + 1].videoUrl;
                           keep.add(nextUrl);
                           VideoPreloadCache.preload(nextUrl);
+                        }
+                        // Also start the one after that - keeps fast,
+                        // repeated swipes from ever catching up to an
+                        // unstarted download.
+                        if (index + 2 < visibleItems.length) {
+                          final String nextNextUrl =
+                              visibleItems[index + 2].videoUrl;
+                          keep.add(nextNextUrl);
+                          VideoPreloadCache.preload(nextNextUrl);
                         }
                         if (index - 1 >= 0) {
                           final String prevUrl =
@@ -1192,6 +1227,11 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                 (posts[1].data() as Map<String, dynamic>)['videoUrl'] ?? '';
             VideoPreloadCache.preload(nextUrl);
           }
+          if (posts.length > 2) {
+            final String nextNextUrl =
+                (posts[2].data() as Map<String, dynamic>)['videoUrl'] ?? '';
+            VideoPreloadCache.preload(nextNextUrl);
+          }
 
           return Stack(
             children: [
@@ -1209,6 +1249,13 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                     final String nextUrl = urlOf(index + 1);
                     keep.add(nextUrl);
                     VideoPreloadCache.preload(nextUrl);
+                  }
+                  // Also start the one after that - keeps fast, repeated
+                  // swipes from ever catching up to an unstarted download.
+                  if (index + 2 < posts.length) {
+                    final String nextNextUrl = urlOf(index + 2);
+                    keep.add(nextNextUrl);
+                    VideoPreloadCache.preload(nextNextUrl);
                   }
                   if (index - 1 >= 0) {
                     final String prevUrl = urlOf(index - 1);
@@ -1416,6 +1463,12 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                 '';
             VideoPreloadCache.preload(nextUrl);
           }
+          if (initialIndex + 2 < docs.length) {
+            final String nextNextUrl = (docs[initialIndex + 2].data()
+                    as Map<String, dynamic>)['videoUrl'] ??
+                '';
+            VideoPreloadCache.preload(nextNextUrl);
+          }
 
           return Stack(
             children: [
@@ -1435,6 +1488,14 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                       final String nextUrl = urlOf(index + 1);
                       keep.add(nextUrl);
                       VideoPreloadCache.preload(nextUrl);
+                    }
+                    // Also start the one after that - keeps fast, repeated
+                    // swipes from ever catching up to an unstarted
+                    // download.
+                    if (index + 2 < docs.length) {
+                      final String nextNextUrl = urlOf(index + 2);
+                      keep.add(nextNextUrl);
+                      VideoPreloadCache.preload(nextNextUrl);
                     }
                     if (index - 1 >= 0) {
                       final String prevUrl = urlOf(index - 1);
