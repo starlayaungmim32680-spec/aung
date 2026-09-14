@@ -6,6 +6,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'firebase_options.dart';
 import 'notification_service.dart';
 import 'call_kit_service.dart';
+import 'network_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 import 'screens/home_screen.dart' show flyRouteObserver;
@@ -53,6 +54,9 @@ void main() async {
   // sees a screen - running it after runApp() (instead of awaiting it
   // first) shaves the delay off every app launch.
   NotificationService.init();
+  // Same reasoning as above: starts monitoring network quality right
+  // away, but doesn't block the first frame from showing.
+  NetworkService.instance.init();
 }
 
 class FlyApp extends StatelessWidget {

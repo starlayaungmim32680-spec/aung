@@ -30,7 +30,11 @@ class VideoPreloadCache {
     try {
       final controller =
           VideoPlayerController.networkUrl(Uri.parse(playableVideoUrl(url)));
-      await controller.initialize();
+      // Without a timeout, a lost connection would leave this url stuck in
+      // _pending forever - the preload guard at the top of this function
+      // would then skip it on every future call, so it could never be
+      // retried even after the connection came back.
+      await controller.initialize().timeout(const Duration(seconds: 12));
       // Mute and pause the preloaded controller - the screen that later
       // claims it decides playback/volume/speed once it's actually shown.
       await controller.setVolume(0);

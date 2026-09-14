@@ -9,6 +9,7 @@ import 'package:audioplayers/audioplayers.dart';
 import '../notification_service.dart';
 import '../call_kit_service.dart';
 import '../active_call.dart';
+import '../network_service.dart';
 import 'video_call_screen.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
@@ -798,13 +799,89 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
               ),
             ),
 
-            // A minimized call, if there is one - tap to jump straight back
-            // into VideoCallScreen, which reclaims the still-running Room
-            // (see active_call.dart) instead of reconnecting.
-            const _MinimizedCallBar(),
+            // Network-status banner (only visible when weak/offline) and a
+            // minimized call, if there is one - stacked in that order so
+            // neither ever overlaps the other when both show at once.
+            const _TopBars(),
           ],
         ),
       ),
+    );
+  }
+}
+
+// Stacks the network-status banner above the minimized-call bar at the
+// very top of the screen. A single Positioned wraps both so they always
+// move together and never overlap each other.
+class _TopBars extends StatelessWidget {
+  const _TopBars();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _NetworkStatusBanner(),
+          _MinimizedCallBar(),
+        ],
+      ),
+    );
+  }
+}
+
+// Thin banner shown at the very top of the app whenever the connection is
+// offline or too slow to be reliable - hidden entirely when the
+// connection is good, so it adds no visual noise on a normal day.
+class _NetworkStatusBanner extends StatelessWidget {
+  const _NetworkStatusBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NetworkStatus>(
+      valueListenable: NetworkService.instance.status,
+      builder: (context, status, child) {
+        if (status == NetworkStatus.good) return const SizedBox.shrink();
+        final bool offline = status == NetworkStatus.offline;
+        return SafeArea(
+          bottom: false,
+          child: Container(
+            color: offline ? const Color(0xFFB71C1C) : const Color(0xFFB8860B),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  offline
+                      ? Icons.wifi_off_rounded
+                      : Icons
+                          .signal_wifi_statusbar_connected_no_internet_4_rounded,
+                  color: Colors.white,
+                  size: 15,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    offline
+                        ? 'No internet connection'
+                        : 'Weak connection - some things may load slowly',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -852,59 +929,56 @@ class _MinimizedCallBarState extends State<_MinimizedCallBar> {
     final String name = ActiveCall.otherName ?? 'Ongoing call';
     final DateTime since = ActiveCall.connectedAt ?? DateTime.now();
 
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        bottom: false,
-        child: Material(
-          color: const Color(0xFF24D17E),
-          child: InkWell(
-            onTap: () {
-              final String? roomName = ActiveCall.roomName;
-              final myId = FirebaseAuth.instance.currentUser?.uid;
-              if (roomName == null || myId == null) return;
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => VideoCallScreen(
-                    roomName: roomName,
-                    myName: myId,
-                    otherName: ActiveCall.otherName,
-                    otherPhoto: ActiveCall.otherPhoto,
-                    startWithCamera: ActiveCall.startWithCamera,
-                    fromIncomingCall: ActiveCall.fromIncomingCall,
+    // No outer Positioned here anymore - the parent _TopBars already
+    // positions this (and the network banner above it) together.
+    return SafeArea(
+      bottom: false,
+      child: Material(
+        color: const Color(0xFF24D17E),
+        child: InkWell(
+          onTap: () {
+            final String? roomName = ActiveCall.roomName;
+            final myId = FirebaseAuth.instance.currentUser?.uid;
+            if (roomName == null || myId == null) return;
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => VideoCallScreen(
+                  roomName: roomName,
+                  myName: myId,
+                  otherName: ActiveCall.otherName,
+                  otherPhoto: ActiveCall.otherPhoto,
+                  startWithCamera: ActiveCall.startWithCamera,
+                  fromIncomingCall: ActiveCall.fromIncomingCall,
+                ),
+              ),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                const Icon(Icons.call, color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'On call with $name',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-              );
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                children: [
-                  const Icon(Icons.call, color: Colors.white, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'On call with $name',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Text(
-                    _formatElapsed(since),
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                  ),
-                  const SizedBox(width: 6),
-                  const Icon(Icons.keyboard_arrow_up,
-                      color: Colors.white, size: 18),
-                ],
-              ),
+                Text(
+                  _formatElapsed(since),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.keyboard_arrow_up,
+                    color: Colors.white, size: 18),
+              ],
             ),
           ),
         ),

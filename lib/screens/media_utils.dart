@@ -1,8 +1,11 @@
-// Helpers for turning Cloudinary video URLs into cheap still images.
+// Helpers for turning Cloudinary video URLs into cheap still images, and
+// for picking the right playback quality for the current connection.
 //
 // Rendering a grid of thumbnails by spinning up a VideoPlayerController per
 // tile is slow, burns data, and often shows a black frame. Cloudinary will
 // hand back a JPG of any frame instead, which is far lighter.
+
+import '../network_service.dart';
 
 String cloudinaryThumbUrl(String videoUrl) {
   if (videoUrl.isEmpty) return '';
@@ -48,12 +51,18 @@ String cloudinaryThumbUrl(String videoUrl) {
   return '${head}so_50p/$tail';
 }
 
-// Inserts Cloudinary's automatic quality/codec optimization ("q_auto") into
-// a video URL, right after /upload/ and before any existing transforms
-// (like a trim's so_/eo_ offsets). This meaningfully shrinks the file
-// Cloudinary serves - usually with no visible quality loss - so playback
-// starts buffering (and therefore appears) noticeably faster, especially
-// for the very first video a user sees after opening the app.
+// Inserts a Cloudinary quality/codec transform into a video URL, right
+// after /upload/ and before any existing transforms (like a trim's
+// so_/eo_ offsets). This meaningfully shrinks the file Cloudinary serves
+// - usually with no visible quality loss on a good connection - so
+// playback starts buffering (and therefore appears) noticeably faster.
+//
+// On a weak/offline connection (see network_service.dart), asks for a
+// smaller, lower-bitrate version instead ("q_auto:low" + a 480px width
+// cap) - trading visual sharpness for a file that actually finishes
+// buffering instead of stalling. Both home_screen.dart's real playback
+// and video_preload_cache.dart's neighbor preloading go through this one
+// function, so both benefit automatically.
 String playableVideoUrl(String videoUrl) {
   if (videoUrl.isEmpty) return videoUrl;
   const String marker = '/upload/';
@@ -64,8 +73,12 @@ String playableVideoUrl(String videoUrl) {
   final String tail = videoUrl.substring(idx + marker.length);
 
   // Already has a quality transform (shouldn't normally happen, but avoid
-  // stacking a second q_auto if this URL was already processed once).
+  // stacking a second one if this URL was already processed once).
   if (tail.contains('q_auto')) return videoUrl;
 
-  return '${head}q_auto/$tail';
+  final String transform = NetworkService.instance.isSlowOrOffline
+      ? 'q_auto:low,w_480,c_limit'
+      : 'q_auto';
+
+  return '$head$transform/$tail';
 }

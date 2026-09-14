@@ -1578,6 +1578,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
 
   VideoPlayerController? _controller;
   bool _isInitialized = false;
+  // True when the video failed to load (network error/timeout) - shows a
+  // friendly error + retry button instead of a spinner that never resolves.
+  bool _hasError = false;
   bool _endTriggered = false;
   int _loopCount = 0;
   bool _showReactionPicker = false;
@@ -1690,8 +1693,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
     );
   }
 
+  // How long to wait for a fresh video fetch to finish initializing before
+  // giving up and showing a retry button instead of spinning forever. Only
+  // applies to a genuinely fresh network fetch - an already-preloaded
+  // (claimed) controller is initialized instantly, no network wait needed.
+  static const Duration _initTimeout = Duration(seconds: 12);
+
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
+
+    if (mounted && _hasError) {
+      setState(() => _hasError = false);
+    }
 
     // If this video was already preloaded while the previous one was
     // playing, reuse that controller instead of starting a fresh network
@@ -1699,27 +1712,45 @@ class _VideoPostItemState extends State<_VideoPostItem>
     VideoPlayerController? controller =
         VideoPreloadCache.claim(widget.videoUrl);
 
-    if (controller == null) {
-      controller = VideoPlayerController.networkUrl(
-          Uri.parse(playableVideoUrl(widget.videoUrl)));
-      await controller.initialize();
-    }
-    await controller.setVolume(1);
-    // Baked posts already play at the chosen speed inside the file itself
-    // (see video_effects_baker.dart) - applying videoSpeed again on top
-    // would speed it up/slow it down a second time.
-    if (!widget.effectsBaked) {
-      await controller.setPlaybackSpeed(widget.videoSpeed);
-    }
-    controller.play();
-    controller.addListener(_onVideoProgress);
+    try {
+      if (controller == null) {
+        controller = VideoPlayerController.networkUrl(
+            Uri.parse(playableVideoUrl(widget.videoUrl)));
+        await controller.initialize().timeout(_initTimeout);
+      }
+      await controller.setVolume(1);
+      // Baked posts already play at the chosen speed inside the file itself
+      // (see video_effects_baker.dart) - applying videoSpeed again on top
+      // would speed it up/slow it down a second time.
+      if (!widget.effectsBaked) {
+        await controller.setPlaybackSpeed(widget.videoSpeed);
+      }
+      controller.play();
+      controller.addListener(_onVideoProgress);
 
-    if (mounted) {
-      setState(() {
-        _controller = controller;
-        _isInitialized = true;
-      });
+      if (mounted) {
+        setState(() {
+          _controller = controller;
+          _isInitialized = true;
+        });
+      }
+    } catch (_) {
+      // Network failure, timeout, or an unreachable/corrupt stream - show
+      // a friendly error + retry button instead of the spinner staying up
+      // forever, which was the previous behavior on a lost connection.
+      controller?.dispose();
+      if (mounted) {
+        setState(() {
+          _isInitialized = false;
+          _hasError = true;
+        });
+      }
     }
+  }
+
+  // Called when the person taps the retry button in the error state.
+  void _retryVideoLoad() {
+    _initializeVideo();
   }
 
   void _onVideoProgress() {
@@ -2615,16 +2646,48 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         errorWidget: (_, __, ___) =>
                             Container(color: Colors.grey[900]),
                       ),
-                    const Center(
-                      child: SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2.5,
+                    if (_hasError)
+                      // Couldn't load (timed out / no connection) - a
+                      // spinner with no way out is worse than telling the
+                      // person plainly what happened, so this replaces the
+                      // spinner rather than layering on top of it.
+                      Center(
+                        child: GestureDetector(
+                          onTap: _retryVideoLoad,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.wifi_off_rounded,
+                                    color: Colors.white, size: 30),
+                                SizedBox(height: 8),
+                                Text(
+                                  "Couldn't load - tap to retry",
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 13),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      const Center(
+                        child: SizedBox(
+                          width: 28,
+                          height: 28,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.5,
+                          ),
                         ),
                       ),
-                    ),
                   ],
                 ),
 
