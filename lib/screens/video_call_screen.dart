@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -10,6 +11,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' show Helper;
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../call_kit_service.dart';
 import '../call_permissions.dart';
 import '../active_call.dart';
@@ -128,6 +130,16 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
   StreamSubscription<DocumentSnapshot>? _callStatusSub;
   bool _hangingUp = false;
+
+  // Plays only on the caller's own screen (never the callee's - they have
+  // their own separate incoming-call ringtone via CallKit, on their own
+  // device, before this screen even exists for them) - the repeating
+  // "beep beep beep" heard while waiting for the other side to answer.
+  // Generated in code as a WAV byte buffer rather than a bundled asset,
+  // the same approach main_navigation_screen.dart already uses for its
+  // chat notification "ding".
+  final AudioPlayer _ringbackPlayer = AudioPlayer();
+  bool _ringbackPlaying = false;
 
   // Call duration - starts counting once setCallConnected fires (see
   // _connect), ticks every second, shown in the app bar area.
@@ -329,6 +341,15 @@ class _VideoCallScreenState extends State<VideoCallScreen>
 
       await room.connect(details['url']!, details['token']!);
 
+      // I'm the one who placed this call (not someone who tapped Accept
+      // on an incoming call) and the other side hasn't joined yet - start
+      // the ring-back tone. _stopRingback() above already covers the
+      // "they answer" case; the 45s _noAnswerTimer/_endCall path and
+      // dispose() below cover "they never do".
+      if (!widget.fromIncomingCall && !_remoteJoined) {
+        _startRingback();
+      }
+
       await room.localParticipant?.setCameraEnabled(widget.startWithCamera);
       await room.localParticipant?.setMicrophoneEnabled(true);
 
@@ -473,6 +494,131 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       });
   }
 
+  // Starts the repeating ring-back tone - only meant to be called once,
+  // right after this device (the caller) successfully joins the room,
+  // before the other side has joined. Safe to call even if playback fails
+  // for some reason (e.g. no audio output available) - a missing tone is
+  // cosmetic and should never block or interrupt the call itself.
+  Future<void> _startRingback() async {
+    if (_ringbackPlaying) return;
+    _ringbackPlaying = true;
+    try {
+      // Without this, the tone plays on the same audio channel as a
+      // normal media/notification sound - which some Android skins
+      // (Vivo/Funtouch OS, Oppo/ColorOS, and others) automatically mute
+      // or duck while a voice-communication-mode call (which is exactly
+      // what LiveKit's WebRTC audio session already is) is active, since
+      // as far as that channel is concerned this looks like an unrelated
+      // app trying to play music over a call. USAGE_VOICE_COMMUNICATION_
+      // SIGNALLING is Android's own category for exactly this situation -
+      // an in-call tone like a ringback or call-waiting beep that isn't
+      // the call's voice audio itself - so it's routed and allowed
+      // through the same pipeline as the call, on every OEM, instead of
+      // being treated as a competing, muteable media sound.
+      await _ringbackPlayer.setAudioContext(
+        AudioContext(
+          android: AudioContextAndroid(
+            isSpeakerphoneOn: false,
+            stayAwake: false,
+            contentType: AndroidContentType.sonification,
+            usageType: AndroidUsageType.voiceCommunicationSignalling,
+            audioFocus: AndroidAudioFocus.none,
+          ),
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.playback,
+            options: {AVAudioSessionOptions.mixWithOthers},
+          ),
+        ),
+      );
+      await _ringbackPlayer.setReleaseMode(ReleaseMode.loop);
+      await _ringbackPlayer.play(BytesSource(_generateRingbackWav()));
+    } catch (_) {
+      // Non-critical - the call itself is unaffected either way.
+    }
+  }
+
+  void _stopRingback() {
+    if (!_ringbackPlaying) return;
+    _ringbackPlaying = false;
+    _ringbackPlayer.stop();
+  }
+
+  // Builds the ring-back tone (what a caller hears while the other side's
+  // phone is ringing) as a WAV byte buffer, entirely in code - no bundled
+  // audio asset needed, the same approach already used for the chat
+  // "ding" in main_navigation_screen.dart. Three short beeps followed by
+  // a longer pause; ReleaseMode.loop above repeats this whole clip for as
+  // long as the call keeps ringing.
+  Uint8List _generateRingbackWav() {
+    const int sampleRate = 44100;
+    const double toneFreq = 425; // a common ring-back tone frequency
+    // Alternating tone/silence durations in seconds - tone, gap, tone,
+    // gap, tone, then a longer pause before the whole clip loops.
+    const List<double> segments = [0.15, 0.15, 0.15, 0.15, 0.15, 1.6];
+
+    int totalSamples = 0;
+    for (final s in segments) {
+      totalSamples += (sampleRate * s).round();
+    }
+    final int dataSize = totalSamples * 2;
+
+    final ByteData data = ByteData(44 + dataSize);
+    int offset = 0;
+
+    void writeString(String s) {
+      for (int i = 0; i < s.length; i++) {
+        data.setUint8(offset++, s.codeUnitAt(i));
+      }
+    }
+
+    void writeUint32(int v) {
+      data.setUint32(offset, v, Endian.little);
+      offset += 4;
+    }
+
+    void writeUint16(int v) {
+      data.setUint16(offset, v, Endian.little);
+      offset += 2;
+    }
+
+    writeString('RIFF');
+    writeUint32(36 + dataSize);
+    writeString('WAVE');
+    writeString('fmt ');
+    writeUint32(16);
+    writeUint16(1);
+    writeUint16(1);
+    writeUint32(sampleRate);
+    writeUint32(sampleRate * 2);
+    writeUint16(2);
+    writeUint16(16);
+    writeString('data');
+    writeUint32(dataSize);
+
+    for (int i = 0; i < segments.length; i++) {
+      final double dur = segments[i];
+      final bool isTone = i.isEven; // segments[0,2,4] are tone, [1,3,5] silence
+      final int n = (sampleRate * dur).round();
+      for (int j = 0; j < n; j++) {
+        int v = 0;
+        if (isTone) {
+          final double t = j / sampleRate;
+          double amp = 0.5;
+          const double fade = 0.01;
+          if (t < fade) amp *= t / fade;
+          if (t > dur - fade) amp *= (dur - t) / fade;
+          v = (sin(2 * pi * toneFreq * t) * amp * 32767).round();
+        }
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        data.setInt16(offset, v, Endian.little);
+        offset += 2;
+      }
+    }
+
+    return data.buffer.asUint8List();
+  }
+
   void _refreshRemote() {
     final room = _room;
     if (room == null) return;
@@ -501,6 +647,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       });
       if (joined) {
         _noAnswerTimer?.cancel();
+        _stopRingback();
       }
     }
   }
@@ -672,6 +819,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   }
 
   Future<void> _leaveCall() async {
+    _stopRingback();
     // Dismisses CallKit's own native "ongoing call" notification/UI - the
     // Firestore status update above closes this screen, but that's a
     // separate thing from CallKit's own system-level call session, which
@@ -753,6 +901,8 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _stopRingback();
+    _ringbackPlayer.dispose();
     _callStatusSub?.cancel();
     _durationTimer?.cancel();
     _noAnswerTimer?.cancel();
