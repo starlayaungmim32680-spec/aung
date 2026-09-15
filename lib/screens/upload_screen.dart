@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -16,6 +17,7 @@ import 'sound_sync_sheet.dart';
 import 'content_filter.dart';
 import 'package:flutter_compress/flutter_compress.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
+import '../network_service.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -65,6 +67,10 @@ class _UploadScreenState extends State<UploadScreen> {
   String _filterType = 'none';
   List<TextOverlayData> _textOverlays = [];
   bool _isUploading = false;
+  // True only during the short pause before the one-shot auto-retry (see
+  // _uploadPost's catch block) - lets the progress UI say "retrying"
+  // instead of the generic "Preparing..." during that specific moment.
+  bool _isRetrying = false;
   // When true (default), non-fullscreen-aspect videos get a blurred,
   // zoomed-in copy of themselves filling the empty space behind them
   // (matches how the video's own colors were already showing through).
@@ -422,7 +428,10 @@ class _UploadScreenState extends State<UploadScreen> {
     }
   }
 
-  Future<void> _uploadPost() async {
+  // [isAutoRetry] is only ever passed true by this function's own one-shot
+  // auto-retry (see the catch block below) - never set it when calling
+  // this from a button press.
+  Future<void> _uploadPost({bool isAutoRetry = false}) async {
     if (_videoBytes == null) {
       setState(() {
         _errorMessage = 'Please choose a video first';
@@ -446,6 +455,21 @@ class _UploadScreenState extends State<UploadScreen> {
       setState(() {
         _errorMessage =
             'Your caption contains inappropriate language. Please edit it before uploading.';
+      });
+      return;
+    }
+
+    // No point even trying (and no point burning battery/time waiting on
+    // a timeout) if there's plainly no connection at all - fail fast with
+    // a friendly message instead. A "weak" connection is still worth
+    // attempting - it'll just be slower, and the auto-retry below plus
+    // the Post button (which keeps the picked video/caption exactly as
+    // they are) cover a mid-upload drop.
+    if (!isAutoRetry &&
+        NetworkService.instance.status.value == NetworkStatus.offline) {
+      setState(() {
+        _errorMessage =
+            "No internet connection. Please check your connection and tap Post to try again.";
       });
       return;
     }
@@ -558,7 +582,7 @@ class _UploadScreenState extends State<UploadScreen> {
       );
 
       final http.StreamedResponse streamedResponse =
-          await client.send(streamed);
+          await client.send(streamed).timeout(const Duration(seconds: 120));
       final String responseBody = await streamedResponse.stream.bytesToString();
 
       if (streamedResponse.statusCode != 200) {
@@ -733,16 +757,58 @@ class _UploadScreenState extends State<UploadScreen> {
         navigateToHomeSignal.value++;
       }
     } catch (e) {
+      final bool isNetworkIssue = _isNetworkError(e);
+      // One quiet automatic retry for a connectivity blip - covers the
+      // common case (a brief dip that's already resolved by the time
+      // this fires) without silently re-sending a large video file over
+      // and over on a connection that's genuinely down.
+      if (isNetworkIssue && !isAutoRetry) {
+        if (mounted) {
+          setState(() {
+            _uploadProgress = 0;
+            _errorMessage = null;
+            _isRetrying = true;
+          });
+        }
+        await Future.delayed(const Duration(seconds: 3));
+        if (mounted) {
+          setState(() => _isRetrying = false);
+          await _uploadPost(isAutoRetry: true);
+        }
+        return;
+      }
       if (mounted) {
         setState(() {
           _isUploading = false;
           _uploadProgress = 0;
-          _errorMessage = 'Upload failed: $e';
+          // A plain connectivity failure gets a message that points at
+          // the actual cause instead of a raw exception string - the
+          // video and caption are untouched, so tapping Post again (or
+          // this function's own auto-retry above) just resumes from
+          // scratch with everything already filled in.
+          _errorMessage = isNetworkIssue
+              ? "Couldn't reach the internet. Check your connection and tap Post to try again."
+              : 'Upload failed: $e';
         });
       }
     } finally {
       client.close();
     }
+  }
+
+  // True for a plain connectivity failure (dropped/absent connection, DNS
+  // failure, or a server that didn't respond in time) - as opposed to
+  // something the server explicitly rejected (moderation, a malformed
+  // request), which retrying the exact same request would never fix.
+  bool _isNetworkError(Object e) {
+    if (e is SocketException || e is TimeoutException) return true;
+    if (e is http.ClientException) return true;
+    final String s = e.toString();
+    return s.contains('SocketException') ||
+        s.contains('Failed host lookup') ||
+        s.contains('Connection closed') ||
+        s.contains('Connection reset') ||
+        s.contains('TimeoutException');
   }
 
   @override
@@ -1120,9 +1186,11 @@ class _UploadScreenState extends State<UploadScreen> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  _uploadProgress > 0
-                      ? 'Uploading... ${(_uploadProgress * 100).toStringAsFixed(0)}%'
-                      : 'Preparing...',
+                  _isRetrying
+                      ? 'Connection issue - retrying...'
+                      : _uploadProgress > 0
+                          ? 'Uploading... ${(_uploadProgress * 100).toStringAsFixed(0)}%'
+                          : 'Preparing...',
                   style: const TextStyle(color: Colors.grey),
                 ),
                 if (_uploadProgress >= 1) ...[
@@ -1146,9 +1214,10 @@ class _UploadScreenState extends State<UploadScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                child: const Text(
-                  'Post',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                child: Text(
+                  _errorMessage != null ? 'Retry Upload' : 'Post',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold),
                 ),
               ),
             ),
