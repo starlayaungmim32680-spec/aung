@@ -15,6 +15,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:gal/gal.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import '../video_disk_cache.dart';
 import 'notifications_screen.dart';
 import 'public_profile_screen.dart';
 import 'story_screen.dart';
@@ -1767,6 +1769,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
       setState(() => _hasError = false);
     }
 
+    final String playUrl = playableVideoUrl(widget.videoUrl);
+
     // If this video was already preloaded while the previous one was
     // playing, reuse that controller instead of starting a fresh network
     // fetch — this is what makes swiping to the next video feel instant.
@@ -1774,11 +1778,41 @@ class _VideoPostItemState extends State<_VideoPostItem>
         VideoPreloadCache.claim(widget.videoUrl);
 
     try {
+      // True once playback is actually coming off a local file already on
+      // disk from a previous watch - if so, there's no need to re-save it
+      // (it's already there) and this view worked with zero network use.
+      bool playingFromDisk = false;
+
       if (controller == null) {
-        controller = VideoPlayerController.networkUrl(
-            Uri.parse(playableVideoUrl(widget.videoUrl)));
+        // A video watched before may already be sitting on disk (see
+        // VideoDiskCache) - check that first so a re-watch, including with
+        // no connection at all, plays instantly instead of re-streaming.
+        File? cachedFile;
+        try {
+          final FileInfo? info =
+              await VideoDiskCache.instance.getFileFromCache(widget.videoUrl);
+          cachedFile = info?.file;
+        } catch (_) {
+          // Cache lookup itself failing just means falling through to a
+          // normal network fetch below - never worth surfacing as an error.
+        }
+
+        if (cachedFile != null && await cachedFile.exists()) {
+          controller = VideoPlayerController.file(cachedFile);
+          playingFromDisk = true;
+        } else {
+          controller = VideoPlayerController.networkUrl(Uri.parse(playUrl));
+        }
         await controller.initialize().timeout(_initTimeout);
       }
+
+      // This video is now actually being watched - save a copy to disk in
+      // the background (unless it's already there) so next time it can
+      // replay fully offline.
+      if (!playingFromDisk) {
+        _cacheVideoInBackground(playUrl, cacheKey: widget.videoUrl);
+      }
+
       await controller.setVolume(1);
       // Baked posts already play at the chosen speed inside the file itself
       // (see video_effects_baker.dart) - applying videoSpeed again on top
@@ -1807,6 +1841,30 @@ class _VideoPostItemState extends State<_VideoPostItem>
         });
       }
     }
+  }
+
+  // Fire-and-forget: downloads this video to disk for offline replay next
+  // time. Stored under [cacheKey] - the original, unmodified video URL -
+  // rather than [url] itself, since [url] can be either the normal or the
+  // network-adaptive low-quality Cloudinary transform (see
+  // playableVideoUrl in media_utils.dart) depending on the connection at
+  // the moment this is called. Without a stable key, a video cached while
+  // online (normal-quality URL) would silently miss the cache when looked
+  // up again later while offline (low-quality URL) - looking like caching
+  // never worked at all.
+  //
+  // Never awaited by the caller and always swallows its own errors, so a
+  // slow connection or a caching failure can never delay or disrupt the
+  // playback that's already happening.
+  void _cacheVideoInBackground(String url, {required String cacheKey}) {
+    () async {
+      try {
+        await VideoDiskCache.instance.downloadFile(url, key: cacheKey);
+      } catch (_) {
+        // Not being able to cache a video isn't worth surfacing - it just
+        // streams again next time instead of playing from disk.
+      }
+    }();
   }
 
   // Called when the person taps the retry button in the error state.
