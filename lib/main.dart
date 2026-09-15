@@ -44,6 +44,15 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  // Firestore already caches reads and queues writes locally on
+  // Android/iOS by default - this just makes that explicit and raises the
+  // cache limit past its default 40MB, so a longer scroll through the
+  // feed or chat history stays available (read-only) when the connection
+  // drops, instead of the oldest of it quietly getting evicted first.
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+  );
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   CallKitService.navigatorKey = _navigatorKey;
   // Registered once, here, so it's ready to catch an Accept/Decline tap

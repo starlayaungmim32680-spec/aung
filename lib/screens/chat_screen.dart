@@ -1013,6 +1013,15 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                     final msg = messages[index].data() as Map<String, dynamic>;
                     final String messageId = messages[index].id;
                     final bool isMine = msg['senderId'] == myId;
+                    // True while this message only exists in the local
+                    // offline queue and hasn't reached Firestore's servers
+                    // yet - Firestore already queues the write and sends it
+                    // the moment the connection comes back on its own; this
+                    // just surfaces that queued state in the UI instead of
+                    // silently showing "Sent" for a message that hasn't
+                    // actually left the phone.
+                    final bool isPending =
+                        messages[index].metadata.hasPendingWrites;
                     final String type = msg['type'] ?? 'text';
                     final String text = msg['text'] ?? '';
                     final String imageUrl = msg['imageUrl'] ?? '';
@@ -1112,22 +1121,32 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Icon(
-                                  seen
-                                      ? Icons.visibility
-                                      : Icons.visibility_off,
+                                  isPending
+                                      ? Icons.access_time_rounded
+                                      : seen
+                                          ? Icons.visibility
+                                          : Icons.visibility_off,
                                   size: 14,
-                                  color: seen
-                                      ? const Color(0xFF3A8DFF)
-                                      : Colors.grey,
+                                  color: isPending
+                                      ? Colors.grey
+                                      : seen
+                                          ? const Color(0xFF3A8DFF)
+                                          : Colors.grey,
                                 ),
                                 const SizedBox(width: 3),
                                 Text(
-                                  seen ? 'Seen' : 'Sent',
+                                  isPending
+                                      ? 'Sending...'
+                                      : seen
+                                          ? 'Seen'
+                                          : 'Sent',
                                   style: TextStyle(
                                     fontSize: 10,
-                                    color: seen
-                                        ? const Color(0xFF3A8DFF)
-                                        : Colors.grey,
+                                    color: isPending
+                                        ? Colors.grey
+                                        : seen
+                                            ? const Color(0xFF3A8DFF)
+                                            : Colors.grey,
                                   ),
                                 ),
                               ],
