@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:livekit_client/livekit_client.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart' show Helper;
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -383,7 +382,18 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       // earpiece, like a normal phone call.
       if (widget.startWithCamera) {
         _speakerOn = true;
-        Helper.setSpeakerphoneOn(true).catchError((_) {});
+        // LiveKit's AudioManager owns audio routing once connected (it
+        // disables flutter_webrtc's own routing entirely), so
+        // Helper.setSpeakerphoneOn - the old flutter_webrtc API - is a
+        // silent no-op here: audibly nothing happens even though the
+        // call succeeds without error. force: true also matters for a
+        // video call specifically - without it, a connected wired/
+        // Bluetooth headset would keep priority over the speaker even
+        // though a video call's whole point is being held out, not to
+        // an ear/headset.
+        AudioManager.instance
+            .setSpeakerOutputPreferred(true, force: true)
+            .catchError((_) {});
       }
       // Keeps the CPU from sleeping for the length of the call - helps
       // the connection survive Android's background throttling if the
@@ -763,7 +773,13 @@ class _VideoCallScreenState extends State<VideoCallScreen>
   Future<void> _toggleSpeaker() async {
     final next = !_speakerOn;
     try {
-      await Helper.setSpeakerphoneOn(next);
+      // force: true when turning the speaker ON, so tapping this button
+      // always audibly does something even with a headset connected -
+      // matches the person explicitly asking for the speaker, same
+      // reasoning as the video-call default above. Turning it back OFF
+      // doesn't force anything, so a connected headset still naturally
+      // takes over as it should.
+      await AudioManager.instance.setSpeakerOutputPreferred(next, force: next);
       setState(() => _speakerOn = next);
     } catch (_) {
       // Not available on this device - leaves the phone on whichever
