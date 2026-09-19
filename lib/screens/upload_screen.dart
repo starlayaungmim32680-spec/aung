@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'text_overlay_style.dart';
@@ -50,9 +51,11 @@ class UploadScreen extends StatefulWidget {
 }
 
 class _UploadScreenState extends State<UploadScreen> {
-  // Cloudinary configuration
-  static const String _cloudName = 'dwx402gy4';
-  static const String _uploadPreset = 'fly_unsigned';
+  // Bunny Stream configuration. The Library ID and CDN hostname are not
+  // secret (they're just addresses), but the actual API key never lives
+  // here - see the Worker's /create-video endpoint, which is the only
+  // thing that ever touches it.
+  static const String _bunnyCdnHostname = 'vz-a6ab9346-730.b-cdn.net';
 
   final TextEditingController _captionController = TextEditingController();
   Uint8List? _videoBytes;
@@ -459,6 +462,30 @@ class _UploadScreenState extends State<UploadScreen> {
       return;
     }
 
+    // Borrowed Sound was implemented as a Cloudinary URL transform (see
+    // _buildSoundUrl below) applied after upload - Bunny Stream has no
+    // equivalent yet, so for now a video using it is blocked here with a
+    // clear message rather than silently posting with its original audio.
+    //
+    // Trim is NOT gated here even though it has the same Cloudinary-only
+    // limitation: unlike Borrowed Sound, trimming isn't an optional
+    // choice - every video, from either the camera or the gallery, is
+    // routed through TrimEditorScreen with no way to skip it (see
+    // _pickAndTrimVideo above), so gating on it here would block every
+    // single upload. _buildTrimmedUrl (below) already no-ops safely on a
+    // non-Cloudinary URL, so the practical effect for now is just that
+    // the trim selection has no effect - the full video gets posted -
+    // rather than anything breaking.
+    final bool usedBorrowedSound =
+        _selectedSoundId != null && _selectedSoundId!.isNotEmpty;
+    if (usedBorrowedSound) {
+      setState(() {
+        _errorMessage =
+            'Using a borrowed sound is temporarily unavailable. Please remove it and try again.';
+      });
+      return;
+    }
+
     // No point even trying (and no point burning battery/time waiting on
     // a timeout) if there's plainly no connection at all - fail fast with
     // a friendly message instead. A "weak" connection is still worth
@@ -510,18 +537,18 @@ class _UploadScreenState extends State<UploadScreen> {
     // Shrink the video before it ever leaves the phone - phones routinely
     // shoot at bitrates/resolutions far higher than a short vertical clip
     // needs, and every extra megabyte here costs upload data for the
-    // person posting, storage on Cloudinary, and delivery bandwidth for
-    // every single view afterwards. Shown as "Preparing..." in the UI
-    // (see the progress section below) since _uploadProgress is still 0
-    // at this point. Falls back to the original bytes if compression
-    // fails for any reason, so a bad video/format never blocks posting.
+    // person posting, storage on Bunny, and delivery bandwidth for every
+    // single view afterwards. Shown as "Preparing..." in the UI (see the
+    // progress section below) since _uploadProgress is still 0 at this
+    // point. Falls back to the original file/bytes if compression fails
+    // for any reason, so a bad video/format never blocks posting.
     Uint8List uploadBytes = _videoBytes!;
-    final File? sourceFile = _videoFile;
-    if (sourceFile != null) {
+    File? uploadFile = _videoFile;
+    if (uploadFile != null) {
       try {
         final VideoCompressResult compressed =
             await FlutterCompress.instance.compress(
-          sourceFile.path,
+          uploadFile.path,
           const VideoCompressConfig(
             qualityPercent: 60,
             maxWidth: 1280,
@@ -529,7 +556,8 @@ class _UploadScreenState extends State<UploadScreen> {
             keepOriginalIfLarger: true,
           ),
         );
-        uploadBytes = await File(compressed.outputPath).readAsBytes();
+        uploadFile = File(compressed.outputPath);
+        uploadBytes = await uploadFile.readAsBytes();
       } catch (e) {
         // Keep going with the uncompressed bytes - a compression failure
         // shouldn't stop someone from posting.
@@ -538,70 +566,97 @@ class _UploadScreenState extends State<UploadScreen> {
 
     final http.Client client = http.Client();
     try {
-      final Uri uploadUrl =
-          Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/video/upload');
+      // Safety net for the rare case there's no on-disk file at all (only
+      // ever expected if _videoFile was somehow never set) - XFile needs
+      // a real path, so the bytes get written out to one.
+      if (uploadFile == null) {
+        uploadFile = File(
+            '${Directory.systemTemp.path}/fly_upload_${DateTime.now().millisecondsSinceEpoch}.mp4');
+        await uploadFile.writeAsBytes(uploadBytes);
+      }
 
-      final http.MultipartRequest request =
-          http.MultipartRequest('POST', uploadUrl)
-            ..fields['upload_preset'] = _uploadPreset
-            ..files.add(
-              http.MultipartFile.fromBytes(
-                'file',
-                uploadBytes,
-                filename: 'video.mp4',
-              ),
-            );
+      // Catch an empty/corrupt local file HERE, on the phone, with a
+      // message that actually says what's wrong - rather than uploading
+      // nothing and only discovering it later as a stuck 0-byte,
+      // "Processing" video on Bunny's own dashboard with no local error
+      // at all (which is exactly what silently happened before this
+      // check existed).
+      final int localFileSize = await uploadFile.length();
+      if (localFileSize == 0) {
+        throw Exception(
+            'Video file is empty on this device (0 bytes) - compression or the original recording likely failed. Path: ${uploadFile.path}');
+      }
 
-      // Send the body ourselves so the bytes can be counted on the way
-      // out - MultipartRequest.send() gives no progress at all, which
-      // made big uploads look like the app had frozen.
-      //
-      // finalize() must come first: that's where MultipartRequest sets
-      // its "multipart/form-data; boundary=..." content-type header, and
-      // without that header the server can't parse the body at all.
-      final http.ByteStream bodyStream = request.finalize();
-      final int totalBytes = request.contentLength;
+      // Upload straight to our Worker's /upload-video endpoint, which
+      // creates the Bunny Stream video slot and relays these exact bytes
+      // to it in one pass-through call (see livekit_token_worker.js) -
+      // this replaces an earlier TUS-based attempt (a separate
+      // /create-video call plus a client-side TUS library) that turned
+      // out to silently produce 0-byte videos on Bunny in practice. A
+      // plain streamed POST has far less protocol surface to go wrong,
+      // and is the same reliable approach this screen already used for
+      // Cloudinary before today.
+      final Uri uploadUri = Uri.parse('$kTokenServerUrl/upload-video');
+      final int totalBytes = uploadBytes.length;
       int sentBytes = 0;
 
-      final http.StreamedRequest streamed =
-          http.StreamedRequest('POST', uploadUrl)
-            ..headers.addAll(request.headers)
-            ..contentLength = totalBytes;
+      final http.StreamedRequest streamed = http.StreamedRequest(
+        'POST',
+        uploadUri,
+      )
+        ..headers['X-App-Secret'] = kAppSharedSecret
+        // A fixed, plain-ASCII title only - HTTP header values can't
+        // contain non-ASCII text (emoji, Burmese script, etc.), and the
+        // real caption is already saved separately in this post's
+        // Firestore document; this is only ever seen by Ko himself in
+        // Bunny's own dashboard, never inside the app.
+        ..headers['X-Video-Title'] = 'Fly video'
+        ..headers['Content-Type'] = 'video/mp4'
+        ..contentLength = totalBytes;
 
-      bodyStream.listen(
-        (List<int> chunk) {
-          streamed.sink.add(chunk);
-          sentBytes += chunk.length;
-          if (mounted && totalBytes > 0) {
-            setState(() => _uploadProgress = sentBytes / totalBytes);
+      // Feeds the sink in modest slices so the progress bar actually
+      // moves instead of jumping straight from 0 to 100 - mirrors the
+      // chunked-feed approach this screen already used for Cloudinary.
+      () async {
+        const int sliceSize = 256 * 1024;
+        for (int offset = 0; offset < uploadBytes.length; offset += sliceSize) {
+          final int end = offset + sliceSize < uploadBytes.length
+              ? offset + sliceSize
+              : uploadBytes.length;
+          streamed.sink.add(uploadBytes.sublist(offset, end));
+          sentBytes = end;
+          if (mounted) {
+            setState(() =>
+                _uploadProgress = (sentBytes / totalBytes).clamp(0.0, 1.0));
           }
-        },
-        onDone: () => streamed.sink.close(),
-        onError: (Object e) => streamed.sink.addError(e),
-        cancelOnError: true,
-      );
+        }
+        await streamed.sink.close();
+      }();
 
       final http.StreamedResponse streamedResponse =
           await client.send(streamed).timeout(const Duration(seconds: 120));
       final String responseBody = await streamedResponse.stream.bytesToString();
 
       if (streamedResponse.statusCode != 200) {
-        throw Exception('Cloudinary upload failed: $responseBody');
+        throw Exception('Bunny upload failed: $responseBody');
       }
 
-      final Map<String, dynamic> data = jsonDecode(responseBody);
-      String videoUrl = data['secure_url'];
+      final Map<String, dynamic> uploadResult = jsonDecode(responseBody);
+      final String bunnyVideoId = uploadResult['videoId'];
 
-      // Apply trim transformation if the user selected a trim range
-      if (_trimStartSeconds != null && _trimEndSeconds != null) {
-        videoUrl =
-            _buildTrimmedUrl(videoUrl, _trimStartSeconds!, _trimEndSeconds!);
-      }
+      // Bunny transcodes to an adaptive-bitrate HLS ladder automatically -
+      // video_player's underlying ExoPlayer/AVPlayer picks whatever
+      // rendition actually fits the connection in real time, so (unlike
+      // Cloudinary's plain-file delivery) no manual network-based URL
+      // swapping is needed here the way media_utils.dart's
+      // playableVideoUrl() does for older Cloudinary posts.
+      String videoUrl =
+          'https://$_bunnyCdnHostname/$bunnyVideoId/playlist.m3u8';
 
       // Multilingual video content check via the OpenAI-backed moderation
       // service (fly-moderation on Render) - this catches inappropriate
       // video content the local caption word-list can't, in any language.
-      // Runs after the Cloudinary upload since it needs the hosted video's
+      // Runs after the Bunny upload since it needs the hosted video's
       // URL to sample frames from.
       if (mounted) {
         setState(() => _uploadProgress = 1);

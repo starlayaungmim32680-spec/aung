@@ -9,6 +9,17 @@ import '../network_service.dart';
 
 String cloudinaryThumbUrl(String videoUrl) {
   if (videoUrl.isEmpty) return '';
+
+  // A Bunny Stream video (see upload_screen.dart) - its auto-generated
+  // thumbnail lives at a fixed sibling path next to the HLS playlist,
+  // not something built by re-extensioning the video URL the way
+  // Cloudinary's is below.
+  if (videoUrl.contains('b-cdn.net')) {
+    final int lastSlash = videoUrl.lastIndexOf('/');
+    if (lastSlash == -1) return videoUrl;
+    return '${videoUrl.substring(0, lastSlash)}/thumbnail.jpg';
+  }
+
   String url = videoUrl;
 
   // Asking for an image extension makes Cloudinary return a still frame.

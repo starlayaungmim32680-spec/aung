@@ -1783,18 +1783,36 @@ class _VideoPostItemState extends State<_VideoPostItem>
       // (it's already there) and this view worked with zero network use.
       bool playingFromDisk = false;
 
+      // An HLS video (Bunny Stream's playlist.m3u8 - see media_utils.dart)
+      // is a small text manifest that references separate segment files
+      // by URL, not a single self-contained video file the way a plain
+      // Cloudinary mp4 was. Caching just that manifest as a local file
+      // doesn't provide real offline playback (the segments still live
+      // on the CDN) and actively breaks playback when reloaded from
+      // disk, since the manifest's relative segment references can't
+      // resolve against a local file:// path the way they resolve
+      // against the real CDN URL. So HLS videos always stream directly
+      // and skip VideoDiskCache entirely - true offline HLS caching
+      // would need downloading every segment and rewriting the manifest
+      // to point at them locally, which is a separate, bigger feature.
+      final bool isHlsVideo = widget.videoUrl.contains('.m3u8');
+
       if (controller == null) {
-        // A video watched before may already be sitting on disk (see
-        // VideoDiskCache) - check that first so a re-watch, including with
-        // no connection at all, plays instantly instead of re-streaming.
         File? cachedFile;
-        try {
-          final FileInfo? info =
-              await VideoDiskCache.instance.getFileFromCache(widget.videoUrl);
-          cachedFile = info?.file;
-        } catch (_) {
-          // Cache lookup itself failing just means falling through to a
-          // normal network fetch below - never worth surfacing as an error.
+        if (!isHlsVideo) {
+          // A video watched before may already be sitting on disk (see
+          // VideoDiskCache) - check that first so a re-watch, including
+          // with no connection at all, plays instantly instead of
+          // re-streaming.
+          try {
+            final FileInfo? info =
+                await VideoDiskCache.instance.getFileFromCache(widget.videoUrl);
+            cachedFile = info?.file;
+          } catch (_) {
+            // Cache lookup itself failing just means falling through to a
+            // normal network fetch below - never worth surfacing as an
+            // error.
+          }
         }
 
         if (cachedFile != null && await cachedFile.exists()) {
@@ -1807,9 +1825,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
       }
 
       // This video is now actually being watched - save a copy to disk in
-      // the background (unless it's already there) so next time it can
-      // replay fully offline.
-      if (!playingFromDisk) {
+      // the background (unless it's already there, or it's HLS - see
+      // above) so next time it can replay fully offline.
+      if (!playingFromDisk && !isHlsVideo) {
         _cacheVideoInBackground(playUrl, cacheKey: widget.videoUrl);
       }
 
