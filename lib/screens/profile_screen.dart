@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -11,6 +10,7 @@ import 'home_screen.dart';
 import 'media_utils.dart';
 import 'wallet_screen.dart';
 import 'settings_screen.dart';
+import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -1066,9 +1066,11 @@ class EditProfileScreen extends StatefulWidget {
 }
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
-  // Cloudinary configuration (image endpoint)
-  static const String _cloudName = 'dwx402gy4';
-  static const String _uploadPreset = 'fly_unsigned';
+  // Bunny Storage CDN hostname (not secret - just an address). The
+  // storage zone name and its password are Cloudflare Worker secrets -
+  // see the Worker's /upload-image handler in livekit_token_worker.js.
+  static const String _bunnyImagesCdnHostname =
+      'fly-images-aungdev756617.b-cdn.net';
 
   late final TextEditingController _nameController;
   Uint8List? _pickedImageBytes;
@@ -1159,25 +1161,36 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-  // Uploads the picked image to Cloudinary and returns its URL
+  // Uploads the picked image to Bunny Storage (via the Worker's
+  // /upload-image pass-through - see livekit_token_worker.js) and returns
+  // its public URL.
   Future<String?> _uploadImage(Uint8List bytes) async {
-    final Uri uploadUrl =
-        Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/image/upload');
+    // A short, ASCII-only, already-unique file name - the Worker rejects
+    // anything else, since an HTTP header value can't safely carry
+    // arbitrary Unicode (this bit Fly's video-title header before - see
+    // upload_screen.dart). Keyed by uid + timestamp so re-uploading a new
+    // profile photo never collides with (or overwrites) an old one.
+    final String uid = FirebaseAuth.instance.currentUser?.uid ?? 'anon';
+    final String fileName =
+        '${uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-    final request = http.MultipartRequest('POST', uploadUrl)
-      ..fields['upload_preset'] = _uploadPreset
-      ..files.add(
-          http.MultipartFile.fromBytes('file', bytes, filename: 'profile.jpg'));
+    final http.Response response = await http
+        .post(
+          Uri.parse('$kTokenServerUrl/upload-image'),
+          headers: {
+            'X-App-Secret': kAppSharedSecret,
+            'X-File-Name': fileName,
+            'Content-Type': 'image/jpeg',
+          },
+          body: bytes,
+        )
+        .timeout(const Duration(seconds: 60));
 
-    final streamedResponse = await request.send();
-    final responseBody = await streamedResponse.stream.bytesToString();
-
-    if (streamedResponse.statusCode != 200) {
-      throw Exception('Image upload failed: $responseBody');
+    if (response.statusCode != 200) {
+      throw Exception('Image upload failed: ${response.body}');
     }
 
-    final Map<String, dynamic> data = jsonDecode(responseBody);
-    return data['secure_url'] as String?;
+    return 'https://$_bunnyImagesCdnHostname/$fileName';
   }
 
   Future<void> _saveProfile() async {
