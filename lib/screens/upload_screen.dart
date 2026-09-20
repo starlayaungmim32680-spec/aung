@@ -17,6 +17,7 @@ import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'content_filter.dart';
 import 'package:flutter_compress/flutter_compress.dart';
+import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
 
@@ -344,18 +345,6 @@ class _UploadScreenState extends State<UploadScreen> {
     });
   }
 
-  // Inserts a Cloudinary trim transformation (so_/eo_) right after "/upload/"
-  String _buildTrimmedUrl(
-      String originalUrl, int startSeconds, int endSeconds) {
-    const String marker = '/upload/';
-    final int index = originalUrl.indexOf(marker);
-    if (index == -1) return originalUrl;
-
-    final String before = originalUrl.substring(0, index + marker.length);
-    final String after = originalUrl.substring(index + marker.length);
-    return '${before}so_$startSeconds,eo_$endSeconds/$after';
-  }
-
   // Pulls the Cloudinary public id out of a delivery URL, e.g.
   // ".../upload/so_0,eo_15/v1784906524/scfmvz1oo1zs9tttppd3.mp4"
   // -> "scfmvz1oo1zs9tttppd3". That id is what an audio overlay needs.
@@ -467,15 +456,13 @@ class _UploadScreenState extends State<UploadScreen> {
     // equivalent yet, so for now a video using it is blocked here with a
     // clear message rather than silently posting with its original audio.
     //
-    // Trim is NOT gated here even though it has the same Cloudinary-only
-    // limitation: unlike Borrowed Sound, trimming isn't an optional
-    // choice - every video, from either the camera or the gallery, is
-    // routed through TrimEditorScreen with no way to skip it (see
+    // Trim is NOT gated here (unlike Borrowed Sound, which is optional):
+    // every video, from either the camera or the gallery, is routed
+    // through TrimEditorScreen with no way to skip it (see
     // _pickAndTrimVideo above), so gating on it here would block every
-    // single upload. _buildTrimmedUrl (below) already no-ops safely on a
-    // non-Cloudinary URL, so the practical effect for now is just that
-    // the trim selection has no effect - the full video gets posted -
-    // rather than anything breaking.
+    // single upload. Trim is instead handled by physically cutting the
+    // video file to the selected range before compression (see below) -
+    // no gate needed for it.
     final bool usedBorrowedSound =
         _selectedSoundId != null && _selectedSoundId!.isNotEmpty;
     if (usedBorrowedSound) {
@@ -534,6 +521,42 @@ class _UploadScreenState extends State<UploadScreen> {
       _errorMessage = null;
     });
 
+    // Physically cut the video down to the selected trim range, if one was
+    // picked, before anything else - this used to be a Cloudinary URL
+    // transform applied AFTER a full-length upload (so the untrimmed video
+    // was uploaded every time regardless); doing the real cut here first
+    // means less data to compress and upload, and it's what actually makes
+    // "Trim" do something now that Bunny has no server-side URL-transform
+    // equivalent. Uses platform-native MediaExtractor+MediaMuxer (Android)
+    // / AVFoundation (iOS) via video_trimmer_2 - deliberately not
+    // flutter_native_video_trimmer (tried first), which lost the video's
+    // rotation metadata during its Media3-based trim, making trimmed
+    // videos render tiny/wrong-aspect-ratio in playback; video_trimmer_2's
+    // 0.1.3 release specifically fixed rotation-metadata handling.
+    // Deliberately not FFmpeg either way - the actively-maintained
+    // FFmpeg-for-Flutter forks are GPL-licensed, a real licensing risk for
+    // a closed-source commercial app.
+    Uint8List uploadBytes = _videoBytes!;
+    File? uploadFile = _videoFile;
+    final bool hasRealTrimRange = _trimStartSeconds != null &&
+        _trimEndSeconds != null &&
+        _trimEndSeconds! > _trimStartSeconds!;
+    if (uploadFile != null && hasRealTrimRange) {
+      try {
+        final Trimmer trimmer = Trimmer();
+        final File trimmedVideo = await trimmer.trimVideo(
+          file: uploadFile,
+          startMs: _trimStartSeconds! * 1000,
+          endMs: _trimEndSeconds! * 1000,
+        );
+        uploadFile = trimmedVideo;
+      } catch (e) {
+        // Keep going with the untrimmed file - a trim failure shouldn't
+        // stop someone from posting; it just means the full video goes up
+        // instead of the selected range, same as the previous behavior.
+      }
+    }
+
     // Shrink the video before it ever leaves the phone - phones routinely
     // shoot at bitrates/resolutions far higher than a short vertical clip
     // needs, and every extra megabyte here costs upload data for the
@@ -542,8 +565,6 @@ class _UploadScreenState extends State<UploadScreen> {
     // progress section below) since _uploadProgress is still 0 at this
     // point. Falls back to the original file/bytes if compression fails
     // for any reason, so a bad video/format never blocks posting.
-    Uint8List uploadBytes = _videoBytes!;
-    File? uploadFile = _videoFile;
     if (uploadFile != null) {
       try {
         final VideoCompressResult compressed =
@@ -567,8 +588,8 @@ class _UploadScreenState extends State<UploadScreen> {
     final http.Client client = http.Client();
     try {
       // Safety net for the rare case there's no on-disk file at all (only
-      // ever expected if _videoFile was somehow never set) - XFile needs
-      // a real path, so the bytes get written out to one.
+      // ever expected if _videoFile was somehow never set) - the sanity
+      // check just below needs a real file to call .length() on.
       if (uploadFile == null) {
         uploadFile = File(
             '${Directory.systemTemp.path}/fly_upload_${DateTime.now().millisecondsSinceEpoch}.mp4');
