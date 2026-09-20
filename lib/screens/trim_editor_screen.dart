@@ -16,8 +16,16 @@ class TrimResult {
 
 class TrimEditorScreen extends StatefulWidget {
   final File videoFile;
+  // Defaults to 90s, matching the existing behavior for regular post
+  // uploads. Story uploads pass 15 here, capping how much of a longer
+  // video someone can select - see story_screen.dart.
+  final int maxDurationSeconds;
 
-  const TrimEditorScreen({super.key, required this.videoFile});
+  const TrimEditorScreen({
+    super.key,
+    required this.videoFile,
+    this.maxDurationSeconds = 90,
+  });
 
   @override
   State<TrimEditorScreen> createState() => _TrimEditorScreenState();
@@ -33,7 +41,7 @@ class _TrimEditorScreenState extends State<TrimEditorScreen> {
     _controller = VideoEditorController.file(
       widget.videoFile,
       minDuration: const Duration(seconds: 1),
-      maxDuration: const Duration(seconds: 90),
+      maxDuration: Duration(seconds: widget.maxDurationSeconds),
     );
     _initializeController();
   }
@@ -88,7 +96,12 @@ class _TrimEditorScreenState extends State<TrimEditorScreen> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title: const Text('Trim Video', style: TextStyle(color: Colors.white)),
+        title: Text(
+          widget.maxDurationSeconds < 90
+              ? 'Trim Video (max ${widget.maxDurationSeconds}s)'
+              : 'Trim Video',
+          style: const TextStyle(color: Colors.white),
+        ),
         actions: [
           TextButton(
             onPressed: _confirmTrim,

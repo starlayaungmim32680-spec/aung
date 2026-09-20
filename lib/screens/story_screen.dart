@@ -2,13 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'trim_editor_screen.dart';
+import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -20,15 +24,17 @@ const Map<String, String> kStoryReactions = {
   'angry': '😡',
 };
 
-// Cloudinary config (same as the rest of the app)
-const String _kCloudName = 'dwx402gy4';
-const String _kUploadPreset = 'fly_unsigned';
+// Bunny hostnames (not secret - just addresses). The real credentials
+// live only as Cloudflare Worker secrets - see livekit_token_worker.js's
+// /upload-image and /upload-video handlers.
+const String _bunnyImagesCdnHostname = 'fly-images-aungdev756617.b-cdn.net';
+const String _bunnyStreamCdnHostname = 'vz-a6ab9346-730.b-cdn.net';
 
 // How long a story stays visible
 const Duration kStoryLifetime = Duration(hours: 14);
 
 // ---------------------------------------------------------------------------
-// Add a story: pick a photo or video, upload to Cloudinary, create the doc
+// Add a story: pick a photo or video, upload to Bunny, create the doc
 // ---------------------------------------------------------------------------
 Future<void> addStory(BuildContext context) async {
   final String? kind = await showModalBottomSheet<String>(
@@ -75,6 +81,46 @@ Future<void> addStory(BuildContext context) async {
   if (picked == null) return;
   if (!context.mounted) return;
 
+  // Stories cap videos to 15 seconds - both for a snappier, more
+  // TikTok/Instagram-Stories-like viewing experience, and because it
+  // directly bounds how much Storage/CDN bandwidth a single story clip
+  // can ever cost, no matter how long the original video someone picked
+  // actually is. Photos skip this entirely - there's no trim step for a
+  // still image.
+  File videoFileToUpload = File(picked.path);
+  if (kind == 'video') {
+    final TrimResult? trimResult = await Navigator.push<TrimResult>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TrimEditorScreen(
+          videoFile: File(picked.path),
+          maxDurationSeconds: 15,
+        ),
+      ),
+    );
+    // Cancelled the trim step entirely - treat it the same as cancelling
+    // the whole "add a story" flow, rather than posting an untrimmed
+    // (potentially much longer, much more expensive to store/serve)
+    // video.
+    if (trimResult == null) return;
+    if (!context.mounted) return;
+
+    try {
+      final Trimmer trimmer = Trimmer();
+      final File trimmed = await trimmer.trimVideo(
+        file: trimResult.originalFile,
+        startMs: trimResult.startSeconds * 1000,
+        endMs: trimResult.endSeconds * 1000,
+      );
+      videoFileToUpload = trimmed;
+    } catch (e) {
+      // Fall back to the untrimmed file rather than blocking the story
+      // entirely over a trim failure - worse than ideal (the 15s cost
+      // cap doesn't apply this one time) but far better than the person
+      // not being able to post at all.
+    }
+  }
+
   // Simple uploading dialog
   showDialog(
     context: context,
@@ -88,23 +134,57 @@ Future<void> addStory(BuildContext context) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception('Not logged in');
 
-    final String endpoint = kind == 'image' ? 'image' : 'video';
-    final Uri url = Uri.parse(
-        'https://api.cloudinary.com/v1_1/$_kCloudName/$endpoint/upload');
+    String mediaUrl;
+    if (kind == 'image') {
+      // Images go to Bunny Storage - no transcoding needed, so this is a
+      // plain pass-through PUT via the Worker's /upload-image (same
+      // endpoint/hostname as the profile photo upload in
+      // profile_screen.dart).
+      final Uint8List bytes = await File(picked.path).readAsBytes();
+      final String fileName =
+          '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final http.Response response = await http
+          .post(
+            Uri.parse('$kTokenServerUrl/upload-image'),
+            headers: {
+              'X-App-Secret': kAppSharedSecret,
+              'X-File-Name': fileName,
+              'Content-Type': 'image/jpeg',
+            },
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 60));
+      if (response.statusCode != 200) {
+        throw Exception('Image upload failed: ${response.body}');
+      }
+      mediaUrl = 'https://$_bunnyImagesCdnHostname/$fileName';
+    } else {
+      // Videos go to Bunny Stream via the Worker's /upload-video - the
+      // same endpoint upload_screen.dart uses for feed posts. Bunny
+      // transcodes to adaptive-bitrate HLS automatically.
+      final Uint8List bytes = await videoFileToUpload.readAsBytes();
+      final http.StreamedRequest streamed = http.StreamedRequest(
+        'POST',
+        Uri.parse('$kTokenServerUrl/upload-video'),
+      )
+        ..headers['X-App-Secret'] = kAppSharedSecret
+        ..headers['X-Video-Title'] = 'Fly story'
+        ..headers['Content-Type'] = 'video/mp4'
+        ..contentLength = bytes.length;
+      streamed.sink.add(bytes);
+      unawaited(streamed.sink.close());
 
-    final bytes = await File(picked.path).readAsBytes();
-    final request = http.MultipartRequest('POST', url)
-      ..fields['upload_preset'] = _kUploadPreset
-      ..files.add(http.MultipartFile.fromBytes('file', bytes,
-          filename: kind == 'image' ? 'story.jpg' : 'story.mp4'));
-
-    final streamed = await request.send();
-    final body = await streamed.stream.bytesToString();
-    if (streamed.statusCode != 200) {
-      throw Exception('Upload failed: $body');
+      final http.StreamedResponse response = await http.Client()
+          .send(streamed)
+          .timeout(const Duration(seconds: 120));
+      final String responseBody = await response.stream.bytesToString();
+      if (response.statusCode != 200) {
+        throw Exception('Video upload failed: $responseBody');
+      }
+      final Map<String, dynamic> uploadResult = jsonDecode(responseBody);
+      final String videoId = uploadResult['videoId'];
+      mediaUrl = 'https://$_bunnyStreamCdnHostname/$videoId/playlist.m3u8';
     }
-    final Map<String, dynamic> data = jsonDecode(body);
-    final String mediaUrl = data['secure_url'];
 
     // Get the poster's name/photo
     final profile = await FirebaseFirestore.instance
