@@ -12,6 +12,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
+import 'video_effects_screen.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
 // Reaction emojis available on stories
@@ -88,6 +89,9 @@ Future<void> addStory(BuildContext context) async {
   // actually is. Photos skip this entirely - there's no trim step for a
   // still image.
   File videoFileToUpload = File(picked.path);
+  double videoSpeed = 1.0;
+  String videoFilterType = 'none';
+  List<TextOverlayData> videoTextOverlays = [];
   if (kind == 'video') {
     final TrimResult? trimResult = await Navigator.push<TrimResult>(
       context,
@@ -119,7 +123,39 @@ Future<void> addStory(BuildContext context) async {
       // cap doesn't apply this one time) but far better than the person
       // not being able to post at all.
     }
+    if (!context.mounted) return;
+
+    // Speed, color filter, and text overlays - the same screen post
+    // uploads use. Unlike upload_screen.dart (which runs this on the
+    // UNtrimmed original, since its own physical trim happens later at
+    // upload time), stories have already been physically cut above, so
+    // this runs on the already-trimmed file with startSeconds: 0 rather
+    // than needing to seek into an offset within a longer original.
+    final VideoEffectsResult? effects =
+        await Navigator.push<VideoEffectsResult>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoEffectsScreen(
+          videoFile: videoFileToUpload,
+          startSeconds: 0,
+        ),
+      ),
+    );
+    // Cancelling this step cancels the whole "add a story" flow too, the
+    // same as cancelling the trim step above - consistent behavior
+    // throughout this pick-trim-style pipeline.
+    if (effects == null) return;
+    if (!context.mounted) return;
+    videoSpeed = effects.speed;
+    videoFilterType = effects.filterType;
+    videoTextOverlays = effects.textOverlays;
   }
+
+  // Let the person add a color filter and/or text overlays - same feature
+  // as regular post uploads. Currently video-only (see the effects step
+  // above); a photo-story equivalent is a separate, not-yet-built screen
+  // (VideoEffectsScreen is built around VideoPlayerController and can't
+  // take a still image).
 
   // Simple uploading dialog
   showDialog(
@@ -205,6 +241,15 @@ Future<void> addStory(BuildContext context) async {
       'userPhoto': userPhoto,
       'mediaUrl': mediaUrl,
       'mediaType': kind, // 'image' or 'video'
+      // Speed/filter/text overlays only exist for videos so far - image
+      // stories don't have an effects step yet (a separate photo-effects
+      // screen is still to come), so these are simply omitted for a
+      // photo story rather than written with meaningless defaults.
+      if (kind == 'video') ...{
+        'videoSpeed': videoSpeed,
+        'filterType': videoFilterType,
+        'textOverlays': videoTextOverlays.map((o) => o.toMap()).toList(),
+      },
       'createdAt': FieldValue.serverTimestamp(),
       'expiresAt': Timestamp.fromDate(now.add(kStoryLifetime)),
     });
