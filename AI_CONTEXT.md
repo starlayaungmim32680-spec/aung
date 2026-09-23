@@ -143,18 +143,91 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
     videos always stream directly for now; true offline HLS caching would
     need downloading every segment and rewriting the manifest to point at
     them locally — not built.
-  - **Known limitation:** Trim and "Borrowed Sound" (using someone else's
-    audio track) were both implemented as Cloudinary URL-transform hacks with
-    no Bunny equivalent yet. Borrowed Sound is blocked at upload time with a
-    clear message. Trim could **not** be gated the same way, since every
-    video (camera or gallery) is unavoidably routed through
-    `TrimEditorScreen` with no way to skip it — gating on it blocked every
-    single upload. Trim currently just silently no-ops instead (the full,
-    untrimmed video posts) rather than blocking anything.
+  - **Trim now actually works** (this used to be a no-op - the note below
+    is history, kept for context): every picked video is unavoidably routed
+    through `TrimEditorScreen` with no way to skip it, so gating uploads on
+    "was something trimmed" would've blocked every single upload. Instead,
+    right before compression, `upload_screen.dart` (and, for stories,
+    `story_screen.dart`) physically cuts the file to the selected range
+    using **`video_trimmer_2`** (native MediaExtractor+MediaMuxer on
+    Android / AVFoundation on iOS - deliberately not FFmpeg: the
+    actively-maintained FFmpeg-for-Flutter forks are GPL-licensed, a real
+    risk for a closed-source commercial app). Two earlier packages were
+    tried and dropped first: `flutter_native_video_trimmer` lost the
+    video's rotation metadata during its trim (trimmed videos rendered
+    tiny/wrong-aspect-ratio), and `video_trimmer_2` itself initially failed
+    to even build (its own `android/build.gradle` pins an old Gradle
+    version incompatible with this project's - that specific failure
+    turned out to be a transient network/download issue, not a real
+    incompatibility, and building again worked). `TrimEditorScreen` takes
+    an optional `maxDurationSeconds` (default 90, used by post uploads;
+    stories pass 15 - see below) that caps how large a range
+    `VideoEditorController` lets someone select in the first place.
+  - **"Borrowed Sound" still has no Bunny equivalent** and is still blocked
+    at upload time with a clear message (unlike trim, this genuinely has no
+    workaround yet - it needs real audio/video muxing, which nothing in the
+    app does client-side today).
   - Old Cloudinary-hosted posts are unaffected by any of the above (all the
     Cloudinary-specific URL transforms already safely no-op on a non-
     Cloudinary/Bunny URL) but remain unplayable unless/until that Cloudinary
     account itself gets reactivated — it's currently still disabled.
+- **Profile photos and story images/videos are now on Bunny too**
+  (migrated in a later session, after the feed-video migration above).
+  - Profile photos (`profile_screen.dart`'s `EditProfileScreen`) and story
+    images (`story_screen.dart`) go to **Bunny Storage** (a Storage Zone,
+    not Stream - no transcoding needed for a still image) via the Worker's
+    `/upload-image` endpoint: a plain PUT pass-through, mirroring
+    `/upload-video`'s pattern. Story videos go to **Bunny Stream** via the
+    existing `/upload-video`, exactly like feed posts.
+  - Bunny Storage zone: `fly-images-aungdev756617` (Singapore region -
+    its API host is the **region-specific** `sg.storage.bunnycdn.com`, not
+    the generic `storage.bunnycdn.com` — using the generic one caused a
+    401 Unauthorized that looked like a bad password but wasn't). Its Pull
+    Zone's actual hostname is `fly-images-aungdev756617.b-cdn.net` — note
+    the dashes are preserved from the storage zone name; an earlier
+    hostname without dashes
+    (`flyimagesaungdev756617.b-cdn.net`) was a wrong assumption that cost a
+    debugging round (Bunny showed "Domain suspended or not configured"
+    for the wrong host). Its "Block direct url file access" security
+    setting must stay **OFF** - Fly's own HTTP requests carry no browser
+    `Referer` header, so turning that on rejects the app while still
+    letting Bunny's own dashboard player work (which is what made this one
+    confusing to diagnose).
+  - Worker secrets for this: `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_PASSWORD`
+    (the Storage Zone's non-read-only password - the read-only one can't
+    upload and returns a 401 too if used by mistake).
+  - Like the video-title header before it, an uploaded image's filename is
+    sent as an `X-File-Name` header, so it's built server-side-safe (ASCII
+    only, e.g. `{uid}_{timestamp}.jpg`) rather than derived from anything
+    user-entered.
+  - **Story videos are capped to 15 seconds** - both a snappier,
+    Stories-like viewing experience and a hard bound on per-story Bunny
+    cost. `TrimEditorScreen(maxDurationSeconds: 15)` enforces this at
+    selection time (see the Trim note above).
+  - **Story videos also get the same speed/filter/text-overlay effects
+    step as feed posts** (`VideoEffectsScreen`, reused as-is), run on the
+    already-trimmed file with `startSeconds: 0` (unlike
+    `upload_screen.dart`, where trim is applied later and effects preview
+    against the untrimmed original with an offset). Saved as the same
+    `videoSpeed`/`filterType`/`textOverlays` fields on the `stories` doc.
+    The story **viewer** (`_StoryViewerScreenState`) applies them at watch
+    time exactly like `home_screen.dart` does for feed posts: a
+    `ColorFiltered` wrapper (skipped entirely for `filterType: 'none'`,
+    same reasoning as the feed - some devices tint even an identity
+    filter), positioned text-overlay widgets, and `setPlaybackSpeed` (with
+    the progress-bar segment's duration divided by speed, so it still
+    finishes in step with the actual sped-up/slowed-down playback).
+    **Story photos have no effects step yet** - `VideoEffectsScreen` is
+    built around `VideoPlayerController` and can't take a still image; a
+    separate photo-effects screen is still to come.
+  - **Stories can now be deleted** by their owner: a delete icon next to
+    the viewer's close button (shown only when
+    `data['userId'] == the signed-in user's uid`), behind the same
+    confirm-dialog pattern `profile_screen.dart` uses for deleting a post.
+    Deletes the Firestore doc only (no Bunny-side cleanup - same
+    "best-effort" scope as the rest of the app's delete flows) and removes
+    it from the viewer's local list so browsing the rest of that batch
+    keeps working without reopening the viewer.
 - **LiveKit** (video/voice calls + live streaming) — Cloud project (NOT
   self-hosted), free "Build" plan, **no card on file** (5,000 WebRTC
   participant-minutes + 50GB data transfer per month, hard cap since there's
@@ -179,6 +252,9 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above.
+    - `POST /upload-image` — plain pass-through PUT to Bunny Storage, used
+      for profile photos and story images (see the profile/story note
+      further down in this section).
   - Confirm the current token-fetch code path in `video_call_screen.dart`
     (constants `kTokenServerUrl`/`kAppSharedSecret`, both plain top-level
     `const` in that file, imported with a `show` clause by other files that
@@ -447,25 +523,37 @@ issue if this comes up again.
   §3). Keep pure utilities here rather than in a screen file; don't add
   widgets to this file.
 - `screens/upload_screen.dart` — upload flow. First a chooser (📱 Short =
-  full-screen vertical / ▶️ Video = landscape), then pick + trim + caption +
-  upload to **Bunny Stream** (see §3 for the exact mechanism and the
-  Trim/Borrowed-Sound limitations), writing `videoType` ('short'/'long') to
-  the post. Also handles filters, text overlays, and speed via
-  `text_overlay_style.dart` and `video_effects_baker.dart` (baked-in
-  effects, so playback code doesn't need to re-apply speed/filters at watch
-  time for baked posts). Client-side compresses the video (flutter_compress,
-  1280px cap, ~60% bitrate) before upload to cut file size/bandwidth cost.
-  Network-aware: fails fast with a friendly message if offline before
-  starting, has a 120s send timeout, does one quiet auto-retry (3s delay) on
-  a classified network error before giving up, and relabels the button
-  "Retry Upload" after a failure — the picked video/caption state is
-  preserved either way.
+  full-screen vertical / ▶️ Video = landscape), then pick + trim + effects +
+  caption + upload to **Bunny Stream** (see §3 for the exact mechanism and
+  the Borrowed-Sound limitation), writing `videoType` ('short'/'long') to
+  the post. Speed/color-filter/text-overlays are picked via
+  `video_effects_screen.dart`/`text_overlay_style.dart` and saved as plain
+  Firestore fields (`videoSpeed`/`filterType`/`textOverlays`) - they are
+  **not** baked into the video file itself; `home_screen.dart`'s
+  `_VideoPostItem` re-applies them live at watch time (a `ColorFiltered`
+  wrapper + positioned overlay widgets + `setPlaybackSpeed`), and
+  `story_screen.dart`'s viewer does the same for story videos. The video is
+  physically trimmed to the selected range (see §3's Trim note) and
+  client-side compressed (flutter_compress, 1280px cap, ~60% bitrate)
+  before upload, to cut file size/bandwidth cost. Network-aware: fails fast
+  with a friendly message if offline before starting, has a 120s send
+  timeout, does one quiet auto-retry (3s delay) on a classified network
+  error before giving up, and relabels the button "Retry Upload" after a
+  failure — the picked video/caption state is preserved either way.
 - `screens/trim_editor_screen.dart` — video trim UI (video_editor). Every
-  picked video (camera or gallery) is unconditionally routed through here —
-  see the Trim limitation note in §3.
-- `screens/text_overlay_style.dart`, `screens/video_effects_baker.dart` —
-  text-overlay styling and baking video effects (filters/speed) into the
-  exported file at upload time.
+  picked video (camera or gallery) is unconditionally routed through here.
+  Takes an optional `maxDurationSeconds` (default 90; stories pass 15 - see
+  §3) that caps how large a range can be selected.
+- `screens/video_effects_screen.dart` — speed/color-filter/text-overlay
+  picker, used by both `upload_screen.dart` and (for videos only)
+  `story_screen.dart`. Returns a `VideoEffectsResult`; see the note under
+  `upload_screen.dart` above for how these get applied (live at playback,
+  not baked into the file).
+- `screens/text_overlay_style.dart` — the `TextOverlayData` model plus
+  `AnimatedOverlayText`, the actual widget that renders one overlay
+  (background/shadow/neon/impact/gradient styles, looping entrance/exit
+  animations) - shared by the upload preview, `home_screen.dart`'s feed
+  playback, and `story_screen.dart`'s story viewer.
 - `screens/content_filter.dart` — content/keyword filtering helper.
 - `screens/profile_screen.dart` — own profile: avatar, name, Edit Profile,
   stats (Posts / Followers / Following), video grid (tap = open viewer,
@@ -474,20 +562,18 @@ issue if this comes up again.
   **Settings** gear icon (→ `settings_screen.dart`), and a 3-dot menu
   (**Delete account** — has a confirmation dialog + password
   re-authentication). Also contains `EditProfileScreen` (edit name + profile
-  photo via Camera or Gallery → **still uploads to Cloudinary, not yet
-  migrated to Bunny** — profile photos are images, not video, so this
-  wasn't touched by the Bunny migration and will still fail while
-  Cloudinary is disabled).
+  photo via Camera or Gallery → uploads to **Bunny Storage**, see §3).
 - `screens/public_profile_screen.dart` — another user's profile: photo
   (with the sparkle-star online badge), name, Follow / Message buttons,
   stats, video grid, and a 3-dot menu with **Block user**
   (`_confirmBlockUser`, writes `users/{myId}/blocked/{blockedUserId}`).
 - `screens/story_screen.dart` — Stories. Facebook-style story cards bar,
-  add-story flow (photo/video → **still uploads to Cloudinary, not yet
-  migrated to Bunny** — same caveat as profile photos above) → 14-hour
-  expiry, full-screen viewer with segmented progress bars + auto-advance,
-  floating reactions that rise up, and a "See who reacted" list for the
-  story owner.
+  add-story flow (photo → Bunny Storage, video → Bunny Stream with a 15s
+  trim cap and the same speed/filter/text-overlay effects step as feed
+  posts - see §3) → 14-hour expiry, full-screen viewer with segmented
+  progress bars + auto-advance (applying those same effects live - see §3),
+  a delete button for the story's own owner, floating reactions that rise
+  up, and a "See who reacted" list for the story owner.
 - `screens/chat_screen.dart` — chat list (`ChatScreen`/`_ChatScreenState`,
   actually lists **all other users**, not just existing conversations — it's
   also how you start a brand-new chat) + `ChatThreadScreen` (text / image /
@@ -572,7 +658,10 @@ screen needs to be created from scratch — it may already exist there.)_
 - `posts/{id}`: { userId, userEmail, videoUrl (Bunny HLS playlist for new
   posts, Cloudinary mp4 for old ones — see §3), caption,
   reactions:{uid→type}, videoType('short'|'long'), createdAt, videoSpeed,
-  filterType, blurBackground, textOverlays, effectsBaked, plus repost fields
+  filterType, blurBackground, textOverlays, effectsBaked (checked by
+  `home_screen.dart`'s playback code, but no current upload path actually
+  writes it true - effects are always applied live, never pre-baked; this
+  flag looks like unused/future-proofing groundwork), plus repost fields
   (repostByName, repostByUserId, repostByPhoto, repostNote) when the item is
   a repost }
   - `posts/{id}/comments/{id}` (+ `.../replies/{id}`): { userId, displayName,
@@ -580,8 +669,10 @@ screen needs to be created from scratch — it may already exist there.)_
   - `posts/{id}/views/{uid}`, `posts/{id}/saves/{uid}`, `posts/{id}/shares/{uid}`
     — one doc per user, used for counting.
 - `stories/{id}`: { userId, userName, userPhoto, mediaUrl, mediaType('image'|
-  'video'), createdAt, expiresAt } — filtered client-side by `expiresAt > now`
-  (14-hour lifetime).
+  'video'), createdAt, expiresAt, and for a video story only:
+  videoSpeed, filterType, textOverlays (see §3 - no photo-story effects
+  screen yet, so these are simply absent on an image story) } — filtered
+  client-side by `expiresAt > now` (14-hour lifetime).
   - `stories/{id}/reactions/{uid}`: { uid, type, userName, userPhoto, createdAt }
 - `chats/{chatId}` (chatId = sorted `{uidA}_{uidB}`): { participants: [uidA,
   uidB], lastMessage, lastMessageAt, lastSenderId, lastCallAt }, plus
@@ -617,10 +708,13 @@ shared drawing + Picture-in-Picture · online-presence system (sparkle-star
 badge, Firestore heartbeat, a foreground service so it survives the screen
 locking) · live streaming · gifting · in-app wallet · notifications ·
 **Stories** (FB-style cards, 14h expiry, floating reactions, "who reacted"
-list) · **network resilience** (status banner, adaptive quality, load-error
-retry, upload retry, offline-persisted chat/feed, disk-cached recently-
-watched Cloudinary videos) · video hosting on **Bunny Stream** (migrated
-from Cloudinary; auto-transcoding/adaptive HLS/thumbnails).
+list, a 15s trim cap + video speed/filter/text-overlay effects on story
+videos, delete-own-story) · **network resilience** (status banner, adaptive
+quality, load-error retry, upload retry, offline-persisted chat/feed,
+disk-cached recently-watched Cloudinary videos) · video hosting on **Bunny
+Stream** (migrated from Cloudinary; auto-transcoding/adaptive HLS/
+thumbnails) with a real, physical, client-side **video trim** · profile
+photos and story images on **Bunny Storage**.
 
 ### Known, deliberately-not-yet-fixed gaps
 
@@ -629,12 +723,13 @@ from Cloudinary; auto-transcoding/adaptive HLS/thumbnails).
 - No true real-time "offline the instant they lose connection" presence
   (Fly has no Realtime Database) — presence is heartbeat + a 60s staleness
   window, which is accurate enough for the UI's purposes but not instant.
-- Trim and Borrowed Sound don't work for new (Bunny-hosted) video posts —
-  see §3. Trim silently no-ops (posts the full video); Borrowed Sound is
-  blocked at upload time with a message.
-- Profile photos and Stories still upload to Cloudinary, not Bunny — they'll
-  fail while that account stays disabled, and weren't in scope for the
-  video-focused Bunny migration.
+- Borrowed Sound doesn't work for new (Bunny-hosted) video posts — see §3;
+  it's blocked at upload time with a message. (Trim, listed here in an
+  earlier version of this file, now actually works - see §3.)
+- Story **photos** have no effects (filter/text-overlay) step yet - only
+  story videos do, reusing the same screen feed-post uploads use. A
+  separate photo-effects screen (VideoEffectsScreen can't take a still
+  image) is still to come.
 - Offline replay of a previously-watched video only works for old
   Cloudinary posts, not new Bunny (HLS) ones — see §3.
 - Two call-lifecycle bugs (decline-while-app-killed not reaching the
@@ -644,6 +739,8 @@ from Cloudinary; auto-transcoding/adaptive HLS/thumbnails).
   (usage-quota exceeded) — all old Cloudinary-hosted content (videos,
   profile photos, stories) is unplayable/unloadable until Ko either
   upgrades the plan or enough of the rolling 30-day usage window rolls off.
+  Profile photos and stories no longer depend on it going forward (now on
+  Bunny), but old Cloudinary-hosted ones are still affected.
 
 ---
 
