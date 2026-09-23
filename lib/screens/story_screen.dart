@@ -13,6 +13,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
+import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
 // Reaction emojis available on stories
@@ -590,6 +591,41 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
 
   static const Duration _imageDuration = Duration(seconds: 6);
 
+  // Wraps [child] in a ColorFiltered matrix only when a filter was actually
+  // picked at upload time - skips the layer entirely for 'none' rather than
+  // applying a technically-identity matrix, same reasoning as
+  // home_screen.dart's equivalent for feed posts (some devices render even
+  // an identity ColorFilter with a very slight colour/gamma shift).
+  Widget _withOptionalFilter(String filterType, Widget child) {
+    if (filterType == 'none') return child;
+    return ColorFiltered(
+      colorFilter: ColorFilter.matrix(
+          kVideoFilterMatrices[filterType] ?? kVideoFilterMatrices['none']!),
+      child: child,
+    );
+  }
+
+  Widget _positionedOverlayText(TextOverlayData overlay) {
+    final double fontSize = (overlay.isSticker ? 56 : 20) * overlay.scale;
+    return IgnorePointer(
+      child: Align(
+        alignment: Alignment(overlay.dx * 2 - 1, overlay.dy * 2 - 1),
+        child: overlay.imageUrl != null
+            ? Image.network(overlay.imageUrl!,
+                width: 80 * overlay.scale, height: 80 * overlay.scale)
+            : overlay.isSticker
+                ? Text(overlay.text, style: TextStyle(fontSize: fontSize))
+                : AnimatedOverlayText(
+                    text: overlay.text,
+                    fontSize: fontSize,
+                    color: overlay.color,
+                    styleId: overlay.styleId,
+                    animationId: overlay.animationId,
+                  ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -667,14 +703,17 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     if (type == 'video' && url.isNotEmpty) {
       final controller = VideoPlayerController.networkUrl(Uri.parse(url));
       await controller.initialize();
+      final double speed = (data['videoSpeed'] as num?)?.toDouble() ?? 1.0;
+      await controller.setPlaybackSpeed(speed);
       controller.play();
       if (!mounted) {
         controller.dispose();
         return;
       }
       setState(() => _video = controller);
-      _progress.duration = controller.value.duration.inMilliseconds > 0
-          ? controller.value.duration
+      final Duration rawDuration = controller.value.duration;
+      _progress.duration = rawDuration.inMilliseconds > 0
+          ? Duration(milliseconds: (rawDuration.inMilliseconds / speed).round())
           : _imageDuration;
       _progress.forward();
     } else {
@@ -683,6 +722,65 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       _progress.duration = _imageDuration;
       _progress.forward();
     }
+  }
+
+  // Deletes the currently-shown story (only the owner ever sees the button
+  // that calls this - see the build() check). Removes it from the local
+  // stories list too, so the viewer can keep going through whatever's left
+  // without needing to be reopened.
+  Future<void> _confirmDeleteStory(BuildContext context) async {
+    _progress.stop();
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Delete this story?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently remove this story.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) {
+      if (mounted) _progress.forward();
+      return;
+    }
+
+    try {
+      await widget.stories[_index].reference.delete();
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+        _progress.forward();
+      }
+      return;
+    }
+
+    if (!mounted) return;
+
+    widget.stories.removeAt(_index);
+    if (widget.stories.isEmpty) {
+      Navigator.pop(context);
+      return;
+    }
+    if (_index >= widget.stories.length) {
+      _index = widget.stories.length - 1;
+    }
+    _loadCurrent();
   }
 
   void _next() {
@@ -826,6 +924,14 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     final String url = data['mediaUrl'] ?? '';
     final String name = data['userName'] ?? 'User';
     final String photo = data['userPhoto'] ?? '';
+    // Only ever set for a video story (see addStory above) - a photo
+    // story has no effects step yet, so these are always the identity
+    // defaults for one.
+    final String filterType = data['filterType'] as String? ?? 'none';
+    final List<TextOverlayData> textOverlays =
+        ((data['textOverlays'] as List<dynamic>?) ?? const [])
+            .map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
+            .toList();
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -847,7 +953,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                       ? Center(
                           child: AspectRatio(
                             aspectRatio: _video!.value.aspectRatio,
-                            child: VideoPlayer(_video!),
+                            child: _withOptionalFilter(
+                              filterType,
+                              VideoPlayer(_video!),
+                            ),
                           ),
                         )
                       : const Center(
@@ -864,6 +973,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                       ),
                     ),
             ),
+            if (type == 'video')
+              for (final overlay in textOverlays)
+                _positionedOverlayText(overlay),
 
             // Top: progress bars + author + close
             SafeArea(
@@ -915,6 +1027,16 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        if (data['userId'] ==
+                            FirebaseAuth.instance.currentUser?.uid)
+                          GestureDetector(
+                            onTap: () => _confirmDeleteStory(context),
+                            child: const Padding(
+                              padding: EdgeInsets.all(6),
+                              child: Icon(Icons.delete_outline,
+                                  color: Colors.white),
+                            ),
+                          ),
                         GestureDetector(
                           onTap: () => Navigator.pop(context),
                           child: const Padding(
