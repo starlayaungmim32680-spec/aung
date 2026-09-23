@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'video_effects_screen.dart';
 import 'text_overlay_style.dart';
+import 'story_music.dart';
 
 // Photo-story equivalent of VideoEffectsScreen: color filter + text/sticker
 // overlays on a still image. Nothing is baked into the pixels - the
@@ -17,11 +18,14 @@ class PhotoEffectsResult {
   // Saved on the story so the viewer can lay overlays out over the exact
   // same image rect the editor used.
   final double aspectRatio;
+  // Optional background music (a sound from the sounds library), or null.
+  final StoryMusicSelection? music;
 
   PhotoEffectsResult({
     required this.filterType,
     required this.textOverlays,
     required this.aspectRatio,
+    this.music,
   });
 }
 
@@ -61,6 +65,10 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
   final ValueNotifier<String> _filter = ValueNotifier<String>('none');
   final List<TextOverlayData> _overlays = [];
 
+  // Background music preview - plays the chosen 15s window on a loop.
+  StoryMusicSelection? _music;
+  final StoryMusicPlayer _musicPlayer = StoryMusicPlayer();
+
   @override
   void initState() {
     super.initState();
@@ -89,7 +97,35 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
   @override
   void dispose() {
     _filter.dispose();
+    _musicPlayer.dispose();
     super.dispose();
+  }
+
+  // ---- Music ----
+
+  Future<void> _pickMusic() async {
+    // The library screen has its own preview player - silence ours first.
+    await _musicPlayer.pause();
+    if (!mounted) return;
+    final StoryMusicSelection? picked =
+        await pickStoryMusic(context, clipSeconds: kStoryMusicClipSeconds);
+    if (!mounted) return;
+    if (picked == null) {
+      // Backed out - keep (and resume) whatever was selected before.
+      if (_music != null) _musicPlayer.play();
+      return;
+    }
+    setState(() => _music = picked);
+    _musicPlayer.load(
+      picked.sourceUrl,
+      startOffset: picked.startOffset,
+      clipSeconds: kStoryMusicClipSeconds,
+    );
+  }
+
+  void _removeMusic() {
+    _musicPlayer.pause();
+    setState(() => _music = null);
   }
 
   // ---- Overlays ----
@@ -155,12 +191,14 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
 
   void _confirm() {
     if (_aspectRatio == null) return;
+    _musicPlayer.pause();
     Navigator.pop(
       context,
       PhotoEffectsResult(
         filterType: _filter.value,
         textOverlays: List<TextOverlayData>.of(_overlays),
         aspectRatio: _aspectRatio!,
+        music: _music,
       ),
     );
   }
@@ -298,6 +336,23 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
     );
   }
 
+  Widget _toolButton(IconData icon, String label, VoidCallback onPressed,
+      {bool active = false}) {
+    return Expanded(
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon,
+            size: 18, color: active ? const Color(0xFFFF4B6E) : Colors.white),
+        label: Text(label, style: const TextStyle(color: Colors.white)),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          side: BorderSide(
+              color: active ? const Color(0xFFFF4B6E) : Colors.white24),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loadError != null) {
@@ -339,6 +394,16 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
       ),
       body: Column(
         children: [
+          if (_music != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 8),
+              child: StoryMusicChip(
+                title: _music!.title,
+                ownerName: _music!.ownerName,
+                onTap: _pickMusic,
+                onRemove: _removeMusic,
+              ),
+            ),
           Expanded(
             child: Center(
               child: AspectRatio(
@@ -389,30 +454,13 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               child: Row(
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _addTextOverlay,
-                      icon: const Icon(Icons.text_fields, color: Colors.white),
-                      label: const Text('Add text',
-                          style: TextStyle(color: Colors.white)),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white24),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _addSticker,
-                      icon: const Icon(Icons.emoji_emotions_outlined,
-                          color: Colors.white),
-                      label: const Text('Add sticker',
-                          style: TextStyle(color: Colors.white)),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white24),
-                      ),
-                    ),
-                  ),
+                  _toolButton(Icons.text_fields, 'Text', _addTextOverlay),
+                  const SizedBox(width: 8),
+                  _toolButton(
+                      Icons.emoji_emotions_outlined, 'Sticker', _addSticker),
+                  const SizedBox(width: 8),
+                  _toolButton(Icons.music_note, 'Music', _pickMusic,
+                      active: _music != null),
                 ],
               ),
             ),

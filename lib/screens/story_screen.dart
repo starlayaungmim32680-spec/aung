@@ -14,6 +14,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'photo_effects_screen.dart';
+import 'story_music.dart';
+import 'sound_screen.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
@@ -94,6 +96,9 @@ Future<void> addStory(BuildContext context) async {
   double videoSpeed = 1.0;
   String videoFilterType = 'none';
   List<TextOverlayData> videoTextOverlays = [];
+  // Background music picked in either effects screen (null = none; a
+  // video story then keeps - and shares - its own audio).
+  StoryMusicSelection? storyMusic;
   if (kind == 'video') {
     final TrimResult? trimResult = await Navigator.push<TrimResult>(
       context,
@@ -140,6 +145,7 @@ Future<void> addStory(BuildContext context) async {
         builder: (context) => VideoEffectsScreen(
           videoFile: videoFileToUpload,
           startSeconds: 0,
+          enableMusic: true,
         ),
       ),
     );
@@ -151,6 +157,7 @@ Future<void> addStory(BuildContext context) async {
     videoSpeed = effects.speed;
     videoFilterType = effects.filterType;
     videoTextOverlays = effects.textOverlays;
+    storyMusic = effects.music;
   }
 
   // Photo stories get their own effects step: color filter + text/sticker
@@ -173,6 +180,7 @@ Future<void> addStory(BuildContext context) async {
     imageFilterType = photoEffects.filterType;
     imageTextOverlays = photoEffects.textOverlays;
     imageAspectRatio = photoEffects.aspectRatio;
+    storyMusic = photoEffects.music;
   }
 
   // Simple uploading dialog
@@ -253,7 +261,45 @@ Future<void> addStory(BuildContext context) async {
     final String userPhoto = (pdata?['photoUrl'] as String?) ?? '';
 
     final now = DateTime.now();
-    await FirebaseFirestore.instance.collection('stories').add({
+    final storyRef = FirebaseFirestore.instance.collection('stories').doc();
+
+    // Sound bookkeeping - same `sounds` collection feed posts use:
+    //  - picked music: credit it and bump its usage count (trending);
+    //  - a video story without music: its own audio becomes a reusable
+    //    "Original sound" (doc id = story id), exactly like a feed upload.
+    //    The Bunny video outlives the 14h story, so the sound keeps
+    //    working after the story itself expires.
+    Map<String, dynamic> soundFields = {};
+    if (storyMusic != null) {
+      soundFields = storyMusic.toStoryFields();
+      FirebaseFirestore.instance
+          .collection('sounds')
+          .doc(storyMusic.soundId)
+          .set(
+              {'usageCount': FieldValue.increment(1)}, SetOptions(merge: true));
+    } else if (kind == 'video') {
+      await FirebaseFirestore.instance
+          .collection('sounds')
+          .doc(storyRef.id)
+          .set({
+        'ownerId': user.uid,
+        'ownerName': userName,
+        'title': 'Original sound',
+        'sourceUrl': mediaUrl,
+        'sourceStoryId': storyRef.id,
+        'usageCount': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      // No soundSourceUrl here: the viewer just plays the video's own
+      // audio; soundId/title only drive the "♪" credit chip.
+      soundFields = {
+        'soundId': storyRef.id,
+        'soundTitle': 'Original sound',
+        'soundOwnerName': userName,
+      };
+    }
+
+    await storyRef.set({
       'userId': user.uid,
       'userName': userName,
       'userPhoto': userPhoto,
@@ -272,6 +318,7 @@ Future<void> addStory(BuildContext context) async {
         'textOverlays': imageTextOverlays.map((o) => o.toMap()).toList(),
         if (imageAspectRatio != null) 'imageAspectRatio': imageAspectRatio,
       },
+      ...soundFields,
       'createdAt': FieldValue.serverTimestamp(),
       'expiresAt': Timestamp.fromDate(now.add(kStoryLifetime)),
     });
@@ -612,6 +659,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
 
   static const Duration _imageDuration = Duration(seconds: 6);
 
+  // Background music for the current story (see story_music.dart).
+  final StoryMusicPlayer _music = StoryMusicPlayer();
+  bool _hasMusic = false;
+  // Bumped on every _loadCurrent so a slow load for a story the viewer has
+  // already swiped past never starts playing over the current one.
+  int _loadSeq = 0;
+
   // Wraps [child] in a ColorFiltered matrix only when a filter was actually
   // picked at upload time - skips the layer entirely for 'none' rather than
   // applying a technically-identity matrix, same reasoning as
@@ -711,38 +765,109 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   }
 
   Future<void> _loadCurrent() async {
+    final int seq = ++_loadSeq;
     _progress.stop();
     _progress.reset();
-    await _video?.dispose();
+    await _music.stop();
+    final VideoPlayerController? old = _video;
     _video = null;
+    await old?.dispose();
     _subscribeReactions();
 
     final data = _current;
     final String type = data['mediaType'] ?? 'image';
     final String url = data['mediaUrl'] ?? '';
+    final String musicUrl = data['soundSourceUrl'] as String? ?? '';
+    final double musicStart =
+        (data['soundStartOffset'] as num?)?.toDouble() ?? 0;
+    _hasMusic = musicUrl.isNotEmpty;
 
     if (type == 'video' && url.isNotEmpty) {
       final controller = VideoPlayerController.networkUrl(Uri.parse(url));
-      await controller.initialize();
-      final double speed = (data['videoSpeed'] as num?)?.toDouble() ?? 1.0;
-      await controller.setPlaybackSpeed(speed);
-      controller.play();
-      if (!mounted) {
-        controller.dispose();
+      try {
+        await controller.initialize();
+      } catch (_) {
+        await controller.dispose();
+        if (!mounted || seq != _loadSeq) return;
+        // Unplayable video - still let the story time out and advance.
+        setState(() {});
+        _progress.duration = _imageDuration;
+        _progress.forward();
         return;
       }
-      setState(() => _video = controller);
+      if (!mounted || seq != _loadSeq) {
+        await controller.dispose();
+        return;
+      }
+      final double speed = (data['videoSpeed'] as num?)?.toDouble() ?? 1.0;
+      await controller.setPlaybackSpeed(speed);
       final Duration rawDuration = controller.value.duration;
       _progress.duration = rawDuration.inMilliseconds > 0
           ? Duration(milliseconds: (rawDuration.inMilliseconds / speed).round())
           : _imageDuration;
+
+      if (_hasMusic) {
+        // Music replaces the video's own audio. Start both together.
+        await controller.setVolume(0);
+        await _music.load(
+          musicUrl,
+          startOffset: musicStart,
+          clipSeconds: _progress.duration!.inMilliseconds / 1000,
+          autoPlay: false,
+        );
+        if (!mounted || seq != _loadSeq) {
+          await controller.dispose();
+          return;
+        }
+        _music.play();
+      }
+
+      controller.play();
+      setState(() => _video = controller);
       _progress.forward();
     } else {
       if (!mounted) return;
       setState(() {});
-      _progress.duration = _imageDuration;
+      // A photo with music stays up for a full song clip.
+      _progress.duration = _hasMusic
+          ? Duration(milliseconds: (kStoryMusicClipSeconds * 1000).round())
+          : _imageDuration;
       _progress.forward();
+      if (_hasMusic) {
+        // Not awaited: the photo shows right away and the music joins in
+        // as soon as it has buffered.
+        _music.load(
+          musicUrl,
+          startOffset: musicStart,
+          clipSeconds: kStoryMusicClipSeconds,
+        );
+      }
     }
+  }
+
+  void _pausePlayback() {
+    _progress.stop();
+    _video?.pause();
+    if (_hasMusic) _music.pause();
+  }
+
+  void _resumePlayback() {
+    if (!mounted) return;
+    _progress.forward();
+    _video?.play();
+    if (_hasMusic) _music.play();
+  }
+
+  // Tapping the "♪" chip opens that sound's page; the story pauses while
+  // it's open and picks up where it left off on return.
+  Future<void> _openSound(String soundId) async {
+    if (soundId.isEmpty) return;
+    _pausePlayback();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SoundScreen(soundId: soundId)),
+    );
+    _resumePlayback();
   }
 
   // Deletes the currently-shown story (only the owner ever sees the button
@@ -750,7 +875,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   // stories list too, so the viewer can keep going through whatever's left
   // without needing to be reopened.
   Future<void> _confirmDeleteStory(BuildContext context) async {
-    _progress.stop();
+    _pausePlayback();
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -776,7 +901,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     );
 
     if (confirm != true) {
-      if (mounted) _progress.forward();
+      _resumePlayback();
       return;
     }
 
@@ -786,7 +911,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       if (context.mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
-        _progress.forward();
+        _resumePlayback();
       }
       return;
     }
@@ -818,8 +943,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       setState(() => _index--);
       _loadCurrent();
     } else {
+      // Already on the first story - restart it from the beginning.
       _progress.reset();
       _progress.forward();
+      _video?.seekTo(Duration.zero);
+      if (_hasMusic) _music.restart();
     }
   }
 
@@ -935,6 +1063,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     _reactionSub?.cancel();
     _progress.dispose();
     _video?.dispose();
+    _music.dispose();
     super.dispose();
   }
 
@@ -1102,6 +1231,21 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                         ),
                       ],
                     ),
+                    // "♪ Title · Owner" credit - tap to open the sound page.
+                    if ((data['soundId'] as String? ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8, left: 2),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: StoryMusicChip(
+                            title: data['soundTitle'] as String? ??
+                                'Original sound',
+                            ownerName: data['soundOwnerName'] as String? ?? '',
+                            onTap: () =>
+                                _openSound(data['soundId'] as String? ?? ''),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),

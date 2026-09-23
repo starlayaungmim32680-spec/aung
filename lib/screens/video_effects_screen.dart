@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'text_overlay_style.dart';
+import 'story_music.dart';
 
 // One piece of text (or a big emoji "sticker") placed on top of the video.
 // Position is stored as a fraction (0.0-1.0) of the video's width/height so
@@ -247,11 +248,15 @@ class VideoEffectsResult {
   final double speed;
   final String filterType;
   final List<TextOverlayData> textOverlays;
+  // Background music picked in this screen (stories only - see
+  // enableMusic), or null to keep the video's own audio.
+  final StoryMusicSelection? music;
 
   VideoEffectsResult({
     required this.speed,
     required this.filterType,
     required this.textOverlays,
+    this.music,
   });
 }
 
@@ -777,11 +782,17 @@ Future<Map<String, dynamic>?> showTextOverlayDialog(
 class VideoEffectsScreen extends StatefulWidget {
   final File videoFile;
   final int startSeconds;
+  // Shows the "Music" button. Only stories turn this on - a story plays
+  // its music on a separate player at view time, while feed posts would
+  // need the sound baked into the uploaded file (not supported on Bunny
+  // yet - see upload_screen.dart).
+  final bool enableMusic;
 
   const VideoEffectsScreen({
     super.key,
     required this.videoFile,
     required this.startSeconds,
+    this.enableMusic = false,
   });
 
   @override
@@ -794,6 +805,10 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   double _speed = 1.0;
   String _filterType = 'none';
   final List<TextOverlayData> _textOverlays = [];
+
+  // Story background music (only when widget.enableMusic).
+  StoryMusicSelection? _music;
+  final StoryMusicPlayer _musicPlayer = StoryMusicPlayer();
 
   @override
   void initState() {
@@ -818,7 +833,49 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   @override
   void dispose() {
     _controller?.dispose();
+    _musicPlayer.dispose();
     super.dispose();
+  }
+
+  // How long this clip actually plays at the current speed - the length
+  // of the song window to pick/loop.
+  double get _clipSeconds {
+    final Duration? d = _controller?.value.duration;
+    if (d == null || d.inMilliseconds <= 0) return kStoryMusicClipSeconds;
+    return d.inMilliseconds / 1000 / _speed;
+  }
+
+  Future<void> _pickMusic() async {
+    // The library screen previews sounds itself - pause everything here.
+    await _musicPlayer.pause();
+    await _controller?.pause();
+    if (!mounted) return;
+    final StoryMusicSelection? picked =
+        await pickStoryMusic(context, clipSeconds: _clipSeconds);
+    if (!mounted) return;
+    if (picked != null) {
+      setState(() => _music = picked);
+      // The music replaces the video's own audio.
+      await _controller?.setVolume(0);
+      await _controller?.seekTo(Duration(seconds: widget.startSeconds));
+      await _musicPlayer.load(
+        picked.sourceUrl,
+        startOffset: picked.startOffset,
+        clipSeconds: _clipSeconds,
+        autoPlay: false,
+      );
+      if (!mounted) return;
+      _musicPlayer.play();
+    } else if (_music != null) {
+      _musicPlayer.play();
+    }
+    _controller?.play();
+  }
+
+  void _removeMusic() {
+    _musicPlayer.pause();
+    _controller?.setVolume(1);
+    setState(() => _music = null);
   }
 
   void _setSpeed(double speed) {
@@ -893,12 +950,14 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   }
 
   void _confirm() {
+    _musicPlayer.pause();
     Navigator.pop(
       context,
       VideoEffectsResult(
         speed: _speed,
         filterType: _filterType,
         textOverlays: _textOverlays,
+        music: _music,
       ),
     );
   }
@@ -996,6 +1055,16 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
       ),
       body: Column(
         children: [
+          if (_music != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 8),
+              child: StoryMusicChip(
+                title: _music!.title,
+                ownerName: _music!.ownerName,
+                onTap: _pickMusic,
+                onRemove: _removeMusic,
+              ),
+            ),
           Expanded(
             child: Center(
               child: AspectRatio(
@@ -1107,8 +1176,8 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
                     child: OutlinedButton.icon(
                       onPressed: _addTextOverlay,
                       icon: const Icon(Icons.text_fields, color: Colors.white),
-                      label: const Text('Add text',
-                          style: TextStyle(color: Colors.white)),
+                      label: Text(widget.enableMusic ? 'Text' : 'Add text',
+                          style: const TextStyle(color: Colors.white)),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Colors.white24),
                       ),
@@ -1120,13 +1189,34 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
                       onPressed: _addSticker,
                       icon: const Icon(Icons.emoji_emotions_outlined,
                           color: Colors.white),
-                      label: const Text('Add sticker',
-                          style: TextStyle(color: Colors.white)),
+                      label: Text(
+                          widget.enableMusic ? 'Sticker' : 'Add sticker',
+                          style: const TextStyle(color: Colors.white)),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Colors.white24),
                       ),
                     ),
                   ),
+                  if (widget.enableMusic) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _pickMusic,
+                        icon: Icon(Icons.music_note,
+                            color: _music != null
+                                ? const Color(0xFFFF4B6E)
+                                : Colors.white),
+                        label: const Text('Music',
+                            style: TextStyle(color: Colors.white)),
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(
+                              color: _music != null
+                                  ? const Color(0xFFFF4B6E)
+                                  : Colors.white24),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
