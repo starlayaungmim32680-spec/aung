@@ -13,6 +13,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
+import 'photo_effects_screen.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
@@ -152,11 +153,27 @@ Future<void> addStory(BuildContext context) async {
     videoTextOverlays = effects.textOverlays;
   }
 
-  // Let the person add a color filter and/or text overlays - same feature
-  // as regular post uploads. Currently video-only (see the effects step
-  // above); a photo-story equivalent is a separate, not-yet-built screen
-  // (VideoEffectsScreen is built around VideoPlayerController and can't
-  // take a still image).
+  // Photo stories get their own effects step: color filter + text/sticker
+  // overlays, stored as metadata (same fields as a video story) rather than
+  // baked into the pixels. Cancelling it cancels the whole flow, same as
+  // the video steps above.
+  String imageFilterType = 'none';
+  List<TextOverlayData> imageTextOverlays = [];
+  double? imageAspectRatio;
+  if (kind == 'image') {
+    final PhotoEffectsResult? photoEffects =
+        await Navigator.push<PhotoEffectsResult>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PhotoEffectsScreen(imageFile: File(picked.path)),
+      ),
+    );
+    if (photoEffects == null) return;
+    if (!context.mounted) return;
+    imageFilterType = photoEffects.filterType;
+    imageTextOverlays = photoEffects.textOverlays;
+    imageAspectRatio = photoEffects.aspectRatio;
+  }
 
   // Simple uploading dialog
   showDialog(
@@ -242,14 +259,18 @@ Future<void> addStory(BuildContext context) async {
       'userPhoto': userPhoto,
       'mediaUrl': mediaUrl,
       'mediaType': kind, // 'image' or 'video'
-      // Speed/filter/text overlays only exist for videos so far - image
-      // stories don't have an effects step yet (a separate photo-effects
-      // screen is still to come), so these are simply omitted for a
-      // photo story rather than written with meaningless defaults.
+      // Effects metadata. Videos also carry a playback speed; photos carry
+      // their aspect ratio so the viewer can place overlays over the exact
+      // image rect the editor used.
       if (kind == 'video') ...{
         'videoSpeed': videoSpeed,
         'filterType': videoFilterType,
         'textOverlays': videoTextOverlays.map((o) => o.toMap()).toList(),
+      },
+      if (kind == 'image') ...{
+        'filterType': imageFilterType,
+        'textOverlays': imageTextOverlays.map((o) => o.toMap()).toList(),
+        if (imageAspectRatio != null) 'imageAspectRatio': imageAspectRatio,
       },
       'createdAt': FieldValue.serverTimestamp(),
       'expiresAt': Timestamp.fromDate(now.add(kStoryLifetime)),
@@ -917,6 +938,47 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     super.dispose();
   }
 
+  // Photo story: filtered image + overlays laid out inside the image's own
+  // rect (via its saved aspect ratio), so text/stickers land exactly where
+  // they were placed in PhotoEffectsScreen. Legacy photo stories without an
+  // aspect ratio keep the old plain BoxFit.contain display.
+  Widget _buildImageStory(
+    String url,
+    String filterType,
+    List<TextOverlayData> textOverlays,
+    double? aspectRatio,
+  ) {
+    Widget image(BoxFit fit) => CachedNetworkImage(
+          imageUrl: url,
+          fit: fit,
+          placeholder: (_, __) => const Center(
+            child: CircularProgressIndicator(color: Colors.white),
+          ),
+          errorWidget: (_, __, ___) => const Center(
+            child: Icon(Icons.broken_image, color: Colors.white38),
+          ),
+        );
+
+    if (aspectRatio == null || aspectRatio <= 0) {
+      return _withOptionalFilter(filterType, image(BoxFit.contain));
+    }
+
+    return Center(
+      child: AspectRatio(
+        aspectRatio: aspectRatio,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            RepaintBoundary(
+              child: _withOptionalFilter(filterType, image(BoxFit.cover)),
+            ),
+            for (final overlay in textOverlays) _positionedOverlayText(overlay),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final data = _current;
@@ -924,9 +986,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     final String url = data['mediaUrl'] ?? '';
     final String name = data['userName'] ?? 'User';
     final String photo = data['userPhoto'] ?? '';
-    // Only ever set for a video story (see addStory above) - a photo
-    // story has no effects step yet, so these are always the identity
-    // defaults for one.
+    // Set for both video and photo stories (see addStory above). Older
+    // photo stories posted before the photo effects step simply don't have
+    // these fields and fall back to the identity defaults.
+    final double? imageAspectRatio =
+        (data['imageAspectRatio'] as num?)?.toDouble();
     final String filterType = data['filterType'] as String? ?? 'none';
     final List<TextOverlayData> textOverlays =
         ((data['textOverlays'] as List<dynamic>?) ?? const [])
@@ -962,16 +1026,8 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                       : const Center(
                           child:
                               CircularProgressIndicator(color: Colors.white)))
-                  : CachedNetworkImage(
-                      imageUrl: url,
-                      fit: BoxFit.contain,
-                      placeholder: (_, __) => const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
-                      ),
-                      errorWidget: (_, __, ___) => const Center(
-                        child: Icon(Icons.broken_image, color: Colors.white38),
-                      ),
-                    ),
+                  : _buildImageStory(
+                      url, filterType, textOverlays, imageAspectRatio),
             ),
             if (type == 'video')
               for (final overlay in textOverlays)

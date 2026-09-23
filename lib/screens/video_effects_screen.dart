@@ -373,6 +373,407 @@ const Map<String, List<double>> kVideoFilterMatrices = {
 
 const List<double> kSpeedOptions = [0.5, 1.0, 1.5, 2.0];
 
+// Emoji / Klipy sticker picker bottom sheet. Returns a String (emoji),
+// a KlipyStickerResult (sticker pack image), or null if dismissed.
+// Top-level so both VideoEffectsScreen and PhotoEffectsScreen share the
+// exact same picker.
+Future<Object?> showOverlayStickerPicker(BuildContext context) async {
+  final TextEditingController searchController = TextEditingController();
+  List<KlipyStickerResult> klipyResults = [];
+  bool isSearching = false;
+  bool searchedOnce = false;
+
+  return showModalBottomSheet<Object>(
+    context: context,
+    backgroundColor: const Color(0xFF1E1E1E),
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) {
+      return DefaultTabController(
+        length: 2,
+        child: StatefulBuilder(
+          builder: (context, setSheetState) {
+            Future<void> runSearch(String query) async {
+              if (query.trim().isEmpty) return;
+              setSheetState(() => isSearching = true);
+              final results = await searchKlipyStickers(query.trim());
+              setSheetState(() {
+                klipyResults = results;
+                isSearching = false;
+                searchedOnce = true;
+              });
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: SizedBox(
+                  height: 420,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Pick a sticker',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      const TabBar(
+                        labelColor: Colors.white,
+                        unselectedLabelColor: Colors.white38,
+                        indicatorColor: Color(0xFFFF4B6E),
+                        tabs: [
+                          Tab(text: 'Emoji'),
+                          Tab(text: 'Sticker Pack'),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: TabBarView(
+                          children: [
+                            // ---- Emoji tab ----
+                            GridView.builder(
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 6,
+                              ),
+                              itemCount: kStickerEmojis.length,
+                              itemBuilder: (context, index) {
+                                final String emoji = kStickerEmojis[index];
+                                return GestureDetector(
+                                  onTap: () => Navigator.pop(
+                                      sheetContext, emoji as Object),
+                                  child: Center(
+                                    child: Text(emoji,
+                                        style: const TextStyle(fontSize: 28)),
+                                  ),
+                                );
+                              },
+                            ),
+                            // ---- Klipy sticker pack tab ----
+                            Column(
+                              children: [
+                                TextField(
+                                  controller: searchController,
+                                  style: const TextStyle(color: Colors.white),
+                                  textInputAction: TextInputAction.search,
+                                  onSubmitted: runSearch,
+                                  decoration: InputDecoration(
+                                    hintText: 'Search stickers... (e.g. happy)',
+                                    hintStyle:
+                                        const TextStyle(color: Colors.grey),
+                                    prefixIcon: const Icon(Icons.search,
+                                        color: Colors.grey),
+                                    filled: true,
+                                    fillColor: Colors.black26,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        vertical: 0, horizontal: 12),
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Expanded(
+                                  child: isSearching
+                                      ? const Center(
+                                          child: CircularProgressIndicator(
+                                              color: Colors.redAccent))
+                                      : !searchedOnce
+                                          ? const Center(
+                                              child: Text(
+                                                'Search for a sticker pack above',
+                                                style: TextStyle(
+                                                    color: Colors.grey),
+                                              ),
+                                            )
+                                          : klipyResults.isEmpty
+                                              ? const Center(
+                                                  child: Text(
+                                                    'No stickers found',
+                                                    style: TextStyle(
+                                                        color: Colors.grey),
+                                                  ),
+                                                )
+                                              : GridView.builder(
+                                                  gridDelegate:
+                                                      const SliverGridDelegateWithFixedCrossAxisCount(
+                                                    crossAxisCount: 3,
+                                                    crossAxisSpacing: 6,
+                                                    mainAxisSpacing: 6,
+                                                  ),
+                                                  itemCount:
+                                                      klipyResults.length,
+                                                  itemBuilder:
+                                                      (context, index) {
+                                                    final sticker =
+                                                        klipyResults[index];
+                                                    return GestureDetector(
+                                                      onTap: () =>
+                                                          Navigator.pop(
+                                                              sheetContext,
+                                                              sticker
+                                                                  as Object),
+                                                      child: ClipRRect(
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(8),
+                                                        child: Image.network(
+                                                          sticker.previewUrl,
+                                                          fit: BoxFit.cover,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  },
+                                                ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    },
+  );
+}
+
+// Add/edit text dialog (text, style preset, animation, color). Returns
+// {'text','color','styleId','animationId'}, {'delete': true}, or null.
+// Top-level so both VideoEffectsScreen and PhotoEffectsScreen share it.
+Future<Map<String, dynamic>?> showTextOverlayDialog(
+  BuildContext context, {
+  required String title,
+  String initialText = '',
+  Color initialColor = Colors.white,
+  String initialStyle = 'classic',
+  String initialAnimation = 'none',
+  bool showDelete = false,
+}) async {
+  final TextEditingController textController =
+      TextEditingController(text: initialText);
+  Color selectedColor = initialColor;
+  String selectedStyle = initialStyle;
+  String selectedAnimation = initialAnimation;
+  const List<Color> colorChoices = [
+    Colors.white,
+    Colors.black,
+    Colors.redAccent,
+    Colors.yellowAccent,
+    Colors.lightBlueAccent,
+    Colors.greenAccent,
+    Color(0xFFFF4B6E),
+    Color(0xFF9C4DFF),
+  ];
+
+  return showDialog<Map<String, dynamic>>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: textController,
+                maxLength: 60,
+                autofocus: true,
+                style: TextStyle(
+                  color: selectedColor,
+                  fontWeight: FontWeight.bold,
+                  shadows: const [
+                    Shadow(color: Colors.black, blurRadius: 4),
+                    Shadow(color: Colors.black, blurRadius: 4),
+                  ],
+                ),
+                decoration: const InputDecoration(
+                  hintText: 'Type something...',
+                  hintStyle: TextStyle(color: Colors.grey),
+                  enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24)),
+                  focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.redAccent)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Style',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 64,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: kTextOverlayStyles.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, i) {
+                    final String styleId = kTextOverlayStyles[i];
+                    final bool isSelected = styleId == selectedStyle;
+                    return GestureDetector(
+                      onTap: () =>
+                          setDialogState(() => selectedStyle = styleId),
+                      child: Container(
+                        width: 64,
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color:
+                                isSelected ? Colors.redAccent : Colors.white24,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            styledOverlayText('Aa', 20, selectedColor, styleId),
+                            const SizedBox(height: 4),
+                            Text(
+                              textOverlayStyleLabel(styleId),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 9,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Animation',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 64,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: kTextOverlayAnimations.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (context, i) {
+                    final String animId = kTextOverlayAnimations[i];
+                    final bool isSelected = animId == selectedAnimation;
+                    return GestureDetector(
+                      onTap: () =>
+                          setDialogState(() => selectedAnimation = animId),
+                      child: Container(
+                        width: 64,
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color:
+                                isSelected ? Colors.redAccent : Colors.white24,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            AnimatedOverlayText(
+                              text: 'Aa',
+                              fontSize: 20,
+                              color: selectedColor,
+                              styleId: selectedStyle,
+                              animationId: animId,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              textOverlayAnimationLabel(animId),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 9,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Text color',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: colorChoices.map((color) {
+                  final bool isSelected = color.value == selectedColor.value;
+                  return GestureDetector(
+                    onTap: () => setDialogState(() => selectedColor = color),
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isSelected ? Colors.white : Colors.white24,
+                          width: isSelected ? 2.5 : 1,
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (showDelete)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, {'delete': true}),
+              child: const Text('Delete',
+                  style: TextStyle(color: Colors.redAccent)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, {
+              'text': textController.text.trim(),
+              'color': selectedColor,
+              'styleId': selectedStyle,
+              'animationId': selectedAnimation,
+            }),
+            child: Text(showDelete ? 'Save' : 'Add',
+                style: const TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class VideoEffectsScreen extends StatefulWidget {
   final File videoFile;
   final int startSeconds;
@@ -430,182 +831,8 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   }
 
   Future<void> _addSticker() async {
-    final TextEditingController searchController = TextEditingController();
-    List<KlipyStickerResult> klipyResults = [];
-    bool isSearching = false;
-    bool searchedOnce = false;
-
-    final result = await showModalBottomSheet<Object>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return DefaultTabController(
-          length: 2,
-          child: StatefulBuilder(
-            builder: (context, setSheetState) {
-              Future<void> runSearch(String query) async {
-                if (query.trim().isEmpty) return;
-                setSheetState(() => isSearching = true);
-                final results = await searchKlipyStickers(query.trim());
-                setSheetState(() {
-                  klipyResults = results;
-                  isSearching = false;
-                  searchedOnce = true;
-                });
-              }
-
-              return SafeArea(
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: 16,
-                    right: 16,
-                    top: 16,
-                    bottom: MediaQuery.of(context).viewInsets.bottom,
-                  ),
-                  child: SizedBox(
-                    height: 420,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Pick a sticker',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 8),
-                        const TabBar(
-                          labelColor: Colors.white,
-                          unselectedLabelColor: Colors.white38,
-                          indicatorColor: Color(0xFFFF4B6E),
-                          tabs: [
-                            Tab(text: 'Emoji'),
-                            Tab(text: 'Sticker Pack'),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: TabBarView(
-                            children: [
-                              // ---- Emoji tab ----
-                              GridView.builder(
-                                gridDelegate:
-                                    const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 6,
-                                ),
-                                itemCount: kStickerEmojis.length,
-                                itemBuilder: (context, index) {
-                                  final String emoji = kStickerEmojis[index];
-                                  return GestureDetector(
-                                    onTap: () => Navigator.pop(
-                                        sheetContext, emoji as Object),
-                                    child: Center(
-                                      child: Text(emoji,
-                                          style: const TextStyle(fontSize: 28)),
-                                    ),
-                                  );
-                                },
-                              ),
-                              // ---- Klipy sticker pack tab ----
-                              Column(
-                                children: [
-                                  TextField(
-                                    controller: searchController,
-                                    style: const TextStyle(color: Colors.white),
-                                    textInputAction: TextInputAction.search,
-                                    onSubmitted: runSearch,
-                                    decoration: InputDecoration(
-                                      hintText:
-                                          'Search stickers... (e.g. happy)',
-                                      hintStyle:
-                                          const TextStyle(color: Colors.grey),
-                                      prefixIcon: const Icon(Icons.search,
-                                          color: Colors.grey),
-                                      filled: true,
-                                      fillColor: Colors.black26,
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(10),
-                                        borderSide: BorderSide.none,
-                                      ),
-                                      contentPadding:
-                                          const EdgeInsets.symmetric(
-                                              vertical: 0, horizontal: 12),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Expanded(
-                                    child: isSearching
-                                        ? const Center(
-                                            child: CircularProgressIndicator(
-                                                color: Colors.redAccent))
-                                        : !searchedOnce
-                                            ? const Center(
-                                                child: Text(
-                                                  'Search for a sticker pack above',
-                                                  style: TextStyle(
-                                                      color: Colors.grey),
-                                                ),
-                                              )
-                                            : klipyResults.isEmpty
-                                                ? const Center(
-                                                    child: Text(
-                                                      'No stickers found',
-                                                      style: TextStyle(
-                                                          color: Colors.grey),
-                                                    ),
-                                                  )
-                                                : GridView.builder(
-                                                    gridDelegate:
-                                                        const SliverGridDelegateWithFixedCrossAxisCount(
-                                                      crossAxisCount: 3,
-                                                      crossAxisSpacing: 6,
-                                                      mainAxisSpacing: 6,
-                                                    ),
-                                                    itemCount:
-                                                        klipyResults.length,
-                                                    itemBuilder:
-                                                        (context, index) {
-                                                      final sticker =
-                                                          klipyResults[index];
-                                                      return GestureDetector(
-                                                        onTap: () =>
-                                                            Navigator.pop(
-                                                                sheetContext,
-                                                                sticker
-                                                                    as Object),
-                                                        child: ClipRRect(
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(8),
-                                                          child: Image.network(
-                                                            sticker.previewUrl,
-                                                            fit: BoxFit.cover,
-                                                          ),
-                                                        ),
-                                                      );
-                                                    },
-                                                  ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        );
-      },
-    );
-
-    if (result == null) return;
+    final Object? result = await showOverlayStickerPicker(context);
+    if (!mounted || result == null) return;
     setState(() {
       if (result is KlipyStickerResult) {
         _textOverlays.add(TextOverlayData(
@@ -619,230 +846,9 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
     });
   }
 
-  Future<Map<String, dynamic>?> _showTextOverlayDialog({
-    required String title,
-    String initialText = '',
-    Color initialColor = Colors.white,
-    String initialStyle = 'classic',
-    String initialAnimation = 'none',
-    bool showDelete = false,
-  }) async {
-    final TextEditingController textController =
-        TextEditingController(text: initialText);
-    Color selectedColor = initialColor;
-    String selectedStyle = initialStyle;
-    String selectedAnimation = initialAnimation;
-    const List<Color> colorChoices = [
-      Colors.white,
-      Colors.black,
-      Colors.redAccent,
-      Colors.yellowAccent,
-      Colors.lightBlueAccent,
-      Colors.greenAccent,
-      Color(0xFFFF4B6E),
-      Color(0xFF9C4DFF),
-    ];
-
-    return showDialog<Map<String, dynamic>>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: Text(title, style: const TextStyle(color: Colors.white)),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: textController,
-                  maxLength: 60,
-                  autofocus: true,
-                  style: TextStyle(
-                    color: selectedColor,
-                    fontWeight: FontWeight.bold,
-                    shadows: const [
-                      Shadow(color: Colors.black, blurRadius: 4),
-                      Shadow(color: Colors.black, blurRadius: 4),
-                    ],
-                  ),
-                  decoration: const InputDecoration(
-                    hintText: 'Type something...',
-                    hintStyle: TextStyle(color: Colors.grey),
-                    enabledBorder: UnderlineInputBorder(
-                        borderSide: BorderSide(color: Colors.white24)),
-                    focusedBorder: UnderlineInputBorder(
-                        borderSide: BorderSide(color: Colors.redAccent)),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Style',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 64,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: kTextOverlayStyles.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                    itemBuilder: (context, i) {
-                      final String styleId = kTextOverlayStyles[i];
-                      final bool isSelected = styleId == selectedStyle;
-                      return GestureDetector(
-                        onTap: () =>
-                            setDialogState(() => selectedStyle = styleId),
-                        child: Container(
-                          width: 64,
-                          decoration: BoxDecoration(
-                            color: Colors.black26,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isSelected
-                                  ? Colors.redAccent
-                                  : Colors.white24,
-                              width: isSelected ? 2 : 1,
-                            ),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              styledOverlayText(
-                                  'Aa', 20, selectedColor, styleId),
-                              const SizedBox(height: 4),
-                              Text(
-                                textOverlayStyleLabel(styleId),
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 9,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Animation',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 64,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: kTextOverlayAnimations.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
-                    itemBuilder: (context, i) {
-                      final String animId = kTextOverlayAnimations[i];
-                      final bool isSelected = animId == selectedAnimation;
-                      return GestureDetector(
-                        onTap: () =>
-                            setDialogState(() => selectedAnimation = animId),
-                        child: Container(
-                          width: 64,
-                          decoration: BoxDecoration(
-                            color: Colors.black26,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: isSelected
-                                  ? Colors.redAccent
-                                  : Colors.white24,
-                              width: isSelected ? 2 : 1,
-                            ),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              AnimatedOverlayText(
-                                text: 'Aa',
-                                fontSize: 20,
-                                color: selectedColor,
-                                styleId: selectedStyle,
-                                animationId: animId,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                textOverlayAnimationLabel(animId),
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 9,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Text color',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: colorChoices.map((color) {
-                    final bool isSelected = color.value == selectedColor.value;
-                    return GestureDetector(
-                      onTap: () => setDialogState(() => selectedColor = color),
-                      child: Container(
-                        width: 30,
-                        height: 30,
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: isSelected ? Colors.white : Colors.white24,
-                            width: isSelected ? 2.5 : 1,
-                          ),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            if (showDelete)
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, {'delete': true}),
-                child: const Text('Delete',
-                    style: TextStyle(color: Colors.redAccent)),
-              ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, {
-                'text': textController.text.trim(),
-                'color': selectedColor,
-                'styleId': selectedStyle,
-                'animationId': selectedAnimation,
-              }),
-              child: Text(showDelete ? 'Save' : 'Add',
-                  style: const TextStyle(color: Colors.redAccent)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Future<void> _addTextOverlay() async {
     final Map<String, dynamic>? result =
-        await _showTextOverlayDialog(title: 'Add text');
+        await showTextOverlayDialog(context, title: 'Add text');
     final String? text = result?['text'] as String?;
     if (text == null || text.isEmpty) return;
     setState(() {
@@ -861,7 +867,8 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   // deleting and re-adding it from scratch.
   Future<void> _editTextOverlay(int index) async {
     final TextOverlayData overlay = _textOverlays[index];
-    final Map<String, dynamic>? result = await _showTextOverlayDialog(
+    final Map<String, dynamic>? result = await showTextOverlayDialog(
+      context,
       title: 'Edit text',
       initialText: overlay.text,
       initialColor: overlay.color,
