@@ -16,6 +16,7 @@ import 'video_effects_screen.dart';
 import 'photo_effects_screen.dart';
 import 'story_music.dart';
 import 'sound_screen.dart';
+import 'sound_moderation.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
@@ -99,6 +100,8 @@ Future<void> addStory(BuildContext context) async {
   // Background music picked in either effects screen (null = none; a
   // video story then keeps - and shares - its own audio).
   StoryMusicSelection? storyMusic;
+  // Whether a video story's own audio may be shared (rights confirmed).
+  bool shareVideoSound = false;
   if (kind == 'video') {
     final TrimResult? trimResult = await Navigator.push<TrimResult>(
       context,
@@ -158,6 +161,7 @@ Future<void> addStory(BuildContext context) async {
     videoFilterType = effects.filterType;
     videoTextOverlays = effects.textOverlays;
     storyMusic = effects.music;
+    shareVideoSound = effects.shareSound;
   }
 
   // Photo stories get their own effects step: color filter + text/sticker
@@ -265,8 +269,9 @@ Future<void> addStory(BuildContext context) async {
 
     // Sound bookkeeping - same `sounds` collection feed posts use:
     //  - picked music: credit it and bump its usage count (trending);
-    //  - a video story without music: its own audio becomes a reusable
-    //    "Original sound" (doc id = story id), exactly like a feed upload.
+    //  - a video story without music whose owner confirmed the rights:
+    //    its own audio becomes a reusable "Original sound" (doc id = story
+    //    id), exactly like a feed upload.
     //    The Bunny video outlives the 14h story, so the sound keeps
     //    working after the story itself expires.
     Map<String, dynamic> soundFields = {};
@@ -277,7 +282,7 @@ Future<void> addStory(BuildContext context) async {
           .doc(storyMusic.soundId)
           .set(
               {'usageCount': FieldValue.increment(1)}, SetOptions(merge: true));
-    } else if (kind == 'video') {
+    } else if (kind == 'video' && shareVideoSound) {
       await FirebaseFirestore.instance
           .collection('sounds')
           .doc(storyRef.id)
@@ -289,6 +294,7 @@ Future<void> addStory(BuildContext context) async {
         'sourceStoryId': storyRef.id,
         'usageCount': 0,
         'createdAt': FieldValue.serverTimestamp(),
+        ...newSoundModerationFields(),
       });
       // No soundSourceUrl here: the viewer just plays the video's own
       // audio; soundId/title only drive the "♪" credit chip.
@@ -781,6 +787,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     final double musicStart =
         (data['soundStartOffset'] as num?)?.toDouble() ?? 0;
     _hasMusic = musicUrl.isNotEmpty;
+    // Started now so it runs alongside the media load: a sound that has
+    // since been removed or hidden after reports must not play.
+    final Future<bool> musicAllowed = _hasMusic
+        ? isSoundPlayable(data['soundId'] as String? ?? '')
+        : Future<bool>.value(false);
 
     if (type == 'video' && url.isNotEmpty) {
       final controller = VideoPlayerController.networkUrl(Uri.parse(url));
@@ -806,6 +817,14 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
           ? Duration(milliseconds: (rawDuration.inMilliseconds / speed).round())
           : _imageDuration;
 
+      if (_hasMusic && !await musicAllowed) {
+        // Hidden sound - fall back to the video's own audio.
+        _hasMusic = false;
+      }
+      if (!mounted || seq != _loadSeq) {
+        await controller.dispose();
+        return;
+      }
       if (_hasMusic) {
         // Music replaces the video's own audio. Start both together.
         await controller.setVolume(0);
@@ -835,12 +854,19 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       _progress.forward();
       if (_hasMusic) {
         // Not awaited: the photo shows right away and the music joins in
-        // as soon as it has buffered.
-        _music.load(
-          musicUrl,
-          startOffset: musicStart,
-          clipSeconds: kStoryMusicClipSeconds,
-        );
+        // as soon as it has been cleared and buffered.
+        musicAllowed.then((allowed) {
+          if (!mounted || seq != _loadSeq) return;
+          if (!allowed) {
+            _hasMusic = false;
+            return;
+          }
+          _music.load(
+            musicUrl,
+            startOffset: musicStart,
+            clipSeconds: kStoryMusicClipSeconds,
+          );
+        });
       }
     }
   }

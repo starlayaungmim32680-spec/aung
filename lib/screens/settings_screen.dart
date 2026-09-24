@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'blocked_users_screen.dart';
+import 'sound_moderation.dart';
 
 // Fly's settings hub - starts with just Blocked accounts, but gives
 // future settings (notifications, privacy, etc.) a proper home instead
@@ -26,6 +27,19 @@ class SettingsScreen extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.copyright, color: Colors.white),
+            title: const Text('Copyright & Sounds',
+                style: TextStyle(color: Colors.white)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const CopyrightPolicyScreen()),
               );
             },
           ),

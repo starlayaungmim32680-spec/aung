@@ -15,6 +15,7 @@ import 'text_overlay_style.dart';
 import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
+import 'sound_moderation.dart';
 import 'content_filter.dart';
 import 'package:flutter_compress/flutter_compress.dart';
 import 'package:video_trimmer_2/video_trimmer_2.dart';
@@ -102,6 +103,11 @@ class _UploadScreenState extends State<UploadScreen> {
   // the sync sheet below when the song runs longer than the video, so the
   // audio doesn't just always start from the song's own 0:00.
   double _selectedSoundStartOffset = 0;
+
+  // Whether this video's own audio may join the shared sounds library.
+  // Off by default - the uploader has to confirm they own the audio (see
+  // sound_moderation.dart). Irrelevant when a borrowed sound is used.
+  bool _shareSound = false;
 
   @override
   void initState() {
@@ -747,6 +753,12 @@ class _UploadScreenState extends State<UploadScreen> {
             .doc(borrowedSoundId)
             .set({'usageCount': FieldValue.increment(1)},
                 SetOptions(merge: true));
+      } else if (!_shareSound) {
+        // The uploader didn't confirm they own this audio, so it stays
+        // private to this post: no sound doc, no "♪" link in the feed.
+        soundId = '';
+        soundTitle = 'Original sound';
+        soundOwnerName = ownerName;
       } else {
         // A fresh upload also becomes a reusable sound of its own. The
         // sound doc shares the post's id so the two are easy to match up.
@@ -769,6 +781,7 @@ class _UploadScreenState extends State<UploadScreen> {
           // and only counts videos that later borrow it.
           'usageCount': 0,
           'createdAt': FieldValue.serverTimestamp(),
+          ...newSoundModerationFields(),
         });
       }
 
@@ -1237,6 +1250,16 @@ class _UploadScreenState extends State<UploadScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          // Only this video's own audio can be shared - a borrowed sound
+          // already belongs to someone else.
+          if (_selectedSoundId == null || _selectedSoundId!.isEmpty)
+            SoundRightsCheckbox(
+              value: _shareSound,
+              onChanged: (v) {
+                if (_isUploading) return;
+                setState(() => _shareSound = v);
+              },
+            ),
           if (_errorMessage != null) ...[
             const SizedBox(height: 12),
             Text(

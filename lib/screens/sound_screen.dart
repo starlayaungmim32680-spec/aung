@@ -6,6 +6,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart';
 import 'upload_screen.dart';
 import 'media_utils.dart';
+import 'sound_moderation.dart';
 
 // Shows one sound (for now always an "Original sound" taken from a user's
 // own upload), lets you listen to it, and lists every video using it -
@@ -31,6 +32,15 @@ class _SoundScreenState extends State<SoundScreen> {
   void dispose() {
     _audioController?.dispose();
     super.dispose();
+  }
+
+  // Pauses the preview without a rebuild-time setState (safe to call from
+  // build when the sound turns out to be hidden).
+  void _stopPreview() {
+    if (_isPlaying) {
+      _audioController?.pause();
+      _isPlaying = false;
+    }
   }
 
   Future<void> _togglePlay(String sourceUrl) async {
@@ -83,6 +93,46 @@ class _SoundScreenState extends State<SoundScreen> {
         elevation: 0,
         title: const Text('Sound', style: TextStyle(color: Colors.white)),
         iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          // Owner: remove own sound. Everyone else: report it.
+          StreamBuilder<DocumentSnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('sounds')
+                .doc(widget.soundId)
+                .snapshots(),
+            builder: (context, snap) {
+              final data = snap.data?.data() as Map<String, dynamic>?;
+              if (data == null || isSoundHidden(data)) {
+                return const SizedBox.shrink();
+              }
+              final String ownerId = data['ownerId'] as String? ?? '';
+              final bool isOwner =
+                  ownerId == FirebaseAuth.instance.currentUser?.uid;
+              if (isOwner) {
+                return IconButton(
+                  tooltip: 'Remove sound',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    setState(_stopPreview);
+                    await confirmRemoveOwnSound(context, widget.soundId);
+                  },
+                );
+              }
+              return IconButton(
+                tooltip: 'Report sound',
+                icon: const Icon(Icons.flag_outlined),
+                onPressed: () {
+                  setState(_stopPreview);
+                  showReportSoundSheet(
+                    context,
+                    soundId: widget.soundId,
+                    ownerId: ownerId,
+                  );
+                },
+              );
+            },
+          ),
+        ],
       ),
       body: StreamBuilder<DocumentSnapshot>(
         stream: FirebaseFirestore.instance
@@ -101,6 +151,21 @@ class _SoundScreenState extends State<SoundScreen> {
             return const Center(
               child: Text('This sound is no longer available',
                   style: TextStyle(color: Colors.grey)),
+            );
+          }
+          if (isSoundHidden(data)) {
+            // Removed by its owner, or hidden after reports pending review.
+            _stopPreview();
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'This sound is unavailable.\nIt was removed or is under '
+                  'copyright review.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
             );
           }
 

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'text_overlay_style.dart';
 import 'story_music.dart';
+import 'sound_moderation.dart';
 
 // One piece of text (or a big emoji "sticker") placed on top of the video.
 // Position is stored as a fraction (0.0-1.0) of the video's width/height so
@@ -251,12 +252,16 @@ class VideoEffectsResult {
   // Background music picked in this screen (stories only - see
   // enableMusic), or null to keep the video's own audio.
   final StoryMusicSelection? music;
+  // Story only: the uploader confirmed they own this video's audio, so it
+  // may be shared as an "Original sound" (see sound_moderation.dart).
+  final bool shareSound;
 
   VideoEffectsResult({
     required this.speed,
     required this.filterType,
     required this.textOverlays,
     this.music,
+    this.shareSound = false,
   });
 }
 
@@ -809,6 +814,7 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   // Story background music (only when widget.enableMusic).
   StoryMusicSelection? _music;
   final StoryMusicPlayer _musicPlayer = StoryMusicPlayer();
+  bool _shareSound = false;
 
   @override
   void initState() {
@@ -958,6 +964,7 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
         filterType: _filterType,
         textOverlays: _textOverlays,
         music: _music,
+        shareSound: _music == null && _shareSound,
       ),
     );
   }
@@ -1165,6 +1172,16 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
               }).toList(),
             ),
           ),
+          // Story: offer to share the clip's own audio (not when a borrowed
+          // sound replaces it).
+          if (widget.enableMusic && _music == null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+              child: SoundRightsCheckbox(
+                value: _shareSound,
+                onChanged: (v) => setState(() => _shareSound = v),
+              ),
+            ),
           // Add text / Add sticker buttons
           SafeArea(
             top: false,

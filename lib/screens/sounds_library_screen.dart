@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
+import 'sound_moderation.dart';
 
 class SoundsLibraryScreen extends StatefulWidget {
   const SoundsLibraryScreen({super.key});
@@ -183,7 +184,12 @@ class _SoundsLibraryScreenState extends State<SoundsLibraryScreen> {
                   );
                 }
 
-                List<QueryDocumentSnapshot> docs = snap.data!.docs;
+                // Removed / heavily reported sounds never show up here
+                // (see sound_moderation.dart).
+                List<QueryDocumentSnapshot> docs = snap.data!.docs
+                    .where((d) =>
+                        !isSoundHidden(d.data() as Map<String, dynamic>?))
+                    .toList();
                 if (_query.isNotEmpty) {
                   docs = docs.where((d) {
                     final data = d.data() as Map<String, dynamic>;
