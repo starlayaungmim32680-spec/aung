@@ -5,6 +5,23 @@
 > the coding conventions, and where every file lives. To edit any file, fetch its
 > **current** content from the raw GitHub URL (pattern below), then reply with a
 > **full-file rewrite** (not a diff).
+>
+> _Last major update: 26 Sep 2026 (photo-story effects, story music, sound
+> copyright safeguards, full Firestore rules, Bunny upload fixes + "video
+> ready" webhook). Sections marked **(Sep 2026)** describe that batch._
+
+> ⚠️ **Keep deployed code and the repo in sync (Ko's standing rule).**
+> Two things run outside the Flutter app and are deployed **by hand**:
+> the **Cloudflare Worker** (repo copy: `cloudflare/livekit_token_worker.js`)
+> and the **Firestore security rules** (repo copy: `firestore.rules`).
+> Every time either one is changed and Deployed (Cloudflare) or Published
+> (Firebase Console), the **same file must also be committed and pushed**
+> to this repo in the same session. Otherwise the repo copy silently drifts
+> from what's actually live, and the next assistant will edit an outdated
+> version. As the assistant: after giving Ko a new Worker or rules file,
+> always finish with the `git add` / `commit` / `push` steps for it, and
+> before editing either file, ask Ko to confirm the repo copy still matches
+> what's live.
 
 ---
 
@@ -71,6 +88,16 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
   stylized as a bird (tail feathers before the F, wings sprouting near the Y,
   a round head+beak+eye after it) — inspired by wordmark-as-object techniques
   (e.g. "BEE" drawn as an actual bee). Not finalized into app-icon assets yet.
+- When walking Ko through a web dashboard (Cloudflare, Bunny, Firebase
+  Console), give **click-by-click steps** and have him send a screenshot
+  when unsure. Before any **Delete** button, tell him to read the dialog's
+  title first — in Sep 2026 a "Delete secret APP_SHARED_SECRET" dialog
+  opened by mistake while he was trying to delete a different variable (it
+  was cancelled in time; deleting it would have broken calls, uploads and
+  live streaming). Never ask him to paste secrets/tokens into the chat.
+- Ko plans to **earn money from the app later** (ads/coins), so treat
+  licensing, copyright, security and cost-at-scale as real requirements, not
+  nice-to-haves.
 - The assistant (Claude) typically has **no Flutter SDK, emulator, or physical
   device** in its own environment — it cannot run `flutter analyze`,
   `flutter build`, or `flutter run` itself. Always give Ko the exact commands
@@ -86,11 +113,20 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
   Auth**. On the **free Spark plan** (NO Cloud Functions / no Blaze) — Ko has
   no card, so anything requiring Blaze is avoided; the Cloudflare Worker (see
   below) fills the "need a trusted server" role instead.
-  - No `firestore.rules` file is version-controlled in this repo — security
-    rules are managed directly in the **Firebase Console → Firestore → Rules**.
-    If you add a new collection/field the client reads or writes, remind Ko to
-    check/update the rules in the Console; you cannot inspect or confirm the
-    current rules yourself.
+  - **(Sep 2026)** The full security rules now live in **`firestore.rules`
+    at the repo root**, written from an audit of every Firestore read/write
+    in `lib/`. They are still **published by hand** (Firebase Console →
+    Firestore → Rules → paste the whole file → Publish) — nothing deploys
+    them automatically. Treat the repo file as the source of truth: edit it,
+    give Ko the full file, and remind him to paste + Publish. If something
+    fails with `permission-denied` after a change, the rules are the first
+    suspect. Highlights: owners-only edits for posts/stories/comments/
+    profile; others may only toggle their own entry in a `reactions` map;
+    chats/calls readable only by the two uids in the room id; `reports` is
+    write-only; `videoStatus` is read-only for the app (the Worker writes it
+    with a service account, which bypasses rules); `sounds` rules stop anyone
+    undoing the report auto-hide (see the Sounds note below); coins may rise
+    by at most 10 per write and never go negative.
   - Firestore offline persistence is explicitly configured in `main.dart`
     (`Settings(persistenceEnabled: true, cacheSizeBytes:
 Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
@@ -105,20 +141,68 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
   - Library ID `756617`, CDN hostname `vz-a6ab9346-730.b-cdn.net`.
   - The real Bunny API key lives ONLY as a Cloudflare Worker secret
     (`BUNNY_API_KEY`/`BUNNY_LIBRARY_ID`) — never in the Flutter app.
-  - **Upload flow:** `upload_screen.dart` POSTs the (already client-side
-    compressed) video bytes as a plain streamed request body straight to the
-    Worker's `/upload-video` endpoint (headers: `X-App-Secret`,
-    `X-Video-Title` — always a fixed ASCII string like `"Fly video"`, never
-    the user's real caption, since HTTP header values can't contain non-ASCII
-    text like emoji or Burmese script and this threw a real
-    `FormatException` in testing). The Worker creates the Bunny video slot
-    and relays the request body straight through to Bunny's direct PUT
-    upload API — it never buffers the whole file in memory. Two earlier
-    upload mechanisms were tried and abandoned: a resumable TUS-based flow
-    (a `/create-video` endpoint + a client-side TUS library) turned out to
-    silently produce 0-byte videos on Bunny in practice across two different
-    TUS packages — the plain streamed-POST-to-Worker-proxy above is what
-    actually works, confirmed on-device.
+  - **Upload flow (rewritten Sep 2026):** both feed posts
+    (`upload_screen.dart`) and video stories (`story_screen.dart`) now go
+    through **`video_upload_service.dart`**:
+    1. trim (feed only - stories are cut earlier) → `compressVideoForUpload()`
+       on the **final, trimmed file** (flutter_compress, 1280px, ~60%; falls
+       back to the original if compression fails or doesn't shrink it, and
+       logs why via `debugPrint`) — before this, a failed compression on a
+       trimmed feed video uploaded the **untrimmed** original, and story
+       videos were never compressed at all (a 16s clip was 65 MB on Bunny);
+    2. `uploadVideoToBunny()` streams the file **from disk** (not memory) as
+       a plain POST to the Worker's `/upload-video` with a real
+       `Content-Length`, headers `X-App-Secret` + `X-Video-Title` (fixed
+       ASCII like `"Fly video"`/`"Fly story"` — HTTP headers can't carry
+       Burmese/emoji); rejects 0-byte files and anything over **95 MB**
+       (Cloudflare free-plan body limit is 100 MB); timeout **scales with
+       file size** (2–25 min, sized for a ~40 KB/s link) and on timeout the
+       HTTP client is **closed**, which really aborts the request (a bare
+       Dart `.timeout()` only stops waiting while the old upload keeps
+       running in the background).
+       The Worker creates the Bunny video slot, then relays the body through a
+       `FixedLengthStream(Content-Length)` to Bunny's PUT API — so a phone that
+       drops mid-upload makes the relay **fail** instead of Bunny silently
+       accepting a short/empty file — and **deletes the slot** if anything goes
+       wrong, returning an error so the app never creates a post for it.
+       **Root cause of the stuck "Processing / 0 Bytes" videos seen on Bunny
+       (Sep 2026):** a very slow phone connection (9 KB/s was observed) plus the
+       old Worker neither checking the length nor cleaning up. It was not Bunny
+       being slow (status.bunny.net showed no incident that day).
+       Earlier history: a resumable TUS flow (`/create-video` + a client TUS
+       library) was tried before the Worker proxy and produced 0-byte videos
+       across two TUS packages; the cause was never pinned down. TUS remains an
+       option for true resume-after-disconnect on bad connections, but only if
+       the current path still fails in practice.
+  - **"Video ready" flow (Sep 2026)** — so nobody but the uploader ever sees
+    "Processing" while Bunny encodes:
+    - New video posts/stories are written with `bunnyVideoId` +
+      `videoReady: false` (`newVideoReadinessFields()`).
+    - Bunny calls the Worker's **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`**
+      (set in Bunny → Stream → library → Webhook URL; the token is a Worker
+      secret, never commit or paste it). On status 3/4 (finished / first
+      resolution playable) it writes `videoStatus/{bunnyGuid}` `{ready,
+failed, status, updatedAt}` and sets `videoReady: true` on any
+      post/story whose `bunnyVideoId` matches (status 5 → `videoFailed:
+true`). It uses the same Firebase service account as `/call-push`,
+      with the Datastore OAuth scope, via Firestore's REST API.
+    - Race-proofing: the app creates the doc and **then** calls
+      `syncVideoReady()`, which checks `videoStatus/{id}` and flips the flag
+      itself if encoding already finished first.
+    - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
+      hides a doc, and never from its own uploader. Applied to the **Home
+      feed** (both post streams in `home_screen.dart`) and the **Stories
+      bar**. Old docs without the field stay visible.
+    - The uploader plays their fresh video **instantly from the local file**
+      via `LocalVideoCache` (`local_video_cache.dart`, keyed by videoUrl,
+      in-memory only). If the app restarts before encoding ends, playback
+      falls back to the network and `_VideoPostItem` shows a
+      **"Processing video..."** card that silently retries every 5s for
+      Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't load".
+    - Confirmed working end-to-end on two phones on 26 Sep 2026.
+    - Encoding speed tip given to Ko: in Bunny → Stream → library →
+      Encoding, keep only **360p/480p/720p** (fewer renditions = faster
+      encoding and less storage cost).
   - **Playback:** the stored `videoUrl` for a Bunny post is the HLS playlist,
     `https://vz-a6ab9346-730.b-cdn.net/<videoId>/playlist.m3u8` —
     `video_player`'s underlying ExoPlayer/AVPlayer plays this as real
@@ -217,9 +301,29 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
     filter), positioned text-overlay widgets, and `setPlaybackSpeed` (with
     the progress-bar segment's duration divided by speed, so it still
     finishes in step with the actual sped-up/slowed-down playback).
-    **Story photos have no effects step yet** - `VideoEffectsScreen` is
-    built around `VideoPlayerController` and can't take a still image; a
-    separate photo-effects screen is still to come.
+    **Story photos (Sep 2026)** get their own `PhotoEffectsScreen`
+    (`photo_effects_screen.dart`): the same filter presets
+    (`kVideoFilterMatrices`) with live thumbnails, text overlays (same
+    style/animation/color dialog) and emoji/Klipy stickers, plus music.
+    Nothing is baked into the pixels — the original JPEG is uploaded and the
+    effects are stored on the story doc (`filterType`, `textOverlays`,
+    `imageAspectRatio`). The viewer lays the image out in an `AspectRatio`
+    box with that saved ratio so overlays land exactly where they were
+    placed; old photo stories without the ratio keep the plain
+    `BoxFit.contain` display. The filter uses a `ValueNotifier` so switching
+    filters doesn't rebuild the overlays (Ko's flicker rule).
+  - **Story music (Sep 2026)** — photo and video stories can pick a sound
+    from the existing user-generated `sounds` library (see Sounds below)
+    and choose a 15s window (`sound_sync_sheet.dart`). Unlike feed posts,
+    nothing is muxed into the file: the story doc stores `soundId`,
+    `soundTitle`, `soundOwnerName`, `soundSourceUrl`, `soundStartOffset`, and
+    the viewer plays that window on a separate looping player
+    (`StoryMusicPlayer` in `story_music.dart`) while muting the video. A
+    photo story with music stays up 15s instead of 6s. A "♪ Title · Owner"
+    chip under the author opens `SoundScreen` (story pauses, resumes on
+    return). Hidden/removed sounds are checked (`isSoundPlayable`) before
+    playing. A video story without music can share its own audio as an
+    "Original sound" (doc id = story id) if the rights box is ticked.
   - **Stories can now be deleted** by their owner: a delete icon next to
     the viewer's close button (shown only when
     `data['userId'] == the signed-in user's uid`), behind the same
@@ -228,6 +332,43 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
     "best-effort" scope as the rest of the app's delete flows) and removes
     it from the viewer's local list so browsing the rest of that batch
     keeps working without reopening the viewer.
+- **Sounds & copyright (Sep 2026)** — Fly has **no licensed music**. The
+  only music source is the user-generated `sounds` collection (every
+  video's own audio can become an "Original sound"). Ko wants to monetize
+  later, so the library carries safeguards (`sound_moderation.dart`):
+  - **Opt-in sharing:** a "Let others use my sound — I created this audio or
+    have the rights to share it" checkbox (`SoundRightsCheckbox`), **off by
+    default**, on feed uploads and video stories. Unticked → the video posts
+    normally but no `sounds` doc is created (feed `soundId` is `''`).
+  - **Report:** flag icon on `SoundScreen` (owner sees a delete icon
+    instead). Writes a `reports` doc (`targetType: 'sound'`) and adds the
+    reporter's uid to `sounds/{id}.reportedBy` (arrayUnion, so one person
+    counts once).
+  - **Auto-hide:** `kSoundReportHideThreshold = 5` distinct reporters →
+    hidden from the library, sound page and story playback, with no manual
+    step. Review in the Firebase Console by setting `status`: `'approved'`
+    (show again, ignore reports) or `'removed'` (hide for good). Owners can
+    set their own sound to `'removed'`; only the Console can approve.
+  - **Policy page:** Settings → "Copyright & Sounds"
+    (`CopyrightPolicyScreen`), with a takedown contact email from
+    `kCopyrightContactEmail` (set by Ko; the repo is public, so it's visible).
+  - Discussed but **not built yet**: a strike system (block sharing after 3
+    removed sounds), automatic song recognition before sharing (AudD API,
+    ~$5 per 1,000 checks after 300 free), and direct MP3 upload (only
+    planned after recognition exists). Licensed catalogs were ruled out for
+    now: Jamendo's API is free only for non-commercial use; Epidemic Sound's
+    Partner API is free to prototype but going live is paid (price via
+    sales). A lawyer should review the Terms before monetizing.
+- **Bunny billing (Sep 2026):** Bunny is prepaid, not free: encoding is free,
+  storage from $0.01/GB, delivery from $0.005/GB, **$1/month minimum**. Ko's
+  account was on a **14-day free trial ($20 credit) ending around 3 Oct
+  2026**, with $0.00 real balance — trial credit disappears when the trial
+  ends, and a $0 balance can suspend Stream/Storage (all videos, photos,
+  stories). He needs to add billing info and recharge (~$10 lasts months at
+  current usage); paying from Myanmar may need a foreign card, PayPal or
+  crypto. Cloudflare Worker stays on its free plan either way — keeping calls
+  and push working even if Bunny lapses was one reason not to move the
+  Worker to Bunny Edge Scripting.
 - **LiveKit** (video/voice calls + live streaming) — Cloud project (NOT
   self-hosted), free "Build" plan, **no card on file** (5,000 WebRTC
   participant-minutes + 50GB data transfer per month, hard cap since there's
@@ -238,10 +379,11 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
   session: ~49 minutes / ~12MB over 7 days — nowhere near the limit at
   current (testing-scale) usage.
   - The token server is a **Cloudflare Worker**
-    (`livekit-token-worker.chakaboycom.workers.dev`, source file
-    `livekit_token_worker.js`, chosen specifically to avoid needing Firebase
-    Blaze billing) with four routes, all requiring an `X-App-Secret` header
-    matching the `APP_SHARED_SECRET` secret:
+    (`livekit-token-worker.chakaboycom.workers.dev`; source now copied into
+    this repo at **`cloudflare/livekit_token_worker.js`**, chosen
+    specifically to avoid needing Firebase Blaze billing). All routes except
+    the Bunny webhook require an `X-App-Secret` header matching the
+    `APP_SHARED_SECRET` secret:
     - `POST /token` — mints a LiveKit access token (`LIVEKIT_API_KEY`/
       `LIVEKIT_API_SECRET`/`LIVEKIT_URL` secrets).
     - `POST /call-push` — sends an FCM push (Google service-account OAuth2
@@ -251,7 +393,11 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
       in `main.dart`.
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
-    - `POST /upload-video` — the video upload proxy described above.
+    - `POST /upload-video` — the video upload proxy described above
+      (length-checked, cleans up failed slots).
+    - `POST /bunny-webhook?token=...` — called by Bunny, not the app;
+      authenticated by the `BUNNY_WEBHOOK_TOKEN` secret in the URL; sets
+      `videoReady` (see "Video ready" flow above).
     - `POST /upload-image` — plain pass-through PUT to Bunny Storage, used
       for profile photos and story images (see the profile/story note
       further down in this section).
@@ -366,13 +512,17 @@ device_info_plus, flutter_callkit_incoming, proximity_sensor, gal.
 
 No `bunny_dart`, `tus_client`, `tusc`, or `cross_file` — all were tried and
 removed during the upload-mechanism debugging described above; the final
-Bunny upload path only needs the `http` package, already present.
+Bunny upload path only needs the `http` package, already present. Also used:
+`video_trimmer_2` (physical trim) and `flutter_cache_manager`.
 
 ### Build toolchain (bleeding-edge but working)
 
 AGP 8.9.1, Gradle 9.1.0, JDK 25, compileSdk 36.
 ⚠️ Never edit gradle/dart/XML files with Notepad or PowerShell here-strings
 (they inject a BOM / strip characters). Use VS Code only.
+`.gitignore` ignores `/build/` and (since Sep 2026) `/android/build/`. Git on
+Ko's Windows machine prints harmless "LF will be replaced by CRLF" warnings
+for files the assistant writes.
 ⚠️ A one-time gotcha unrelated to this project's own code: Windows's "Smart
 App Control" security feature can block Flutter's own bundled tools (e.g.
 `font-subset.exe`) from running at all, surfacing as a generic
@@ -457,8 +607,8 @@ issue if this comes up again.
   and the `isUserOnline(userData)` helper (`isOnline == true` **and**
   `lastActive` within the last 60 seconds) used by both the Chat list and
   Profile screens.
-- `screens/settings_screen.dart` — small settings hub (currently just links to
-  Blocked accounts; a natural place to add future settings instead of piling
+- `screens/settings_screen.dart` — small settings hub (Blocked accounts and,
+  since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling
   onto `profile_screen.dart`'s 3-dot menu). Opened via a gear icon in
   `profile_screen.dart`'s AppBar.
 - `screens/blocked_users_screen.dart` — lists everyone the current user has
@@ -503,7 +653,13 @@ issue if this comes up again.
     in one `_VideoPostItem` instance (e.g. Home) and not another (e.g.
     `FullScreenVideoScreen`) depending on timing; this is expected, not a
     bug, for Cloudinary posts, and moot for Bunny posts (cache skipped
-    entirely).
+    entirely). **(Sep 2026)** `_initializeVideo()` first checks
+    `LocalVideoCache` (uploader's own fresh video → play the local file),
+    and on a failed load of a Bunny post under 30 minutes old shows
+    "Processing video..." with a 5s auto-retry (`_isProcessing`,
+    `_processingRetryTimer`, cancelled in `dispose()`) instead of the error.
+    The two Home feed streams drop not-yet-ready videos via
+    `isVideoVisibleTo()`.
   - `_FeedSlots` / `_FeedItem` — feed ordering/pagination helpers, including
     periodic "Shorts shelf" slots inserted into the display sequence.
   - `VideoPreloadCache` lives in its own file (see below) but is used
@@ -534,22 +690,44 @@ issue if this comes up again.
   wrapper + positioned overlay widgets + `setPlaybackSpeed`), and
   `story_screen.dart`'s viewer does the same for story videos. The video is
   physically trimmed to the selected range (see §3's Trim note) and
-  client-side compressed (flutter_compress, 1280px cap, ~60% bitrate)
-  before upload, to cut file size/bandwidth cost. Network-aware: fails fast
-  with a friendly message if offline before starting, has a 120s send
-  timeout, does one quiet auto-retry (3s delay) on a classified network
-  error before giving up, and relabels the button "Retry Upload" after a
-  failure — the picked video/caption state is preserved either way.
+  client-side compressed, then uploaded via `video_upload_service.dart`
+  (see §3 for compression, size-based timeout, 95 MB cap). Network-aware:
+  fails fast with a friendly message if offline before starting, does one
+  quiet auto-retry (3s delay) on a network error
+  (`VideoUploadException.isNetworkIssue`) before giving up, and relabels the
+  button "Retry Upload" after a failure — the picked video/caption state is
+  preserved either way. Writes `bunnyVideoId`/`videoReady: false`, registers
+  the local file with `LocalVideoCache`, and shows the "Let others use my
+  sound" rights checkbox (only when no borrowed sound is picked).
 - `screens/trim_editor_screen.dart` — video trim UI (video_editor). Every
   picked video (camera or gallery) is unconditionally routed through here.
   Takes an optional `maxDurationSeconds` (default 90; stories pass 15 - see
   §3) that caps how large a range can be selected.
 - `screens/video_effects_screen.dart` — speed/color-filter/text-overlay
   picker, used by both `upload_screen.dart` and (for videos only)
-  `story_screen.dart`. Returns a `VideoEffectsResult`; see the note under
-  `upload_screen.dart` above for how these get applied (live at playback,
-  not baked into the file).
-- `screens/text_overlay_style.dart` — the `TextOverlayData` model plus
+  `story_screen.dart`. Returns a `VideoEffectsResult` (plus `music` and
+  `shareSound` when opened with `enableMusic: true`, which only stories do).
+  Also home of the **`TextOverlayData`** model, `kVideoFilterMatrices`, the
+  Klipy sticker search, and two top-level pickers shared with
+  `photo_effects_screen.dart`: `showTextOverlayDialog()` and
+  `showOverlayStickerPicker()`.
+- `screens/photo_effects_screen.dart` **(Sep 2026)** — photo-story editor:
+  filter strip, text overlays, stickers, music. Returns
+  `PhotoEffectsResult {filterType, textOverlays, aspectRatio, music}`.
+- `screens/story_music.dart` **(Sep 2026)** — `StoryMusicSelection`,
+  `pickStoryMusic()` (library + 15s window), `StoryMusicPlayer` (loops one
+  window of a sound; load tokens stop a superseded load from playing), and
+  the "♪ Title · Owner" `StoryMusicChip`.
+- `screens/sound_moderation.dart` **(Sep 2026)** — copyright safeguards:
+  rights checkbox, report sheet, auto-hide threshold, owner remove,
+  `isSoundHidden`/`isSoundPlayable`, and `CopyrightPolicyScreen` (§3).
+- `screens/video_upload_service.dart` **(Sep 2026)** — shared video
+  compress + upload (`compressVideoForUpload`, `uploadVideoToBunny`,
+  `VideoUploadException`) and the readiness helpers
+  (`newVideoReadinessFields`, `syncVideoReady`, `isVideoVisibleTo`).
+- `screens/local_video_cache.dart` **(Sep 2026)** — in-memory videoUrl →
+  local file map for instant playback of the uploader's own new video.
+- `screens/text_overlay_style.dart` — overlay style presets and
   `AnimatedOverlayText`, the actual widget that renders one overlay
   (background/shadow/neon/impact/gradient styles, looping entrance/exit
   animations) - shared by the upload preview, `home_screen.dart`'s feed
@@ -573,7 +751,11 @@ issue if this comes up again.
   posts - see §3) → 14-hour expiry, full-screen viewer with segmented
   progress bars + auto-advance (applying those same effects live - see §3),
   a delete button for the story's own owner, floating reactions that rise
-  up, and a "See who reacted" list for the story owner.
+  up, and a "See who reacted" list for the story owner. **(Sep 2026)**
+  Photo stories go through `PhotoEffectsScreen`; both kinds can have music;
+  video stories use `video_upload_service.dart` (now compressed), are
+  hidden from others until `videoReady`, and play from the local file for
+  their poster.
 - `screens/chat_screen.dart` — chat list (`ChatScreen`/`_ChatScreenState`,
   actually lists **all other users**, not just existing conversations — it's
   also how you start a brand-new chat) + `ChatThreadScreen` (text / image /
@@ -605,8 +787,12 @@ issue if this comes up again.
 - `screens/live_screen.dart` — live streaming.
 - `screens/gifting.dart` — virtual gifting.
 - `screens/wallet_screen.dart` — in-app wallet/coins.
-- `screens/sound_screen.dart`, `screens/sounds_library_screen.dart` — sound/
-  music attached to posts and a browsable sound library.
+- `screens/sound_screen.dart`, `screens/sounds_library_screen.dart`,
+  `screens/sound_sync_sheet.dart` — a sound's page (videos using it, "Use
+  this sound", report/remove), the browsable/searchable library (hides
+  removed/over-reported sounds), and the "choose part of the song" sheet.
+- `screens/search_screen.dart`, `screens/translation_service.dart` — search
+  and caption translation.
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list.
 - `notification_service.dart` — flutter_local_notifications wrapper;
@@ -626,16 +812,26 @@ issue if this comes up again.
 
 ### Outside the Flutter repo
 
-- **Cloudflare Worker** (`livekit_token_worker.js`) — not in this git repo;
-  lives in the Cloudflare dashboard (Workers & Pages →
-  `livekit-token-worker` → Edit code). If you need to change it, ask Ko to
-  paste the current content (there's no raw-URL fetch for it the way there
-  is for the Flutter repo), and always give him the full file back to paste
-  over the whole thing, same as any other file here.
+- **Cloudflare Worker** — **runs** in the Cloudflare dashboard (Workers &
+  Pages → `livekit-token-worker` → Edit code → Deploy), but since Sep 2026 a
+  copy of the deployed code is kept in this repo at
+  **`cloudflare/livekit_token_worker.js`** (fetch it via the raw URL). It
+  contains no secrets — all keys come from `env.*` Worker secrets:
+  `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`,
+  `APP_SHARED_SECRET`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`,
+  `FIREBASE_PRIVATE_KEY_B64`, `BUNNY_LIBRARY_ID`, `BUNNY_API_KEY`,
+  `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_PASSWORD`, `BUNNY_WEBHOOK_TOKEN`.
+  Deploying is manual: give Ko the full file to paste over everything and
+  press Deploy, then have him commit the same file here so the copy doesn't
+  drift. If in doubt whether the repo copy matches what's deployed, ask him.
+- **`firestore.rules`** (repo root) — see §3; published by hand in the
+  Firebase Console.
 - **Bunny.net Stream dashboard** — Library ID 756617,
-  `vz-a6ab9346-730.b-cdn.net`. Video processing status ("Processing" →
-  "Finished") is visible per-video here; useful to check first if a newly-
-  uploaded video won't play yet (may just still be transcoding, not broken).
+  `vz-a6ab9346-730.b-cdn.net`. Per-video status and **size** are visible
+  here: "Processing" with **0 Bytes / 00:00:00** means the upload never
+  arrived (it will never finish — delete it), whereas a real size means it's
+  just still encoding. Webhook URL is configured under the library settings.
+  Incidents: https://status.bunny.net.
 
 _(If a path differs slightly, list the repo tree via the GitHub API or fetch the
 directory to confirm before editing. Given how large `home_screen.dart` is,
@@ -656,7 +852,10 @@ screen needs to be created from scratch — it may already exist there.)_
     users' posts, and by `blocked_users_screen.dart` to list/unblock. Not yet
     enforced in chat (see `blocked_users_screen.dart` note above).
 - `posts/{id}`: { userId, userEmail, videoUrl (Bunny HLS playlist for new
-  posts, Cloudinary mp4 for old ones — see §3), caption,
+  posts, Cloudinary mp4 for old ones — see §3), bunnyVideoId, videoReady,
+  videoFailed (Sep 2026, see §3 "Video ready"), soundId ('' when the audio
+  wasn't shared), soundTitle, soundOwnerName, hashtags, replyToPostId/
+  replyToOwnerId/replyToOwnerName (video replies), caption,
   reactions:{uid→type}, videoType('short'|'long'), createdAt, videoSpeed,
   filterType, blurBackground, textOverlays, effectsBaked (checked by
   `home_screen.dart`'s playback code, but no current upload path actually
@@ -669,10 +868,12 @@ screen needs to be created from scratch — it may already exist there.)_
   - `posts/{id}/views/{uid}`, `posts/{id}/saves/{uid}`, `posts/{id}/shares/{uid}`
     — one doc per user, used for counting.
 - `stories/{id}`: { userId, userName, userPhoto, mediaUrl, mediaType('image'|
-  'video'), createdAt, expiresAt, and for a video story only:
-  videoSpeed, filterType, textOverlays (see §3 - no photo-story effects
-  screen yet, so these are simply absent on an image story) } — filtered
-  client-side by `expiresAt > now` (14-hour lifetime).
+  'video'), createdAt, expiresAt, filterType, textOverlays; video only:
+  videoSpeed, bunnyVideoId, videoReady, videoFailed; image only:
+  imageAspectRatio; optional music: soundId, soundTitle, soundOwnerName,
+  soundSourceUrl (absent = play the video's own audio), soundStartOffset }
+  — filtered by `expiresAt > now` (14-hour lifetime); older stories may lack
+  the Sep 2026 fields and still work.
   - `stories/{id}/reactions/{uid}`: { uid, type, userName, userPhoto, createdAt }
 - `chats/{chatId}` (chatId = sorted `{uidA}_{uidB}`): { participants: [uidA,
   uidB], lastMessage, lastMessageAt, lastSenderId, lastCallAt }, plus
@@ -681,11 +882,25 @@ screen needs to be created from scratch — it may already exist there.)_
   status ('ringing'/...), createdAt } — call signaling. See §3 for the two
   known bugs around this doc's lifecycle (decline-while-killed,
   cancel-while-ringing).
+- `sounds/{id}` (id = source post or story id): { ownerId, ownerName, title,
+  sourceUrl, sourcePostId | sourceStoryId, usageCount, createdAt, and since
+  Sep 2026: status ('active'|'approved'|'removed'), rightsConfirmed,
+  rightsConfirmedAt, reportedBy: [uid] }. Older sounds lack the moderation
+  fields and stay visible.
+- `reports/{id}`: { targetType ('post'|'comment'|'user'|'sound'), targetId,
+  targetOwnerId, parentPostId?, reporterId, reason, status, createdAt } —
+  write-only from the app; reviewed in the Console.
+- `videoStatus/{bunnyVideoGuid}` (Sep 2026): { ready, failed, status,
+  updatedAt } — written only by the Worker's Bunny webhook.
+- Gifting/live: `users/{uid}` also holds `coins`, `lastLoginRewardDate`,
+  and daily reward counters; `users/{uid}/followRewards/{targetId}`,
+  `users/{uid}/supporters/{senderId}`; `liveStreams/{hostUid}` with
+  `viewers`, `reactions`, `comments`, `gifts` subcollections.
 
-**Firestore security rules** are managed in the **Firebase Console → Firestore →
-Rules** (NOT auto-deployed from this repo, and not readable by the assistant).
-If you add a new collection or subcollection that the client reads/writes,
-remind Ko to update and publish the rules in the Console.
+**Firestore security rules:** source of truth is `firestore.rules` in the
+repo root (§3); published by hand in the Firebase Console. If you add a
+collection/field the client reads or writes, update that file and remind Ko
+to paste + Publish it.
 
 ---
 
@@ -714,7 +929,12 @@ quality, load-error retry, upload retry, offline-persisted chat/feed,
 disk-cached recently-watched Cloudinary videos) · video hosting on **Bunny
 Stream** (migrated from Cloudinary; auto-transcoding/adaptive HLS/
 thumbnails) with a real, physical, client-side **video trim** · profile
-photos and story images on **Bunny Storage**.
+photos and story images on **Bunny Storage** · **(Sep 2026)** photo-story
+effects (filter/text/stickers) · story music from the sounds library ·
+sound copyright safeguards (rights checkbox, report, auto-hide at 5
+reports, policy page) · full Firestore security rules · reliable Bunny
+uploads (no more 0-byte videos) · instant playback of your own new video +
+others only see it once encoded (Bunny webhook).
 
 ### Known, deliberately-not-yet-fixed gaps
 
@@ -726,10 +946,23 @@ photos and story images on **Bunny Storage**.
 - Borrowed Sound doesn't work for new (Bunny-hosted) video posts — see §3;
   it's blocked at upload time with a message. (Trim, listed here in an
   earlier version of this file, now actually works - see §3.)
-- Story **photos** have no effects (filter/text-overlay) step yet - only
-  story videos do, reusing the same screen feed-post uploads use. A
-  separate photo-effects screen (VideoEffectsScreen can't take a still
-  image) is still to come.
+- **Security (to do next):** `kAppSharedSecret` is a plain `const` in
+  `video_call_screen.dart` in a **public** repo, so anyone can call the
+  Worker (upload to Ko's Bunny, mint LiveKit tokens). Plan: have the app
+  send a Firebase ID token and have the Worker verify it instead.
+- **Coins are granted client-side** (`gifting.dart`); the rules only cap each
+  write at +10. Fine while coins are free, but must move server-side
+  (Worker) before coins are ever sold or cashed out.
+- **Delete-account bug:** `profile_screen.dart` deletes posts with
+  `where('ownerId', ...)`, but posts store `userId`, so a deleted account's
+  posts are left behind.
+- `videoReady` filtering covers the Home feed and Stories bar only; profile
+  grids, search and sound pages can still list a video that's still
+  encoding. Phones on an **older app build** ignore `videoReady` entirely and
+  show everything (consider a force-update check before launch).
+  `LocalVideoCache` is memory-only (lost on app restart).
+- Not built yet: sound strike system, song recognition (AudD), direct MP3
+  upload, resumable (TUS) uploads.
 - Offline replay of a previously-watched video only works for old
   Cloudinary posts, not new Bunny (HLS) ones — see §3.
 - Two call-lifecycle bugs (decline-while-app-killed not reaching the
@@ -750,8 +983,9 @@ photos and story images on **Bunny Storage**.
 2. When Ko asks to change something, **fetch the current file(s)** from the raw
    GitHub URL(s) so you edit the real, up-to-date code — don't rely on this
    file's descriptions for exact code content, only for orientation. The
-   Cloudflare Worker is the one exception — it's not in this repo (see §4,
-   "Outside the Flutter repo"); ask Ko to paste its current content instead.
+   Cloudflare Worker's copy is at `cloudflare/livekit_token_worker.js` and
+   the rules at `firestore.rules` — both are deployed by hand, so confirm
+   with Ko that the repo copy matches what's live before editing (§4).
 3. For anything nontrivial (layout/rendering bugs, navigation, native Android
    code, anything touching video playback or calls), prefer a short read-only
    investigation and a stated plan before editing, and keep changes as small
@@ -761,8 +995,12 @@ photos and story images on **Bunny Storage**.
    next attempt is right either — ask Ko to actually test before declaring it
    fixed; today's Bunny upload work needed three attempts before one worked.
 4. Reply in Burmese with a **full-file rewrite** (English comments/strings).
-5. If a new collection/field is added, tell Ko to update **Firestore rules** in
-   the Firebase Console.
+5. If a new collection/field is added, update **`firestore.rules`** and tell
+   Ko to paste + Publish it in the Firebase Console. If the Worker changed,
+   give him the full file to paste + Deploy. **In both cases, then walk him
+   through committing and pushing that same file** (see the "Keep deployed
+   code and the repo in sync" rule at the top of this file) — a deploy isn't
+   finished until the repo copy matches.
 6. After changes, remind Ko to run `flutter pub get` (if a dependency
    changed), then **`flutter analyze` before building** (catches type/import
    errors immediately instead of burning a full APK build cycle on them),
