@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:async';
@@ -17,6 +16,8 @@ import 'photo_effects_screen.dart';
 import 'story_music.dart';
 import 'sound_screen.dart';
 import 'sound_moderation.dart';
+import 'video_upload_service.dart';
+import 'local_video_cache.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 
@@ -201,6 +202,10 @@ Future<void> addStory(BuildContext context) async {
     if (user == null) throw Exception('Not logged in');
 
     String mediaUrl;
+    // Video stories only: Bunny id + the local file, for instant playback
+    // by the poster and the "ready" flag (see video_upload_service.dart).
+    String? storyBunnyVideoId;
+    String? storyLocalVideoPath;
     if (kind == 'image') {
       // Images go to Bunny Storage - no transcoding needed, so this is a
       // plain pass-through PUT via the Worker's /upload-image (same
@@ -228,28 +233,17 @@ Future<void> addStory(BuildContext context) async {
       // Videos go to Bunny Stream via the Worker's /upload-video - the
       // same endpoint upload_screen.dart uses for feed posts. Bunny
       // transcodes to adaptive-bitrate HLS automatically.
-      final Uint8List bytes = await videoFileToUpload.readAsBytes();
-      final http.StreamedRequest streamed = http.StreamedRequest(
-        'POST',
-        Uri.parse('$kTokenServerUrl/upload-video'),
-      )
-        ..headers['X-App-Secret'] = kAppSharedSecret
-        ..headers['X-Video-Title'] = 'Fly story'
-        ..headers['Content-Type'] = 'video/mp4'
-        ..contentLength = bytes.length;
-      streamed.sink.add(bytes);
-      unawaited(streamed.sink.close());
-
-      final http.StreamedResponse response = await http.Client()
-          .send(streamed)
-          .timeout(const Duration(seconds: 120));
-      final String responseBody = await response.stream.bytesToString();
-      if (response.statusCode != 200) {
-        throw Exception('Video upload failed: $responseBody');
-      }
-      final Map<String, dynamic> uploadResult = jsonDecode(responseBody);
-      final String videoId = uploadResult['videoId'];
+      // Stories now get the same compression + upload path as feed videos
+      // (see video_upload_service.dart) - before, story videos went up
+      // uncompressed with a fixed 2-minute timeout.
+      final File storyVideo = await compressVideoForUpload(videoFileToUpload);
+      final String videoId = await uploadVideoToBunny(
+        file: storyVideo,
+        title: 'Fly story',
+      );
       mediaUrl = 'https://$_bunnyStreamCdnHostname/$videoId/playlist.m3u8';
+      storyBunnyVideoId = videoId;
+      storyLocalVideoPath = storyVideo.path;
     }
 
     // Get the poster's name/photo
@@ -325,9 +319,18 @@ Future<void> addStory(BuildContext context) async {
         if (imageAspectRatio != null) 'imageAspectRatio': imageAspectRatio,
       },
       ...soundFields,
+      // Other people only see a video story once Bunny can play it.
+      if (storyBunnyVideoId != null)
+        ...newVideoReadinessFields(storyBunnyVideoId),
       'createdAt': FieldValue.serverTimestamp(),
       'expiresAt': Timestamp.fromDate(now.add(kStoryLifetime)),
     });
+
+    if (storyBunnyVideoId != null && storyLocalVideoPath != null) {
+      // The poster watches their story instantly from this phone's file.
+      LocalVideoCache.register(mediaUrl, storyLocalVideoPath);
+      unawaited(syncVideoReady(storyRef, storyBunnyVideoId));
+    }
 
     if (context.mounted) {
       Navigator.pop(context); // close uploading dialog
@@ -367,11 +370,14 @@ class StoriesBar extends StatelessWidget {
           final docs = snapshot.data?.docs ?? [];
 
           // Group active stories by user (keep insertion order = newest first)
+          final String? myUid = FirebaseAuth.instance.currentUser?.uid;
           final Map<String, List<QueryDocumentSnapshot>> byUser = {};
           for (final d in docs) {
             final m = d.data() as Map<String, dynamic>;
             final uid = (m['userId'] as String?) ?? '';
             if (uid.isEmpty) continue;
+            // A video story still being encoded is only shown to its poster.
+            if (!isVideoVisibleTo(m, myUid)) continue;
             byUser.putIfAbsent(uid, () => []).add(d);
           }
 
@@ -794,7 +800,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
         : Future<bool>.value(false);
 
     if (type == 'video' && url.isNotEmpty) {
-      final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+      // The poster's own just-uploaded story plays from the local file -
+      // instant, and works before Bunny has finished encoding it.
+      final File? localFile = LocalVideoCache.fileFor(url);
+      final controller = localFile != null
+          ? VideoPlayerController.file(localFile)
+          : VideoPlayerController.networkUrl(Uri.parse(url));
       try {
         await controller.initialize();
       } catch (_) {

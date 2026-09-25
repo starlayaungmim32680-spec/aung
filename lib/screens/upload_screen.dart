@@ -16,8 +16,9 @@ import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'sound_moderation.dart';
+import 'video_upload_service.dart';
+import 'local_video_cache.dart';
 import 'content_filter.dart';
-import 'package:flutter_compress/flutter_compress.dart';
 import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
@@ -555,6 +556,8 @@ class _UploadScreenState extends State<UploadScreen> {
           startMs: _trimStartSeconds! * 1000,
           endMs: _trimEndSeconds! * 1000,
         );
+        // From here on everything (compression, upload) works from this
+        // trimmed FILE - uploadBytes is only the no-file fallback below.
         uploadFile = trimmedVideo;
       } catch (e) {
         // Keep going with the untrimmed file - a trim failure shouldn't
@@ -569,29 +572,13 @@ class _UploadScreenState extends State<UploadScreen> {
     // person posting, storage on Bunny, and delivery bandwidth for every
     // single view afterwards. Shown as "Preparing..." in the UI (see the
     // progress section below) since _uploadProgress is still 0 at this
-    // point. Falls back to the original file/bytes if compression fails
-    // for any reason, so a bad video/format never blocks posting.
+    // point. Compresses the FINAL file (after trim) and falls back to the
+    // original if compression fails or doesn't help, so a bad video/format
+    // never blocks posting - see video_upload_service.dart.
     if (uploadFile != null) {
-      try {
-        final VideoCompressResult compressed =
-            await FlutterCompress.instance.compress(
-          uploadFile.path,
-          const VideoCompressConfig(
-            qualityPercent: 60,
-            maxWidth: 1280,
-            maxHeight: 1280,
-            keepOriginalIfLarger: true,
-          ),
-        );
-        uploadFile = File(compressed.outputPath);
-        uploadBytes = await uploadFile.readAsBytes();
-      } catch (e) {
-        // Keep going with the uncompressed bytes - a compression failure
-        // shouldn't stop someone from posting.
-      }
+      uploadFile = await compressVideoForUpload(uploadFile);
     }
 
-    final http.Client client = http.Client();
     try {
       // Safety net for the rare case there's no on-disk file at all (only
       // ever expected if _videoFile was somehow never set) - the sanity
@@ -602,74 +589,17 @@ class _UploadScreenState extends State<UploadScreen> {
         await uploadFile.writeAsBytes(uploadBytes);
       }
 
-      // Catch an empty/corrupt local file HERE, on the phone, with a
-      // message that actually says what's wrong - rather than uploading
-      // nothing and only discovering it later as a stuck 0-byte,
-      // "Processing" video on Bunny's own dashboard with no local error
-      // at all (which is exactly what silently happened before this
-      // check existed).
-      final int localFileSize = await uploadFile.length();
-      if (localFileSize == 0) {
-        throw Exception(
-            'Video file is empty on this device (0 bytes) - compression or the original recording likely failed. Path: ${uploadFile.path}');
-      }
-
-      // Upload straight to our Worker's /upload-video endpoint, which
-      // creates the Bunny Stream video slot and relays these exact bytes
-      // to it in one pass-through call (see livekit_token_worker.js) -
-      // this replaces an earlier TUS-based attempt (a separate
-      // /create-video call plus a client-side TUS library) that turned
-      // out to silently produce 0-byte videos on Bunny in practice. A
-      // plain streamed POST has far less protocol surface to go wrong,
-      // and is the same reliable approach this screen already used for
-      // Cloudinary before today.
-      final Uri uploadUri = Uri.parse('$kTokenServerUrl/upload-video');
-      final int totalBytes = uploadBytes.length;
-      int sentBytes = 0;
-
-      final http.StreamedRequest streamed = http.StreamedRequest(
-        'POST',
-        uploadUri,
-      )
-        ..headers['X-App-Secret'] = kAppSharedSecret
-        // A fixed, plain-ASCII title only - HTTP header values can't
-        // contain non-ASCII text (emoji, Burmese script, etc.), and the
-        // real caption is already saved separately in this post's
-        // Firestore document; this is only ever seen by Ko himself in
-        // Bunny's own dashboard, never inside the app.
-        ..headers['X-Video-Title'] = 'Fly video'
-        ..headers['Content-Type'] = 'video/mp4'
-        ..contentLength = totalBytes;
-
-      // Feeds the sink in modest slices so the progress bar actually
-      // moves instead of jumping straight from 0 to 100 - mirrors the
-      // chunked-feed approach this screen already used for Cloudinary.
-      () async {
-        const int sliceSize = 256 * 1024;
-        for (int offset = 0; offset < uploadBytes.length; offset += sliceSize) {
-          final int end = offset + sliceSize < uploadBytes.length
-              ? offset + sliceSize
-              : uploadBytes.length;
-          streamed.sink.add(uploadBytes.sublist(offset, end));
-          sentBytes = end;
-          if (mounted) {
-            setState(() =>
-                _uploadProgress = (sentBytes / totalBytes).clamp(0.0, 1.0));
-          }
-        }
-        await streamed.sink.close();
-      }();
-
-      final http.StreamedResponse streamedResponse =
-          await client.send(streamed).timeout(const Duration(seconds: 120));
-      final String responseBody = await streamedResponse.stream.bytesToString();
-
-      if (streamedResponse.statusCode != 200) {
-        throw Exception('Bunny upload failed: $responseBody');
-      }
-
-      final Map<String, dynamic> uploadResult = jsonDecode(responseBody);
-      final String bunnyVideoId = uploadResult['videoId'];
+      // Empty-file check, size limit, size-based timeout, real abort on
+      // timeout, and the Worker call itself all live in
+      // video_upload_service.dart (shared with video stories).
+      final String uploadedLocalPath = uploadFile.path;
+      final String bunnyVideoId = await uploadVideoToBunny(
+        file: uploadFile,
+        title: 'Fly video',
+        onProgress: (p) {
+          if (mounted) setState(() => _uploadProgress = p);
+        },
+      );
 
       // Bunny transcodes to an adaptive-bitrate HLS ladder automatically -
       // video_player's underlying ExoPlayer/AVPlayer picks whatever
@@ -809,6 +739,9 @@ class _UploadScreenState extends State<UploadScreen> {
         'soundId': soundId,
         'soundTitle': soundTitle,
         'soundOwnerName': soundOwnerName,
+        // Hidden from everyone but the uploader until Bunny finishes
+        // encoding (see video_upload_service.dart / the Worker webhook).
+        ...newVideoReadinessFields(bunnyVideoId),
         if (widget.replyToPostId != null) ...{
           'replyToPostId': widget.replyToPostId,
           'replyToOwnerId': widget.replyToOwnerId,
@@ -816,6 +749,11 @@ class _UploadScreenState extends State<UploadScreen> {
         },
         'createdAt': FieldValue.serverTimestamp(),
       });
+
+      // The uploader watches their new video instantly from the file on
+      // this phone - no waiting for Bunny's encoding.
+      LocalVideoCache.register(videoUrl, uploadedLocalPath);
+      unawaited(syncVideoReady(postRef, bunnyVideoId));
 
       if (mounted) {
         await _previewController?.dispose();
@@ -877,11 +815,9 @@ class _UploadScreenState extends State<UploadScreen> {
           // scratch with everything already filled in.
           _errorMessage = isNetworkIssue
               ? "Couldn't reach the internet. Check your connection and tap Post to try again."
-              : 'Upload failed: $e';
+              : (e is VideoUploadException ? e.message : 'Upload failed: $e');
         });
       }
-    } finally {
-      client.close();
     }
   }
 
@@ -890,6 +826,7 @@ class _UploadScreenState extends State<UploadScreen> {
   // something the server explicitly rejected (moderation, a malformed
   // request), which retrying the exact same request would never fix.
   bool _isNetworkError(Object e) {
+    if (e is VideoUploadException) return e.isNetworkIssue;
     if (e is SocketException || e is TimeoutException) return true;
     if (e is http.ClientException) return true;
     final String s = e.toString();

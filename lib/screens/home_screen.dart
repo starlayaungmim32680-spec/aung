@@ -32,6 +32,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
 import 'content_filter.dart';
 import 'video_preload_cache.dart';
+import 'video_upload_service.dart' show isVideoVisibleTo;
+import 'local_video_cache.dart';
 
 // Watches full-screen route pushes so a playing video can pause itself
 // when the user navigates somewhere else. Registered in main.dart.
@@ -243,7 +245,13 @@ class _HomeScreenState extends State<HomeScreen> {
               // one newest-first feed, so a video someone shares shows up
               // at home for their followers/friends to see too.
               final List<_FeedItem> feedItems = [
-                ...ownDocs.map((d) => _FeedItem.post(d)),
+                // Posts still being encoded by Bunny are only shown to
+                // their uploader (who plays them from the local file).
+                ...ownDocs
+                    .where((d) => isVideoVisibleTo(
+                        d.data() as Map<String, dynamic>,
+                        FirebaseAuth.instance.currentUser?.uid))
+                    .map((d) => _FeedItem.post(d)),
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
@@ -706,7 +714,13 @@ class _ShortsScreenState extends State<ShortsScreen> {
               final repostDocs = repostSnapshot.data?.docs ?? [];
 
               final List<_FeedItem> feedItems = [
-                ...ownDocs.map((d) => _FeedItem.post(d)),
+                // Posts still being encoded by Bunny are only shown to
+                // their uploader (who plays them from the local file).
+                ...ownDocs
+                    .where((d) => isVideoVisibleTo(
+                        d.data() as Map<String, dynamic>,
+                        FirebaseAuth.instance.currentUser?.uid))
+                    .map((d) => _FeedItem.post(d)),
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
@@ -1644,6 +1658,15 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // True when the video failed to load (network error/timeout) - shows a
   // friendly error + retry button instead of a spinner that never resolves.
   bool _hasError = false;
+  // True while a freshly uploaded Bunny video is still being encoded -
+  // its playlist.m3u8 doesn't exist yet for the first moments/minutes
+  // after upload. Shows "Processing video..." and retries on its own
+  // instead of the "Couldn't load" error.
+  bool _isProcessing = false;
+  Timer? _processingRetryTimer;
+  // Cached post upload time (read once, only after a failed load).
+  DateTime? _postCreatedAt;
+  bool _postCreatedAtLoaded = false;
   bool _endTriggered = false;
   int _loopCount = 0;
   bool _showReactionPicker = false;
@@ -1762,9 +1785,49 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // (claimed) controller is initialized instantly, no network wait needed.
   static const Duration _initTimeout = Duration(seconds: 12);
 
+  // How long after upload a failed load is treated as "still encoding"
+  // rather than a real error, and how often to retry meanwhile.
+  static const Duration _processingWindow = Duration(minutes: 30);
+  static const Duration _processingRetryEvery = Duration(seconds: 5);
+
+  // A load failure right after upload is almost always Bunny still
+  // encoding, not a real error. Only HLS (Bunny) videos qualify - old
+  // Cloudinary mp4s were ready the moment they were uploaded.
+  Future<bool> _looksFreshlyUploaded() async {
+    if (!widget.videoUrl.contains('.m3u8')) return false;
+    if (!_postCreatedAtLoaded) {
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.postId)
+            .get();
+        // No such post (e.g. a repost id) - can't be a fresh upload.
+        if (!snap.exists) return false;
+        final Timestamp? ts = snap.data()?['createdAt'] as Timestamp?;
+        _postCreatedAt = ts?.toDate();
+        _postCreatedAtLoaded = true;
+      } catch (_) {
+        // Can't tell (e.g. offline) - fall back to the normal error.
+        return false;
+      }
+    }
+    // No timestamp yet = the server hasn't even confirmed the write, so
+    // it's certainly brand new.
+    if (_postCreatedAt == null) return true;
+    return DateTime.now().difference(_postCreatedAt!) < _processingWindow;
+  }
+
+  void _scheduleProcessingRetry() {
+    _processingRetryTimer?.cancel();
+    _processingRetryTimer = Timer(_processingRetryEvery, () {
+      if (mounted) _initializeVideo();
+    });
+  }
+
   Future<void> _initializeVideo() async {
     if (widget.videoUrl.isEmpty) return;
 
+    _processingRetryTimer?.cancel();
     if (mounted && _hasError) {
       setState(() => _hasError = false);
     }
@@ -1796,6 +1859,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
       // would need downloading every segment and rewriting the manifest
       // to point at them locally, which is a separate, bigger feature.
       final bool isHlsVideo = widget.videoUrl.contains('.m3u8');
+
+      // The uploader's own just-posted video: play the file that's still
+      // on this phone - instant, and works before Bunny finishes encoding.
+      if (controller == null) {
+        final File? localUpload = LocalVideoCache.fileFor(widget.videoUrl);
+        if (localUpload != null) {
+          controller = VideoPlayerController.file(localUpload);
+          playingFromDisk = true;
+          await controller.initialize().timeout(_initTimeout);
+        }
+      }
 
       if (controller == null) {
         File? cachedFile;
@@ -1845,19 +1919,39 @@ class _VideoPostItemState extends State<_VideoPostItem>
         setState(() {
           _controller = controller;
           _isInitialized = true;
+          _isProcessing = false;
         });
+      } else {
+        // Scrolled away / disposed while this load was in flight.
+        controller.removeListener(_onVideoProgress);
+        controller.dispose();
       }
     } catch (_) {
+      controller?.dispose();
+      if (!mounted) return;
+
+      // Freshly uploaded and Bunny is still encoding it - keep a calm
+      // "Processing" state and quietly retry until it's ready.
+      if (await _looksFreshlyUploaded()) {
+        if (!mounted) return;
+        setState(() {
+          _isInitialized = false;
+          _hasError = false;
+          _isProcessing = true;
+        });
+        _scheduleProcessingRetry();
+        return;
+      }
+
       // Network failure, timeout, or an unreachable/corrupt stream - show
       // a friendly error + retry button instead of the spinner staying up
       // forever, which was the previous behavior on a lost connection.
-      controller?.dispose();
-      if (mounted) {
-        setState(() {
-          _isInitialized = false;
-          _hasError = true;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _isInitialized = false;
+        _hasError = true;
+        _isProcessing = false;
+      });
     }
   }
 
@@ -2604,6 +2698,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
   void dispose() {
     flyRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
+    _processingRetryTimer?.cancel();
     _controller?.removeListener(_onVideoProgress);
     _controller?.dispose();
     _controlsVisible.dispose();
@@ -2811,6 +2906,48 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                 ),
                               ],
                             ),
+                          ),
+                        ),
+                      )
+                    else if (_isProcessing)
+                      // Just uploaded - Bunny is still encoding. Retries
+                      // automatically (see _scheduleProcessingRetry), so
+                      // there's nothing to tap here.
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 22, vertical: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              SizedBox(
+                                width: 26,
+                                height: 26,
+                                child: CircularProgressIndicator(
+                                  color: Color(0xFFFF4B6E),
+                                  strokeWidth: 2.5,
+                                ),
+                              ),
+                              SizedBox(height: 12),
+                              Text(
+                                'Processing video...',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                'It will play automatically when ready',
+                                style: TextStyle(
+                                    color: Colors.white60, fontSize: 11.5),
+                              ),
+                            ],
                           ),
                         ),
                       )
