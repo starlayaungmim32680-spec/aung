@@ -175,34 +175,27 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
        option for true resume-after-disconnect on bad connections, but only if
        the current path still fails in practice.
   - **"Video ready" flow (Sep 2026)** — so nobody but the uploader ever sees
-    "Processing" while Bunny encodes:
-    - New video posts/stories are written with `bunnyVideoId` +
-      `videoReady: false` (`newVideoReadinessFields()`).
-    - Bunny calls the Worker's **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`**
-      (set in Bunny → Stream → library → Webhook URL; the token is a Worker
-      secret, never commit or paste it). On status 3/4 (finished / first
-      resolution playable) it writes `videoStatus/{bunnyGuid}` `{ready,
+    "Processing" while Bunny encodes: - New video posts/stories are written with `bunnyVideoId` +
+    `videoReady: false` (`newVideoReadinessFields()`). - Bunny calls the Worker's **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`**
+    (set in Bunny → Stream → library → Webhook URL; the token is a Worker
+    secret, never commit or paste it). On status 3/4 (finished / first
+    resolution playable) it writes `videoStatus/{bunnyGuid}` `{ready,
 failed, status, updatedAt}` and sets `videoReady: true` on any
-      post/story whose `bunnyVideoId` matches (status 5 → `videoFailed:
+    post/story whose `bunnyVideoId` matches (status 5 → `videoFailed:
 true`). It uses the same Firebase service account as `/call-push`,
-      with the Datastore OAuth scope, via Firestore's REST API.
-    - Race-proofing: the app creates the doc and **then** calls
-      `syncVideoReady()`, which checks `videoStatus/{id}` and flips the flag
-      itself if encoding already finished first.
-    - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
-      hides a doc, and never from its own uploader. Applied to the **Home
-      feed** (both post streams in `home_screen.dart`) and the **Stories
-      bar**. Old docs without the field stay visible.
-    - The uploader plays their fresh video **instantly from the local file**
-      via `LocalVideoCache` (`local_video_cache.dart`, keyed by videoUrl,
-      in-memory only). If the app restarts before encoding ends, playback
-      falls back to the network and `_VideoPostItem` shows a
-      **"Processing video..."** card that silently retries every 5s for
-      Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't load".
-    - Confirmed working end-to-end on two phones on 26 Sep 2026.
-    - Encoding speed tip given to Ko: in Bunny → Stream → library →
-      Encoding, keep only **360p/480p/720p** (fewer renditions = faster
-      encoding and less storage cost).
+    with the Datastore OAuth scope, via Firestore's REST API. - Race-proofing: the app creates the doc and **then** calls
+    `syncVideoReady()`, which checks `videoStatus/{id}` and flips the flag
+    itself if encoding already finished first. - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
+    hides a doc, and never from its own uploader. Applied to the **Home
+    feed** (both post streams in `home_screen.dart`) and the **Stories
+    bar**. Old docs without the field stay visible. - The uploader plays their fresh video **instantly from the local file**
+    via `LocalVideoCache` (`local_video_cache.dart`, keyed by videoUrl,
+    in-memory only). If the app restarts before encoding ends, playback
+    falls back to the network and `_VideoPostItem` shows a
+    **"Processing video..."** card that silently retries every 5s for
+    Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't load". - Confirmed working end-to-end on two phones on 26 Sep 2026. - Encoding speed tip given to Ko: in Bunny → Stream → library →
+    Encoding, keep only **360p/480p/720p** (fewer renditions = faster
+    encoding and less storage cost).
   - **Playback:** the stored `videoUrl` for a Bunny post is the HLS playlist,
     `https://vz-a6ab9346-730.b-cdn.net/<videoId>/playlist.m3u8` —
     `video_player`'s underlying ExoPlayer/AVPlayer plays this as real

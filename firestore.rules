@@ -1,0 +1,304 @@
+rules_version = '2';
+
+// =====================================================================
+// Fly - Firestore security rules
+// Written from an audit of every Firestore read/write in lib/ (Sep 2026).
+// Paste the WHOLE file into Firebase Console -> Firestore -> Rules.
+// Anything not matched below is denied by default.
+//
+// Update: videoReady / videoStatus (Bunny encoding status) - see
+// lib/screens/video_upload_service.dart and the Worker's /bunny-webhook.
+// The Worker writes with a Firebase service account, which bypasses these
+// rules; the app can only READ videoStatus.
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMe(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Keys this write actually changes.
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // Only changes the caller's own entry inside a `reactions` map
+    // (posts, comments, replies: {'reactions.<uid>': type}).
+    function onlyMyReaction() {
+      return changedKeys().hasOnly(['reactions'])
+        && request.resource.data.get('reactions', {})
+             .diff(resource.data.get('reactions', {}))
+             .affectedKeys().hasOnly([request.auth.uid]);
+    }
+
+    // chatId / call room = '<uidA>_<uidB>' (sorted). Firebase uids never
+    // contain '_', so splitting is safe.
+    function inRoom(roomId) {
+      return signedIn() && request.auth.uid in roomId.split('_');
+    }
+
+    // Coins are still granted by the app itself (no server yet), so the
+    // most rules can do is cap how much one write may add. Spending
+    // (a decrease) is fine as long as the balance never goes negative.
+    function coinsChangeOk() {
+      let before = resource == null ? 0 : resource.data.get('coins', 0);
+      let after = request.resource.data.get('coins', 0);
+      return after is int && after >= 0 && after - before <= 10;
+    }
+
+    // ================= users =================
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create: if isMe(uid) && coinsChangeOk();
+      allow update: if isMe(uid) && coinsChangeOk();
+      allow delete: if isMe(uid);
+
+      // users/{uid}/followers/{followerId} - written by the follower
+      match /followers/{followerId} {
+        allow read: if signedIn();
+        allow create, delete: if isMe(followerId);
+        allow update: if false;
+      }
+
+      // users/{uid}/following/{targetId} - the owner's own list
+      match /following/{targetId} {
+        allow read: if signedIn();
+        allow create, delete: if isMe(uid);
+        allow update: if false;
+      }
+
+      // Anyone may drop a notification in, signed as themselves; only the
+      // owner can read / mark seen / clear them.
+      match /notifications/{notifId} {
+        allow read, update, delete: if isMe(uid);
+        allow create: if signedIn()
+          && request.resource.data.fromId == request.auth.uid;
+      }
+
+      match /blocked/{blockedId} {
+        allow read, write: if isMe(uid);
+      }
+
+      // One-time follow reward markers - create only, never reset.
+      match /followRewards/{targetId} {
+        allow read, create: if isMe(uid);
+        allow update, delete: if false;
+      }
+
+      // Live gift leaderboard, one doc per sender, written by the sender.
+      match /supporters/{senderId} {
+        allow read: if signedIn();
+        allow create, update: if isMe(senderId);
+        allow delete: if false;
+      }
+    }
+
+    // ================= posts =================
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && (
+        resource.data.userId == request.auth.uid || onlyMyReaction()
+      );
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+      // views / saves / shares: one doc per user, doc id = that user's uid
+      match /views/{viewerId} {
+        allow read: if signedIn();
+        allow create, update: if isMe(viewerId);
+        allow delete: if false;
+      }
+      match /saves/{saverId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isMe(saverId);
+      }
+      match /shares/{sharerId} {
+        allow read: if signedIn();
+        allow create, update: if isMe(sharerId);
+        allow delete: if false;
+      }
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.userId == request.auth.uid;
+        allow update: if signedIn() && (
+          resource.data.userId == request.auth.uid || onlyMyReaction()
+        );
+        allow delete: if signedIn() && (
+          resource.data.userId == request.auth.uid
+          || get(/databases/$(database)/documents/posts/$(postId))
+               .data.userId == request.auth.uid
+        );
+
+        match /replies/{replyId} {
+          allow read: if signedIn();
+          allow create: if signedIn()
+            && request.resource.data.userId == request.auth.uid;
+          allow update: if signedIn() && (
+            resource.data.userId == request.auth.uid || onlyMyReaction()
+          );
+          allow delete: if signedIn()
+            && resource.data.userId == request.auth.uid;
+        }
+      }
+    }
+
+    // ================= reposts =================
+    // doc id = '<uid>_<postId>'
+    match /reposts/{repostId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.resource.data.sharedBy == request.auth.uid;
+      allow delete: if signedIn()
+        && resource.data.sharedBy == request.auth.uid;
+    }
+
+    // ================= stories =================
+    match /stories/{storyId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid;
+      // The owner may only flip videoReady (after Bunny finished encoding).
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && changedKeys().hasOnly(['videoReady']);
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+      match /reactions/{reactorId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isMe(reactorId);
+      }
+    }
+
+    // ================= videoStatus =================
+    // Written only by the Worker (Bunny webhook, service account).
+    match /videoStatus/{videoId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // ================= sounds =================
+    // See lib/screens/sound_moderation.dart. Hiding after reports is done
+    // by the app; these rules stop anyone from undoing it.
+    match /sounds/{soundId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.rightsConfirmed == true
+        && request.resource.data.status == 'active'
+        && request.resource.data.reportedBy.size() == 0;
+
+      allow update: if signedIn() && (
+        // anyone: usage counter only
+        changedKeys().hasOnly(['usageCount'])
+        // anyone: add only their OWN uid to reportedBy
+        || (changedKeys().hasOnly(['reportedBy'])
+            && request.resource.data.reportedBy.toSet()
+                 .difference(resource.data.get('reportedBy', []).toSet())
+                 .hasOnly([request.auth.uid]))
+        // owner: may only remove their own sound ('approved' is Console-only)
+        || (resource.data.ownerId == request.auth.uid
+            && changedKeys().hasOnly(['status'])
+            && request.resource.data.status == 'removed')
+      );
+
+      allow delete: if false;
+    }
+
+    // ================= reports =================
+    // Write-only from the app; reviewed in the Firebase Console.
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reporterId == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
+    // ================= chats =================
+    // chatId = '<uidA>_<uidB>'
+    match /chats/{chatId} {
+      // get: by id (also works before the chat doc exists)
+      allow get: if inRoom(chatId);
+      // list: the chat-list query (participants array-contains me)
+      allow list: if signedIn()
+        && request.auth.uid in resource.data.participants;
+      allow create, update: if inRoom(chatId)
+        && request.auth.uid in request.resource.data.participants;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if inRoom(chatId);
+        allow create: if inRoom(chatId)
+          && request.resource.data.senderId == request.auth.uid;
+        // sender: anything (unsend etc.); receiver: mark seen only
+        allow update: if inRoom(chatId) && (
+          resource.data.senderId == request.auth.uid
+          || changedKeys().hasOnly(['seen'])
+        );
+        allow delete: if inRoom(chatId)
+          && resource.data.senderId == request.auth.uid;
+      }
+
+      // typing / recording status, one doc per user
+      match /activity/{userId} {
+        allow read: if inRoom(chatId);
+        allow write: if inRoom(chatId) && isMe(userId);
+      }
+    }
+
+    // ================= calls =================
+    // doc id = room name = '<uidA>_<uidB>'
+    match /calls/{roomId} {
+      allow read: if signedIn() && (
+        resource == null
+        || resource.data.callerId == request.auth.uid
+        || resource.data.calleeId == request.auth.uid
+      );
+      allow create: if inRoom(roomId)
+        && request.resource.data.callerId == request.auth.uid;
+      allow update: if inRoom(roomId);
+      allow delete: if inRoom(roomId);
+    }
+
+    // ================= live streams =================
+    // doc id = host uid
+    match /liveStreams/{hostId} {
+      allow read: if signedIn();
+      allow create, update: if isMe(hostId)
+        && request.resource.data.hostId == request.auth.uid;
+      allow delete: if isMe(hostId);
+
+      match /viewers/{viewerId} {
+        allow read: if signedIn();
+        allow create, update, delete: if isMe(viewerId);
+      }
+      match /reactions/{reactionId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if false;
+      }
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.userId == request.auth.uid;
+        allow update: if false;
+        allow delete: if isMe(hostId);
+      }
+      match /gifts/{giftId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
