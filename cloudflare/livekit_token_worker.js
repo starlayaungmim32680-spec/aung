@@ -1,6 +1,15 @@
-// Cloudflare Worker: four things for Fly's calls, live streams, and
-// video uploads, all server-side so no secret key ever has to live
-// inside the Flutter app.
+// Cloudflare Worker for Fly's calls, live streams, uploads and Bunny
+// webhooks, all server-side so no secret key ever has to live inside the
+// Flutter app.
+//
+// AUTH (Sep 2026): every app route requires the caller's Firebase ID
+// token in an `Authorization: Bearer <token>` header (see
+// lib/screens/worker_auth.dart). The Worker verifies its RS256 signature
+// against Google's published public keys and checks audience/issuer/
+// expiry against FIREBASE_PROJECT_ID - so only signed-in Fly users can
+// call it. The old `X-App-Secret` header is still accepted ONLY while the
+// APP_SHARED_SECRET secret exists (so older app builds keep working
+// during the switch-over); deleting that secret turns it off for good.
 //
 //  POST /token          - mints a LiveKit access token
 //  POST /call-push       - sends an FCM push to wake a phone for an
@@ -25,11 +34,12 @@
 //                         Firestore once it's playable, so the feed only
 //                         shows finished videos to other people.
 //                         Authenticated with ?token=BUNNY_WEBHOOK_TOKEN
-//                         in the webhook URL (Bunny can't send our
-//                         X-App-Secret header).
+//                         in the webhook URL (Bunny can't send a
+//                         Firebase token).
 //
 // SETUP: same secrets as before - LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-// LIVEKIT_URL, APP_SHARED_SECRET, FIREBASE_PROJECT_ID,
+// LIVEKIT_URL, APP_SHARED_SECRET (legacy - delete once every phone runs
+// the Firebase-token app build), FIREBASE_PROJECT_ID,
 // FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY_B64, BUNNY_LIBRARY_ID,
 // BUNNY_API_KEY, plus two for Bunny Storage:
 //   BUNNY_STORAGE_ZONE      - the Storage Zone name, e.g.
@@ -48,6 +58,10 @@ const MAX_VIDEO_UPLOAD_BYTES = 95 * 1024 * 1024;
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 const DATASTORE_SCOPE = 'https://www.googleapis.com/auth/datastore';
 
+// Google's public keys for Firebase Auth ID tokens, as a JWK set.
+const FIREBASE_JWKS_URL =
+  'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
+
 export default {
   async fetch(request, env) {
     if (request.method !== 'POST') {
@@ -56,14 +70,16 @@ export default {
 
     const url = new URL(request.url);
 
-    // Bunny's own webhook - authenticated by its URL token instead of the
-    // app's X-App-Secret header, so it's routed before that check.
+    // Bunny's own webhook - authenticated by its URL token instead of a
+    // user's Firebase token, so it's routed before that check.
     if (url.pathname === '/bunny-webhook') {
       return handleBunnyWebhook(request, env, url);
     }
 
-    const providedSecret = request.headers.get('X-App-Secret');
-    if (!env.APP_SHARED_SECRET || providedSecret !== env.APP_SHARED_SECRET) {
+    // { uid } for a verified Firebase user, { uid: null } for a legacy
+    // shared-secret call, or null = reject.
+    const caller = await authenticateCaller(request, env);
+    if (!caller) {
       return new Response('Unauthorized', { status: 401 });
     }
 
@@ -75,7 +91,7 @@ export default {
       return handleUploadVideo(request, env);
     }
     if (path === '/upload-image') {
-      return handleUploadImage(request, env);
+      return handleUploadImage(request, env, caller);
     }
 
     let body;
@@ -94,6 +110,133 @@ export default {
     return handleTokenRequest(body, env);
   },
 };
+
+// ---------------------------------------------------------------------
+// Caller authentication
+// ---------------------------------------------------------------------
+async function authenticateCaller(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.startsWith('Bearer ')) {
+    const uid = await verifyFirebaseIdToken(
+      authHeader.slice('Bearer '.length).trim(),
+      env,
+    );
+    return uid ? { uid } : null;
+  }
+
+  // Legacy path for older app builds - works only while the
+  // APP_SHARED_SECRET secret still exists on this Worker.
+  const providedSecret = request.headers.get('X-App-Secret');
+  if (
+    env.APP_SHARED_SECRET &&
+    providedSecret &&
+    providedSecret === env.APP_SHARED_SECRET
+  ) {
+    return { uid: null };
+  }
+  return null;
+}
+
+// Cached per Worker instance; refreshed per Google's Cache-Control.
+let firebaseKeysCache = { keys: null, expiresAt: 0 };
+
+async function getFirebasePublicKeys(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && firebaseKeysCache.keys && now < firebaseKeysCache.expiresAt) {
+    return firebaseKeysCache.keys;
+  }
+  const response = await fetch(FIREBASE_JWKS_URL);
+  if (!response.ok) {
+    throw new Error(`Could not load Firebase public keys (${response.status})`);
+  }
+  const data = await response.json();
+  const match = /max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '');
+  const maxAgeSeconds = match ? Number(match[1]) : 3600;
+  firebaseKeysCache = {
+    keys: data.keys || [],
+    expiresAt: now + maxAgeSeconds * 1000,
+  };
+  return firebaseKeysCache.keys;
+}
+
+function base64UrlToBytes(input) {
+  const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function base64UrlToJson(input) {
+  return JSON.parse(new TextDecoder().decode(base64UrlToBytes(input)));
+}
+
+// Returns the Firebase uid if [token] is a valid, unexpired ID token for
+// this Firebase project, otherwise null. Follows Firebase's documented
+// checks for verifying ID tokens with a third-party JWT library.
+async function verifyFirebaseIdToken(token, env) {
+  try {
+    const projectId = env.FIREBASE_PROJECT_ID;
+    if (!token || !projectId) return null;
+
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const [headerB64, payloadB64, signatureB64] = parts;
+    const header = base64UrlToJson(headerB64);
+    const payload = base64UrlToJson(payloadB64);
+    if (header.alg !== 'RS256' || !header.kid) return null;
+
+    let keys = await getFirebasePublicKeys();
+    let jwk = keys.find((k) => k.kid === header.kid);
+    if (!jwk) {
+      // Google rotates keys; refetch once before giving up.
+      keys = await getFirebasePublicKeys(true);
+      jwk = keys.find((k) => k.kid === header.kid);
+    }
+    if (!jwk) return null;
+
+    const key = await crypto.subtle.importKey(
+      'jwk',
+      jwk,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['verify'],
+    );
+    const valid = await crypto.subtle.verify(
+      'RSASSA-PKCS1-v1_5',
+      key,
+      base64UrlToBytes(signatureB64),
+      new TextEncoder().encode(`${headerB64}.${payloadB64}`),
+    );
+    if (!valid) return null;
+
+    const now = Math.floor(Date.now() / 1000);
+    const skew = 300; // tolerate small clock differences
+    if (payload.aud !== projectId) return null;
+    if (payload.iss !== `https://securetoken.google.com/${projectId}`) {
+      return null;
+    }
+    if (typeof payload.exp !== 'number' || payload.exp <= now - skew) {
+      return null;
+    }
+    if (typeof payload.iat !== 'number' || payload.iat > now + skew) {
+      return null;
+    }
+    if (
+      typeof payload.auth_time === 'number' &&
+      payload.auth_time > now + skew
+    ) {
+      return null;
+    }
+    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+      return null;
+    }
+    return payload.sub;
+  } catch (_) {
+    return null;
+  }
+}
 
 async function handleTokenRequest(body, env) {
   const roomName = body.room_name;
@@ -416,7 +559,7 @@ async function firestoreFindByField(env, accessToken, collection, field, value) 
 // (never story videos - those still go through /upload-video/Bunny
 // Stream, since they need the same HLS/adaptive-quality treatment as
 // feed videos).
-async function handleUploadImage(request, env) {
+async function handleUploadImage(request, env, caller) {
   if (!env.BUNNY_STORAGE_ZONE || !env.BUNNY_STORAGE_PASSWORD) {
     return new Response('Bunny Storage is not configured on this Worker', {
       status: 500,
@@ -432,6 +575,15 @@ async function handleUploadImage(request, env) {
       'X-File-Name header is required and must be plain ASCII (letters, digits, dot, dash, underscore only)',
       { status: 400 },
     );
+  }
+
+  // A signed-in caller may only write files named after their own uid
+  // (the app always uses "{uid}_{timestamp}.jpg"), so nobody can
+  // overwrite someone else's profile photo or story image.
+  if (caller && caller.uid && !fileName.startsWith(`${caller.uid}_`)) {
+    return new Response('X-File-Name must start with your own user id', {
+      status: 403,
+    });
   }
 
   try {
