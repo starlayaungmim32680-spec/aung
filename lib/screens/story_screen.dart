@@ -128,7 +128,13 @@ Future<void> addStory(BuildContext context) async {
         startMs: trimResult.startSeconds * 1000,
         endMs: trimResult.endSeconds * 1000,
       );
-      videoFileToUpload = trimmed;
+      // Keep the untrimmed original if trimming turned a camera video the
+      // wrong way round (see video_upload_service.dart).
+      videoFileToUpload = await keepVideoOrientation(
+        reference: trimResult.originalFile,
+        candidate: trimmed,
+        step: 'story trim',
+      );
     } catch (e) {
       // Fall back to the untrimmed file rather than blocking the story
       // entirely over a trim failure - worse than ideal (the 15s cost

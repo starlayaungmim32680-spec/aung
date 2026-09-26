@@ -557,7 +557,13 @@ class _UploadScreenState extends State<UploadScreen> {
         );
         // From here on everything (compression, upload) works from this
         // trimmed FILE - uploadBytes is only the no-file fallback below.
-        uploadFile = trimmedVideo;
+        // If trimming turned a camera video the wrong way round (see
+        // video_upload_service.dart), keep the untrimmed original instead.
+        uploadFile = await keepVideoOrientation(
+          reference: uploadFile,
+          candidate: trimmedVideo,
+          step: 'trim',
+        );
       } catch (e) {
         // Keep going with the untrimmed file - a trim failure shouldn't
         // stop someone from posting; it just means the full video goes up

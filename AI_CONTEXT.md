@@ -161,6 +161,17 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
        HTTP client is **closed**, which really aborts the request (a bare
        Dart `.timeout()` only stops waiting while the old upload keeps
        running in the background).
+       **Orientation guard (Sep 2026):** unedited phone-camera videos (stored
+       sideways + a rotate-90° flag) came out as a LANDSCAPE frame with the
+       portrait picture shrunk between black bars — baked into the uploaded
+       file (Bunny thumbnails showed the bars), so they looked tiny in the feed
+       and stories. Edited videos were fine. The culprit was trim
+       (`video_trimmer_2`) and/or compression (`flutter_compress`, whose docs
+       say nothing about rotation) — not isolated. `keepVideoOrientation()`
+       now compares each step's output with its input using
+       `VideoPlayerController.value.size` (already rotation-corrected) and
+       keeps the earlier file if portrait/landscape flipped. Videos uploaded
+       before this fix stay tiny; re-upload them.
        The Worker creates the Bunny video slot, then relays the body through a
        `FixedLengthStream(Content-Length)` to Bunny's PUT API — so a phone that
        drops mid-upload makes the relay **fail** instead of Bunny silently

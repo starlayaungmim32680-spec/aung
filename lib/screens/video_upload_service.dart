@@ -19,10 +19,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show Size;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_compress/flutter_compress.dart';
 import 'package:http/http.dart' as http;
+import 'package:video_player/video_player.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 
@@ -80,9 +82,72 @@ class VideoUploadException implements Exception {
   String toString() => message;
 }
 
+// ---------------------------------------------------------------------------
+// Orientation guard (Sep 2026)
+// ---------------------------------------------------------------------------
+// Videos straight from a phone camera are usually stored sideways with a
+// "rotate 90°" flag. Something in the trim/compress pipeline could turn
+// such a portrait video into a LANDSCAPE frame with the portrait picture
+// shrunk in the middle between black bars - which then showed up tiny in
+// the feed and stories (Bunny thumbnails confirmed the bars are baked into
+// the uploaded file). Edited videos (already rotated, no flag) were fine.
+//
+// The guard compares each processed file's on-screen orientation with the
+// file it was made from, measured by video_player itself (the same player
+// that later shows the video - it already accounts for the rotation flag),
+// and keeps the earlier file whenever a step flipped portrait <-> landscape.
+
+// On-screen size of [file] as video_player sees it, or null if unknown.
+Future<Size?> probeVideoDisplaySize(File file) async {
+  final VideoPlayerController controller = VideoPlayerController.file(file);
+  try {
+    await controller.initialize().timeout(const Duration(seconds: 10));
+    final Size size = controller.value.size;
+    if (size.width <= 0 || size.height <= 0) return null;
+    return size;
+  } catch (_) {
+    return null;
+  } finally {
+    await controller.dispose();
+  }
+}
+
+// 1 = landscape, -1 = portrait, 0 = roughly square (not compared).
+int _orientationOf(Size size) {
+  final double ratio = size.width / size.height;
+  if (ratio > 1.1) return 1;
+  if (ratio < 0.9) return -1;
+  return 0;
+}
+
+// Returns [candidate] unless it's clearly the wrong way round compared with
+// [reference] (e.g. a portrait clip that came out landscape), in which
+// case [reference] is returned instead. [step] only labels the log line.
+Future<File> keepVideoOrientation({
+  required File reference,
+  required File candidate,
+  required String step,
+}) async {
+  if (candidate.path == reference.path) return candidate;
+  final Size? referenceSize = await probeVideoDisplaySize(reference);
+  final Size? candidateSize = await probeVideoDisplaySize(candidate);
+  // Can't tell - don't second-guess the step.
+  if (referenceSize == null || candidateSize == null) return candidate;
+
+  final int before = _orientationOf(referenceSize);
+  final int after = _orientationOf(candidateSize);
+  if (before != 0 && after != 0 && before != after) {
+    debugPrint('[video_upload] $step flipped the video orientation '
+        '($referenceSize -> $candidateSize) - using the file from before '
+        'that step instead');
+    return reference;
+  }
+  return candidate;
+}
+
 // Shrinks [file] for upload. Returns the compressed file, or [file] itself
-// if compression fails or wouldn't make it smaller - a bad format should
-// never block posting.
+// if compression fails, wouldn't make it smaller, or would turn the video
+// the wrong way round - a bad format should never block posting.
 Future<File> compressVideoForUpload(File file) async {
   try {
     final int originalSize = await file.length();
@@ -108,7 +173,11 @@ Future<File> compressVideoForUpload(File file) async {
       return file;
     }
     debugPrint('[video_upload] compressed $originalSize -> $outSize bytes');
-    return out;
+    return keepVideoOrientation(
+      reference: file,
+      candidate: out,
+      step: 'compression',
+    );
   } catch (e) {
     debugPrint('[video_upload] compression failed, uploading original: $e');
     return file;
