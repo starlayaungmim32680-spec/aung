@@ -1028,8 +1028,24 @@ class _UploadScreenState extends State<UploadScreen> {
   // The upload form (preview + caption + post) after a type is chosen
   Widget _buildUploadForm() {
     final bool isShort = _videoType == 'short';
+    final MediaQueryData media = MediaQuery.of(context);
+
+    // The app's bottom navigation bar (main_navigation_screen.dart) floats
+    // ON TOP of every tab's content instead of taking its own space, so
+    // this form has to leave room for it at the bottom - otherwise, on
+    // shorter phones, the Post button ends up hidden behind the bar and
+    // can't be scrolled out from under it. Mirrors that bar's own sizing:
+    // (6 top padding + 52 row) * the same width-based scale, plus the
+    // system gesture/nav-bar inset.
+    final double navScale = (media.size.width / 390).clamp(0.85, 1.2);
+    final double bottomNavReserve = 58 * navScale + media.padding.bottom;
+
+    // Shorter preview on small screens so the caption, rights checkbox and
+    // Post button usually fit without scrolling at all.
+    final double previewHeight = (media.size.height * 0.32).clamp(180.0, 280.0);
+
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + bottomNavReserve),
       child: Column(
         children: [
           // Small header showing the chosen mode
@@ -1072,7 +1088,7 @@ class _UploadScreenState extends State<UploadScreen> {
           GestureDetector(
             onTap: _isUploading ? null : _pickAndTrimVideo,
             child: Container(
-              height: 280,
+              height: previewHeight,
               width: double.infinity,
               decoration: BoxDecoration(
                 color: Colors.grey[900],
