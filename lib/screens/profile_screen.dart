@@ -10,7 +10,8 @@ import 'home_screen.dart';
 import 'media_utils.dart';
 import 'wallet_screen.dart';
 import 'settings_screen.dart';
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
+import 'video_call_screen.dart' show kTokenServerUrl;
+import 'worker_auth.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -1174,11 +1175,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final String fileName =
         '${uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
+    final Map<String, String> authHeaders = await workerAuthHeaders();
     final http.Response response = await http
         .post(
           Uri.parse('$kTokenServerUrl/upload-image'),
           headers: {
-            'X-App-Secret': kAppSharedSecret,
+            ...authHeaders,
             'X-File-Name': fileName,
             'Content-Type': 'image/jpeg',
           },

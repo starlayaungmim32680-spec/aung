@@ -23,7 +23,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_compress/flutter_compress.dart';
 import 'package:http/http.dart' as http;
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
+import 'video_call_screen.dart' show kTokenServerUrl;
+import 'worker_auth.dart';
 
 // Cloudflare's request-body limit on the free Workers plan is 100 MB.
 const int kMaxVideoUploadBytes = 95 * 1024 * 1024;
@@ -140,6 +141,15 @@ Future<String> uploadVideoToBunny({
         'This video is too large to upload ($mb MB). Please trim it shorter.');
   }
 
+  // Signed-in user's Firebase ID token (see worker_auth.dart) - fetched
+  // before anything is opened, so a sign-in problem fails fast.
+  final Map<String, String> authHeaders;
+  try {
+    authHeaders = await workerAuthHeaders();
+  } on WorkerAuthException catch (e) {
+    throw VideoUploadException(e.message);
+  }
+
   final http.Client client = http.Client();
   StreamSubscription<List<int>>? fileSub;
   try {
@@ -147,7 +157,7 @@ Future<String> uploadVideoToBunny({
       'POST',
       Uri.parse('$kTokenServerUrl/upload-video'),
     )
-      ..headers['X-App-Secret'] = kAppSharedSecret
+      ..headers.addAll(authHeaders)
       // Header values must be plain ASCII - never a user caption.
       ..headers['X-Video-Title'] = title
       ..headers['Content-Type'] = 'video/mp4'

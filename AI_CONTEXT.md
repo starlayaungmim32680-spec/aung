@@ -152,7 +152,8 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
        videos were never compressed at all (a 16s clip was 65 MB on Bunny);
     2. `uploadVideoToBunny()` streams the file **from disk** (not memory) as
        a plain POST to the Worker's `/upload-video` with a real
-       `Content-Length`, headers `X-App-Secret` + `X-Video-Title` (fixed
+       `Content-Length`, headers `Authorization` (Firebase ID token, see
+       `worker_auth.dart`) + `X-Video-Title` (fixed
        ASCII like `"Fly video"`/`"Fly story"` — HTTP headers can't carry
        Burmese/emoji); rejects 0-byte files and anything over **95 MB**
        (Cloudflare free-plan body limit is 100 MB); timeout **scales with
@@ -374,9 +375,19 @@ true`). It uses the same Firebase service account as `/call-push`,
   - The token server is a **Cloudflare Worker**
     (`livekit-token-worker.chakaboycom.workers.dev`; source now copied into
     this repo at **`cloudflare/livekit_token_worker.js`**, chosen
-    specifically to avoid needing Firebase Blaze billing). All routes except
-    the Bunny webhook require an `X-App-Secret` header matching the
-    `APP_SHARED_SECRET` secret:
+    specifically to avoid needing Firebase Blaze billing). **Auth (Sep
+    2026):** every route except the Bunny webhook requires
+    `Authorization: Bearer <Firebase ID token>`; the Worker verifies the
+    RS256 signature against Google's public JWKs
+    (`securetoken@system.gserviceaccount.com`, cached per Cache-Control)
+    and checks `aud`/`iss` = `FIREBASE_PROJECT_ID`, `exp`, `iat`, `sub`.
+    The app gets the header from `workerAuthHeaders()` in
+    `lib/screens/worker_auth.dart`. The old `X-App-Secret` header is only
+    accepted while the `APP_SHARED_SECRET` Worker secret still exists
+    (transition for old app builds) — once every phone runs the new build,
+    **delete that secret** and the leaked value becomes useless.
+    `/upload-image` also requires `X-File-Name` to start with the caller's
+    own `uid_` (token callers). Routes:
     - `POST /token` — mints a LiveKit access token (`LIVEKIT_API_KEY`/
       `LIVEKIT_API_SECRET`/`LIVEKIT_URL` secrets).
     - `POST /call-push` — sends an FCM push (Google service-account OAuth2
@@ -395,9 +406,9 @@ true`). It uses the same Firebase service account as `/call-push`,
       for profile photos and story images (see the profile/story note
       further down in this section).
   - Confirm the current token-fetch code path in `video_call_screen.dart`
-    (constants `kTokenServerUrl`/`kAppSharedSecret`, both plain top-level
-    `const` in that file, imported with a `show` clause by other files that
-    need them) before changing call logic.
+    (constant `kTokenServerUrl`, a plain top-level `const` imported with a
+    `show` clause by other files; auth headers come from
+    `worker_auth.dart`) before changing call logic.
   - **Caller ring-back tone:** while the caller is waiting for the callee to
     pick up, `video_call_screen.dart` plays a code-generated "beep beep beep"
     WAV tone (same generated-WAV-bytes approach as the chat "ding" in
@@ -773,10 +784,13 @@ issue if this comes up again.
   PIN/pattern/password still requires it, which is an OS guarantee no app can
   bypass), the caller-only ring-back tone and the speaker-toggle fix (both
   §3), `CallForegroundService.kt` (see §3), Picture-in-Picture on leaving Fly
-  mid-call, and a shared drawing overlay. `kTokenServerUrl`/
-  `kAppSharedSecret` (the Worker URL and shared secret) are defined here as
-  top-level `const`s and imported with a `show` clause elsewhere. See §3 for
-  the two known, not-yet-fixed call bugs.
+  mid-call, and a shared drawing overlay. `kTokenServerUrl` (the Worker
+  URL) is defined here as a top-level `const` and imported with a `show`
+  clause elsewhere; the old `kAppSharedSecret` was removed in Sep 2026 (see
+  `worker_auth.dart`). See §3 for the two known, not-yet-fixed call bugs.
+- `screens/worker_auth.dart` **(Sep 2026)** — `workerAuthHeaders()`: the
+  signed-in user's Firebase ID token as an `Authorization` header, used by
+  every Worker call (calls, live, call push, video/image uploads).
 - `screens/live_screen.dart` — live streaming.
 - `screens/gifting.dart` — virtual gifting.
 - `screens/wallet_screen.dart` — in-app wallet/coins.
@@ -811,7 +825,8 @@ issue if this comes up again.
   **`cloudflare/livekit_token_worker.js`** (fetch it via the raw URL). It
   contains no secrets — all keys come from `env.*` Worker secrets:
   `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`,
-  `APP_SHARED_SECRET`, `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`,
+  `APP_SHARED_SECRET` (legacy; delete after all phones update),
+  `FIREBASE_PROJECT_ID` (also used to verify ID tokens), `FIREBASE_CLIENT_EMAIL`,
   `FIREBASE_PRIVATE_KEY_B64`, `BUNNY_LIBRARY_ID`, `BUNNY_API_KEY`,
   `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_PASSWORD`, `BUNNY_WEBHOOK_TOKEN`.
   Deploying is manual: give Ko the full file to paste over everything and
@@ -939,10 +954,13 @@ others only see it once encoded (Bunny webhook).
 - Borrowed Sound doesn't work for new (Bunny-hosted) video posts — see §3;
   it's blocked at upload time with a message. (Trim, listed here in an
   earlier version of this file, now actually works - see §3.)
-- **Security (to do next):** `kAppSharedSecret` is a plain `const` in
-  `video_call_screen.dart` in a **public** repo, so anyone can call the
-  Worker (upload to Ko's Bunny, mint LiveKit tokens). Plan: have the app
-  send a Firebase ID token and have the Worker verify it instead.
+- **Security (in progress, Sep 2026):** the Worker now verifies Firebase ID
+  tokens and the app no longer contains `kAppSharedSecret` — but the old
+  value is still in git history and still works until the
+  `APP_SHARED_SECRET` Worker secret is **deleted** (do that once every
+  test phone runs the new build). Still open: `/token` lets any signed-in
+  user mint a token for any room name, and `/call-push` doesn't check that
+  `callerId` equals the caller's uid.
 - **Coins are granted client-side** (`gifting.dart`); the rules only cap each
   write at +10. Fine while coins are free, but must move server-side
   (Worker) before coins are ever sold or cashed out.

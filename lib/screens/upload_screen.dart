@@ -8,7 +8,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'text_overlay_style.dart';

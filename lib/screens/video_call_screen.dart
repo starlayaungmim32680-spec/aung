@@ -14,6 +14,7 @@ import 'package:audioplayers/audioplayers.dart';
 import '../call_kit_service.dart';
 import '../call_permissions.dart';
 import '../active_call.dart';
+import 'worker_auth.dart';
 
 // LiveKit connection details for the Fly project.
 //
@@ -23,7 +24,9 @@ import '../active_call.dart';
 // after deploying the Worker (see that file's setup comment).
 const String kTokenServerUrl =
     'https://livekit-token-worker.chakaboycom.workers.dev';
-const String kAppSharedSecret = 'FlySecret2026xyz';
+// Worker requests are authenticated with the signed-in user's Firebase ID
+// token (see worker_auth.dart). The old shared secret that used to live
+// here was removed because this repo is public.
 
 // Shared with MainActivity.kt - lets Dart minimize the app / tell native
 // code about the active call for Picture-in-Picture (see that file).
@@ -268,7 +271,7 @@ class _VideoCallScreenState extends State<VideoCallScreen>
       final response = await http.post(
         uri,
         headers: {
-          'X-App-Secret': kAppSharedSecret,
+          ...await workerAuthHeaders(),
           'Content-Type': 'application/json',
         },
         body: jsonEncode({

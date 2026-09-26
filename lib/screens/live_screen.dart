@@ -8,7 +8,8 @@ import 'package:livekit_client/livekit_client.dart';
 import 'package:collection/collection.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
+import 'video_call_screen.dart' show kTokenServerUrl;
+import 'worker_auth.dart';
 import 'gifting.dart';
 
 // Shared helper: gets a LiveKit access token + server url from our own
@@ -23,7 +24,7 @@ Future<Map<String, String>?> _fetchLiveKitConnectionDetails({
     final response = await http.post(
       uri,
       headers: {
-        'X-App-Secret': kAppSharedSecret,
+        ...await workerAuthHeaders(),
         'Content-Type': 'application/json',
       },
       body: jsonEncode({

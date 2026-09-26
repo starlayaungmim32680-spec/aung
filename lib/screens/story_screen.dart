@@ -19,7 +19,8 @@ import 'sound_moderation.dart';
 import 'video_upload_service.dart';
 import 'local_video_cache.dart';
 import 'text_overlay_style.dart';
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
+import 'video_call_screen.dart' show kTokenServerUrl;
+import 'worker_auth.dart';
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -214,11 +215,12 @@ Future<void> addStory(BuildContext context) async {
       final Uint8List bytes = await File(picked.path).readAsBytes();
       final String fileName =
           '${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final Map<String, String> authHeaders = await workerAuthHeaders();
       final http.Response response = await http
           .post(
             Uri.parse('$kTokenServerUrl/upload-image'),
             headers: {
-              'X-App-Secret': kAppSharedSecret,
+              ...authHeaders,
               'X-File-Name': fileName,
               'Content-Type': 'image/jpeg',
             },

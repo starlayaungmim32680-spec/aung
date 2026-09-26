@@ -7,7 +7,8 @@
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
-import 'video_call_screen.dart' show kTokenServerUrl, kAppSharedSecret;
+import 'video_call_screen.dart' show kTokenServerUrl;
+import 'worker_auth.dart';
 
 Future<void> sendCallPush({
   required String calleeId,
@@ -29,7 +30,7 @@ Future<void> sendCallPush({
     await http.post(
       uri,
       headers: {
-        'X-App-Secret': kAppSharedSecret,
+        ...await workerAuthHeaders(),
         'Content-Type': 'application/json',
       },
       body: jsonEncode({
