@@ -61,33 +61,80 @@ class ProfileScreen extends StatelessWidget {
   // user's password first.
   //
   // Best-effort data cleanup: deletes the user's own posts, reposts,
-  // stories, and profile document. Subcollections under those documents
+  // stories, live-stream doc and profile document, pulls their shared
+  // sounds out of the sounds library, and removes them from the follower
+  // lists of everyone they followed. Subcollections under those documents
   // (comments, likes, views, followers/following, etc.) are not
   // individually deleted - Firestore doesn't cascade-delete subcollections,
   // and doing so client-side for every collection would need a Cloud
   // Function (Blaze). Once the parent documents above are gone, that
   // orphaned data is no longer reachable through the app.
   Future<void> _confirmDeleteAccount(BuildContext context) async {
+    // Step 1: make it deliberate - the delete button only unlocks once the
+    // person has typed DELETE, so a stray tap can never start this.
+    final TextEditingController confirmController = TextEditingController();
+    // Only the letters count: some phone keyboards add spaces, dots,
+    // invisible characters or change the case while typing, and those
+    // should not stop someone who really typed DELETE.
+    bool typedDelete(String text) =>
+        text.toUpperCase().replaceAll(RegExp(r'[^A-Z]'), '') == 'DELETE';
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
         title: const Text('Delete your account?',
             style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'This will permanently delete your account, videos, reposts, '
-          'and stories. This cannot be undone.',
-          style: TextStyle(color: Colors.white70),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This will permanently delete your account, videos, '
+                'reposts, stories and shared sounds. This cannot be undone.',
+                style: TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Type DELETE to confirm:',
+                style: TextStyle(color: Colors.white, fontSize: 13),
+              ),
+              TextField(
+                controller: confirmController,
+                autofocus: true,
+                autocorrect: false,
+                enableSuggestions: false,
+                keyboardType: TextInputType.visiblePassword,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  hintText: 'DELETE',
+                  hintStyle: TextStyle(color: Colors.white24),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete my account',
-                style: TextStyle(color: Colors.redAccent)),
+          // Rebuilds on every change of the controller itself (not only on
+          // onChanged), so the button unlocks reliably on every keyboard.
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: confirmController,
+            builder: (_, value, __) {
+              final bool ok = typedDelete(value.text);
+              return TextButton(
+                onPressed: ok ? () => Navigator.pop(ctx, true) : null,
+                child: Text('Delete my account',
+                    style: TextStyle(
+                        color: ok
+                            ? Colors.redAccent
+                            : Colors.redAccent.withOpacity(0.35))),
+              );
+            },
           ),
         ],
       ),
@@ -97,35 +144,77 @@ class ProfileScreen extends StatelessWidget {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || user.email == null) return;
 
-    // Firebase requires a recent login before it allows deleting the Auth
-    // account - ask for the password to reauthenticate.
+    // Step 2: Firebase requires a recent login before it allows deleting
+    // the Auth account - ask for the password to reauthenticate. Someone
+    // who has forgotten it gets a reset link emailed to the account's own
+    // address, so they can still delete - but only by proving they own
+    // that email (someone who merely picked up an unlocked phone can't).
     final TextEditingController passwordController = TextEditingController();
+    // Hidden by default; the eye button lets the person check what they
+    // typed before confirming.
+    bool hidePassword = true;
     final String? password = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: const Text('Confirm your password',
-            style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: passwordController,
-          obscureText: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            hintText: 'Password',
-            hintStyle: TextStyle(color: Colors.grey),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Confirm your password',
+              style: TextStyle(color: Colors.white)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: passwordController,
+                  obscureText: hidePassword,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Password',
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    suffixIcon: IconButton(
+                      tooltip: hidePassword ? 'Show password' : 'Hide password',
+                      icon: Icon(
+                        hidePassword
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        color: Colors.white54,
+                      ),
+                      onPressed: () =>
+                          setDialogState(() => hidePassword = !hidePassword),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () {
+                      Navigator.pop(ctx, null);
+                      _sendDeleteAccountPasswordReset(context, user.email!);
+                    },
+                    child: const Text('Forgot password?',
+                        style:
+                            TextStyle(color: Color(0xFF35E1F2), fontSize: 13)),
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, passwordController.text),
+              child: const Text('Confirm',
+                  style: TextStyle(color: Colors.redAccent)),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, passwordController.text),
-            child: const Text('Confirm',
-                style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
       ),
     );
     if (password == null || password.isEmpty || !context.mounted) return;
@@ -145,13 +234,55 @@ class ProfileScreen extends StatelessWidget {
       final firestore = FirebaseFirestore.instance;
       final uid = user.uid;
 
+      // Posts store their owner as `userId` (see upload_screen.dart). This
+      // used to query a non-existent `ownerId` field, so a deleted
+      // account's videos were silently left behind in everyone's feed.
       final ownPosts = await firestore
           .collection('posts')
-          .where('ownerId', isEqualTo: uid)
+          .where('userId', isEqualTo: uid)
           .get();
       for (final doc in ownPosts.docs) {
         await doc.reference.delete();
       }
+
+      // Shared sounds: mark removed (the only change the Firestore rules
+      // let an owner make) so they disappear from the sounds library and
+      // from story music. Individually best-effort.
+      final ownSounds = await firestore
+          .collection('sounds')
+          .where('ownerId', isEqualTo: uid)
+          .get();
+      for (final doc in ownSounds.docs) {
+        if ((doc.data()['status'] as String?) == 'removed') continue;
+        try {
+          await doc.reference.update({'status': 'removed'});
+        } catch (_) {}
+      }
+
+      // Unfollow everyone: remove this user from each followed person's
+      // `followers` list (so their follower counts drop) and clear our
+      // own `following` list. Best-effort per person.
+      final following = await firestore
+          .collection('users')
+          .doc(uid)
+          .collection('following')
+          .get();
+      for (final doc in following.docs) {
+        try {
+          await firestore
+              .collection('users')
+              .doc(doc.id)
+              .collection('followers')
+              .doc(uid)
+              .delete();
+          await doc.reference.delete();
+        } catch (_) {}
+      }
+
+      // A live stream left marked as live would keep showing up.
+      try {
+        await firestore.collection('liveStreams').doc(uid).delete();
+      } catch (_) {}
 
       final ownReposts = await firestore
           .collection('reposts')
@@ -195,6 +326,44 @@ class ProfileScreen extends StatelessWidget {
         Navigator.pop(context); // close loading dialog
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Could not delete account: $e')));
+      }
+    }
+  }
+
+  // "Forgot password?" from the delete-account flow: emails a reset link to
+  // the signed-in account's own address (never one typed in here), then
+  // explains the next step. Same Firebase-hosted reset page as the login
+  // screen's Forgot Password.
+  Future<void> _sendDeleteAccountPasswordReset(
+      BuildContext context, String email) async {
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Check your email',
+              style: TextStyle(color: Colors.white)),
+          content: Text(
+            'We sent a link to $email to set a new password.\n\n'
+            'Set your new password, then come back and choose '
+            'Delete account again.',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('OK', style: TextStyle(color: Color(0xFF35E1F2))),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Could not send the reset email - try again.')));
       }
     }
   }

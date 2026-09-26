@@ -975,9 +975,20 @@ others only see it once encoded (Bunny webhook).
 - **Coins are granted client-side** (`gifting.dart`); the rules only cap each
   write at +10. Fine while coins are free, but must move server-side
   (Worker) before coins are ever sold or cashed out.
-- **Delete-account bug:** `profile_screen.dart` deletes posts with
-  `where('ownerId', ...)`, but posts store `userId`, so a deleted account's
-  posts are left behind.
+- **Delete account (fixed Sep 2026):** it used to query posts by a
+  non-existent `ownerId` field, leaving a deleted user's videos behind; it
+  now uses `userId`, also marks their `sounds` as `removed`, unfollows
+  everyone (deleting their entry in each followed user's `followers`) and
+  deletes their `liveStreams` doc. The flow is deliberately hard to hit
+  by accident: type DELETE to unlock the button (checked via a
+  `ValueListenableBuilder` on the controller, letters only, autocorrect
+  off — some keyboards never unlocked it with `onChanged`), then re-enter
+  the password (eye icon to show/hide it); "Forgot password?" there emails
+  a reset link to the account's own address (so only the email owner can
+  finish; test accounts with made-up emails never receive it). Still left behind (no server-side
+  cleanup on the Spark plan): Bunny video/image files, comments/reactions
+  on other people's posts, other users' reposts of their videos, and other
+  users' `following` entries pointing at them.
 - `videoReady` filtering covers the Home feed and Stories bar only; profile
   grids, search and sound pages can still list a video that's still
   encoding. Phones on an **older app build** ignore `videoReady` entirely and
@@ -996,6 +1007,26 @@ others only see it once encoded (Bunny webhook).
   upgrades the plan or enough of the rolling 30-day usage window rolls off.
   Profile photos and stories no longer depend on it going forward (now on
   Bunny), but old Cloudinary-hosted ones are still affected.
+
+### To-do list (Ko's next steps, most urgent first — updated 27 Sep 2026)
+
+1. **Recharge Bunny before the trial ends (~3 Oct 2026).** Balance is $0;
+   once the trial ends, uploads and playback can stop. Remind Ko early.
+2. **Delete the `APP_SHARED_SECRET` Worker secret** in Cloudflare — only
+   after _every_ test phone runs an APK built after commit `0fcaf1a`
+   (Firebase ID token auth). Until then the leaked public secret still
+   works. Tell Ko to read the dialog title before pressing Delete.
+3. **Sound strike system** (repeat copyright offenders lose sound uploads).
+4. **Google Play account-deletion web link** — Play requires a web page
+   where users can request deletion without the app; needed before
+   publishing.
+5. **Delete old tiny videos** (uploaded before the orientation guard) and
+   re-upload them.
+6. Optional / later: AudD song recognition, direct MP3 upload, resumable
+   (TUS) uploads, force-update check (old builds ignore `videoReady`),
+   show/hide password eye icon on the login screen too.
+
+When one of these is done, remove it from this list in the same commit.
 
 ---
 
