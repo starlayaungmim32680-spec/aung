@@ -719,6 +719,14 @@ issue if this comes up again.
     horizontal row for reposts), sound/view-count row, the "Fly Frame"
     cinematic top/bottom gradient bands, reaction picker, flying-emoji
     animation, report/block entry point, hashtag handling, translation.
+    **Action dock look (28 Sep 2026, approved by Ko):** Facebook-Reels
+    style — Comment (`_FlyCommentIcon`) is a white outline oval speech
+    bubble with **three white dots inside** (Ko's must-keep detail), Share
+    (`_FlySwooshShareIcon`, name kept from the old paper-plane) is a white
+    outline forward arrow; both 28px with a soft black shadow, no gradient.
+    Compact spacing: 46x40 tap boxes, count 2px under each icon
+    (`_countLabel`), 6px between buttons. 12px gaps + 46px-tall boxes were
+    tried and rejected as too spread out.
     Accepts `onTapToExpand` (only Home passes this — its absence is how the
     code tells "already fullscreen" contexts apart from Home) and `isActive`.
     `_initializeVideo()` here is also where the network-aware timeout/retry

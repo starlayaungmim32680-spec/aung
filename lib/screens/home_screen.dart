@@ -2669,7 +2669,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // Small count text shown under each action icon
   Widget _countLabel(String text) {
     return Padding(
-      padding: const EdgeInsets.only(top: 4),
+      // Sits close under its icon, like Facebook Reels' counts.
+      padding: const EdgeInsets.only(top: 2),
       child: Text(
         text,
         style: const TextStyle(
@@ -3339,9 +3340,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   right: 12,
                   bottom: 120,
                   // Fly's action dock: Like/Comment/Share/Save float
-                  // directly over the video (no background panel), sitting
-                  // close together, each with its own icon design and a
-                  // soft glow chip that lights up when active.
+                  // directly over the video (no background panel), each with
+                  // a soft glow chip that lights up when active. Compact,
+                  // Facebook-Reels-like rhythm: 46x40 tap boxes, counts 2px
+                  // under the icon, 6px between buttons, 28px white-outline
+                  // comment/share icons. (12px gaps + 46px-tall boxes were
+                  // tried first and looked too spread out on Ko's phone.)
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -3356,7 +3360,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                               active: myReaction != null,
                               child: SizedBox(
                                 width: 46,
-                                height: 46,
+                                height: 40,
                                 child: Center(
                                   child: myReaction == 'like'
                                       ? const _PopInLikeBadge(
@@ -3400,9 +3404,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                   active: false,
                                   child: SizedBox(
                                     width: 46,
-                                    height: 46,
+                                    height: 40,
                                     child: Center(
-                                      child: _FlyCommentIcon(size: 30),
+                                      child: _FlyCommentIcon(size: 28),
                                     ),
                                   ),
                                 ),
@@ -3427,9 +3431,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                   active: false,
                                   child: SizedBox(
                                     width: 46,
-                                    height: 46,
+                                    height: 40,
                                     child: Center(
-                                      child: _FlySwooshShareIcon(size: 30),
+                                      child: _FlySwooshShareIcon(size: 28),
                                     ),
                                   ),
                                 ),
@@ -3458,7 +3462,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                   active: isSaved,
                                   child: SizedBox(
                                     width: 46,
-                                    height: 46,
+                                    height: 40,
                                     child: Center(
                                       child: Icon(
                                         isSaved
@@ -5520,21 +5524,20 @@ class _FlyActionGlow extends StatelessWidget {
   }
 }
 
-// Fly's own comment icon (used in the main action dock): a speech bubble
-// drawn with the app's cyan-to-blue gradient (the same gradient family as
-// the logo / story ring) instead of a plain white outline, plus a small
-// solid dot accent — giving it its own identity rather than a generic
-// chat-bubble icon shared by other apps.
+// Comment icon for the main action dock, drawn Facebook-Reels style: a
+// plain white outline speech bubble (rounded, almost oval, with a small
+// tail at the bottom-left) and a soft dark shadow so it stays readable
+// over bright video frames. Ko's one addition to the Facebook look: three
+// small white dots inside the bubble.
 class _FlyCommentIcon extends StatelessWidget {
   final double size;
-  const _FlyCommentIcon({this.size = 24});
+  const _FlyCommentIcon({this.size = 28});
 
   @override
   Widget build(BuildContext context) {
-    final double boxSize = size * (80 / 60);
     return SizedBox(
-      width: boxSize,
-      height: boxSize,
+      width: size,
+      height: size,
       child: CustomPaint(painter: _FlyCommentPainter()),
     );
   }
@@ -5543,89 +5546,67 @@ class _FlyCommentIcon extends StatelessWidget {
 class _FlyCommentPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final Rect rect = Offset.zero & size;
-    final Shader gradientShader = const LinearGradient(
-      colors: [Color(0xFF35E1E8), Color(0xFF5B7CFA)],
-    ).createShader(rect);
+    final double w = size.width;
+    final double h = size.height;
+    final double stroke = w * 0.085;
 
-    // Soft dark backdrop shadow so the gradient stroke still reads clearly
-    // over light video frames (there's no glass panel behind it anymore).
-    final Paint shadowPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 5.0
-      ..strokeCap = StrokeCap.round
-      ..color = Colors.black.withOpacity(0.35)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
-    final RRect shadowBubble = RRect.fromRectAndRadius(
-      Rect.fromLTWH(
-        size.width * 0.08,
-        size.height * 0.14,
-        size.width * 0.84,
-        size.height * 0.6,
-      ),
-      Radius.circular(size.height * 0.3),
-    );
-    canvas.drawRRect(shadowBubble, shadowPaint);
-
-    final Paint strokePaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.4
-      ..strokeCap = StrokeCap.round
-      ..shader = gradientShader;
-
-    final RRect bubble = RRect.fromRectAndRadius(
-      Rect.fromLTWH(
-        size.width * 0.08,
-        size.height * 0.14,
-        size.width * 0.84,
-        size.height * 0.6,
-      ),
-      Radius.circular(size.height * 0.3),
-    );
-    canvas.drawRRect(bubble, strokePaint);
-
-    final Paint fillPaint = Paint()
-      ..style = PaintingStyle.fill
-      ..shader = gradientShader;
+    // Bubble body + tail merged into one outline, so the stroke has no
+    // seam where the tail meets the bubble.
+    final Path body = Path()
+      ..addRRect(RRect.fromRectAndRadius(
+        Rect.fromLTWH(w * 0.08, h * 0.08, w * 0.84, h * 0.70),
+        Radius.circular(h * 0.35),
+      ));
     final Path tail = Path()
-      ..moveTo(size.width * 0.26, size.height * 0.72)
-      ..lineTo(size.width * 0.18, size.height * 0.94)
-      ..lineTo(size.width * 0.42, size.height * 0.74)
+      ..moveTo(w * 0.22, h * 0.66)
+      ..lineTo(w * 0.14, h * 0.94)
+      ..lineTo(w * 0.44, h * 0.76)
       ..close();
-    canvas.drawPath(tail, fillPaint);
+    final Path bubble = Path.combine(PathOperation.union, body, tail);
 
-    // Three small dots inside the bubble - the classic "comment/typing"
-    // mark, so the icon reads as a comment bubble at a glance.
-    final Paint dotsPaint = Paint()..color = Colors.white;
-    final double dotY = size.height * 0.44;
-    final double dotRadius = size.width * 0.045;
-    for (final double dotX in [0.32, 0.5, 0.68]) {
-      canvas.drawCircle(
-        Offset(size.width * dotX, dotY),
-        dotRadius,
-        dotsPaint,
-      );
-    }
-
-    // Small accent dot — Fly's identity mark on the bubble.
-    canvas.drawCircle(
-      Offset(size.width * 0.86, size.height * 0.18),
-      size.width * 0.065,
-      Paint()..color = const Color(0xFF35E1E8),
+    // Soft shadow first, then the white outline on top.
+    canvas.drawPath(
+      bubble,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke + 1.5
+        ..strokeJoin = StrokeJoin.round
+        ..color = Colors.black.withOpacity(0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
     );
+    canvas.drawPath(
+      bubble,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..strokeJoin = StrokeJoin.round
+        ..color = Colors.white,
+    );
+
+    // Three dots inside the bubble.
+    final Paint dotShadow = Paint()
+      ..color = Colors.black.withOpacity(0.30)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+    final Paint dotPaint = Paint()..color = Colors.white;
+    final double dotY = h * 0.43;
+    final double dotRadius = w * 0.055;
+    for (final double dotX in [0.31, 0.50, 0.69]) {
+      final Offset c = Offset(w * dotX, dotY);
+      canvas.drawCircle(c, dotRadius + 0.5, dotShadow);
+      canvas.drawCircle(c, dotRadius, dotPaint);
+    }
   }
 
   @override
   bool shouldRepaint(covariant _FlyCommentPainter oldDelegate) => false;
 }
 
-// Fly's own share icon (used in the main action dock): a paper-plane with a
-// soft tapering gradient motion trail, echoing the app's short-video "fast"
-// feel — used instead of a plain flipped Material "reply" arrow like other
-// apps use for share.
+// Share icon for the main action dock, drawn Facebook-Reels style: a white
+// outline "forward" arrow (arrow head pointing right, tail curving down to
+// the bottom-left) with a soft dark shadow, matching the comment icon above.
 class _FlySwooshShareIcon extends StatelessWidget {
   final double size;
-  const _FlySwooshShareIcon({this.size = 26});
+  const _FlySwooshShareIcon({this.size = 28});
 
   @override
   Widget build(BuildContext context) {
@@ -5640,51 +5621,36 @@ class _FlySwooshShareIcon extends StatelessWidget {
 class _FlySwooshSharePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    // Soft dark backdrop shadow so the plane still reads clearly over
-    // light video frames (there's no glass panel behind it anymore).
-    final Path shadowPlane = Path()
-      ..moveTo(size.width * 0.10, size.height * 0.55)
-      ..lineTo(size.width * 0.85, size.height * 0.15)
-      ..lineTo(size.width * 0.55, size.height * 0.90)
-      ..lineTo(size.width * 0.46, size.height * 0.60)
+    final double w = size.width;
+    final double h = size.height;
+    final double stroke = w * 0.085;
+
+    final Path arrow = Path()
+      ..moveTo(w * 0.92, h * 0.44) // arrow tip
+      ..lineTo(w * 0.57, h * 0.12) // head, top corner
+      ..lineTo(w * 0.57, h * 0.30) // where the shaft leaves the head (top)
+      ..quadraticBezierTo(w * 0.16, h * 0.32, w * 0.08, h * 0.88) // tail top
+      ..quadraticBezierTo(w * 0.24, h * 0.58, w * 0.57, h * 0.58) // tail bottom
+      ..lineTo(w * 0.57, h * 0.76) // head, bottom corner
       ..close();
+
     canvas.drawPath(
-      shadowPlane,
+      arrow,
       Paint()
-        ..style = PaintingStyle.fill
-        ..color = Colors.black.withOpacity(0.35)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-    );
-
-    // Tapering trail behind the plane, fading out with each line.
-    for (int i = 0; i < 3; i++) {
-      final double t = i / 2;
-      final Paint trailPaint = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.6 - i * 0.7
-        ..strokeCap = StrokeCap.round
-        ..color = const Color(0xFF35E1E8).withOpacity(0.55 - i * 0.18);
-      canvas.drawLine(
-        Offset(size.width * (0.66 - t * 0.10), size.height * (0.36 + t * 0.10)),
-        Offset(size.width * (0.86 - t * 0.10), size.height * (0.20 + t * 0.10)),
-        trailPaint,
-      );
-    }
-
-    final Shader gradientShader = const LinearGradient(
-      colors: [Color(0xFF35E1E8), Color(0xFF5B7CFA)],
-    ).createShader(Offset.zero & size);
-    final Paint planePaint = Paint()
-      ..style = PaintingStyle.fill
-      ..shader = gradientShader;
-
-    final Path plane = Path()
-      ..moveTo(size.width * 0.10, size.height * 0.55)
-      ..lineTo(size.width * 0.85, size.height * 0.15)
-      ..lineTo(size.width * 0.55, size.height * 0.90)
-      ..lineTo(size.width * 0.46, size.height * 0.60)
-      ..close();
-    canvas.drawPath(plane, planePaint);
+        ..strokeWidth = stroke + 1.5
+        ..strokeJoin = StrokeJoin.round
+        ..color = Colors.black.withOpacity(0.35)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5),
+    );
+    canvas.drawPath(
+      arrow,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..strokeJoin = StrokeJoin.round
+        ..color = Colors.white,
+    );
   }
 
   @override
