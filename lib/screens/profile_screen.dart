@@ -10,6 +10,7 @@ import 'home_screen.dart';
 import 'media_utils.dart';
 import 'wallet_screen.dart';
 import 'settings_screen.dart';
+import 'saved_videos_screen.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 
@@ -602,6 +603,15 @@ class ProfileScreen extends StatelessWidget {
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const WalletScreen()),
+            ),
+          ),
+          // Saved videos (the bookmark on each video) - private to me.
+          IconButton(
+            icon: const Icon(Icons.bookmark_border, color: Colors.white),
+            tooltip: 'Saved',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SavedVideosScreen()),
             ),
           ),
           IconButton(

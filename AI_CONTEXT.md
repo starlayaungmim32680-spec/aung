@@ -712,7 +712,13 @@ issue if this comes up again.
     assume touching this area fixes rendering bugs.
   - `SingleVideoScreen`, `UserVideoFeedScreen`, `ShortsScreen` — other
     `_VideoPostItem`-reusing viewers (repost detail, one user's post grid
-    viewer, a shorts-shelf, respectively).
+    viewer, a shorts-shelf, respectively). **(Sep 2026)**
+    `SavedVideosFeedScreen` — the same kind of viewer for the Saved grid;
+    takes the already-loaded post docs + `initialIndex` instead of running
+    its own query.
+  - `_toggleSave()` writes/deletes **two docs in one batch**:
+    `posts/{postId}/saves/{uid}` (the count on the video) and
+    `users/{uid}/saved/{postId}` (the private Saved list).
   - `_VideoPostItem` — the shared per-video Stack: Smart-Fit video sizing
     (cover vs. letterbox based on aspect-ratio mismatch), caption panel,
     OwnerInfo, Like/Comment/Share/Save/More action dock (or a compact
@@ -819,7 +825,8 @@ issue if this comes up again.
 - `screens/profile_screen.dart` — own profile: avatar, name, Edit Profile,
   stats (Posts / Followers / Following), video grid (tap = open viewer,
   long-press = delete own post), TikTok-style view count on each thumbnail.
-  AppBar has Wallet, **Logout** (behind a confirmation dialog), a
+  AppBar has Wallet, **Saved** (bookmark icon), **Logout** (behind a
+  confirmation dialog), a
   **Settings** gear icon (→ `settings_screen.dart`), and a 3-dot menu
   (**Delete account** — has a confirmation dialog + password
   re-authentication). Also contains `EditProfileScreen` (edit name + profile
@@ -832,6 +839,14 @@ issue if this comes up again.
     Facebook's permanent "feeling" tag.
   - **Fly Memories** — an "on this day" recap card of the user's own past
     posts.
+- `screens/saved_videos_screen.dart` **(Sep 2026)** — "Saved": the
+  signed-in user's bookmarked videos, newest first, as a 3-column grid.
+  Streams `users/{me}/saved` (ordered by `savedAt`), then fetches the real
+  post docs in `whereIn` chunks of 10 (so deleted posts drop out and
+  captions/effects are current). Tap → `SavedVideosFeedScreen`; long-press
+  → confirm → unsave (deletes both docs). Opened from the bookmark icon in
+  `profile_screen.dart`'s AppBar. Saves made before this build aren't in
+  the list (only `posts/*/saves` had them) — re-save to show them.
 - `screens/public_profile_screen.dart` — another user's profile: photo
   (with the sparkle-star online badge), name, Follow / Message buttons,
   stats, video grid, and a 3-dot menu with **Block user**
@@ -959,6 +974,8 @@ screen needs to be created from scratch — it may already exist there.)_
   - `users/{uid}/followers/{id}`, `users/{uid}/following/{id}`: { createdAt }
   - `users/{uid}/notifications/{id}`: { type, text, fromId, fromName, fromPhoto,
     postId?, seen, createdAt }
+  - `users/{uid}/saved/{postId}` (Sep 2026): { postId, ownerId, videoUrl,
+    savedAt } — private Saved list; rules: owner-only read/write.
   - `users/{uid}/blocked/{blockedUserId}`: { createdAt } — who this user has
     blocked; read by `home_screen.dart`'s feed queries to filter out blocked
     users' posts, and by `blocked_users_screen.dart` to list/unblock. Not yet
@@ -1024,6 +1041,7 @@ first-time users · full-screen video feed (short vs landscape, Smart-Fit
 sizing) · media controls + scrub slider + mute · reactions / comments /
 replies · follow · view / like / comment / share / save counts · profile
 stats + video viewer + delete own posts · camera/gallery profile photo ·
+private Saved videos screen (Profile → bookmark icon) ·
 Sky Note (24h cloud-bubble thought) · Fly Memories (on-this-day card) ·
 13+ age gate at signup · back button returns to Home, double-back exits ·
 video filters/speed/text-overlays/stickers chosen at upload time and

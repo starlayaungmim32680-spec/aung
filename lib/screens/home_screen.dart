@@ -1333,6 +1333,131 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
   }
 }
 
+// Full-screen, swipeable viewer for the signed-in user's saved videos,
+// opened from saved_videos_screen.dart's grid. Takes the already-loaded
+// post docs (newest save first) instead of running its own query, so it
+// shows exactly what the grid showed, in the same order.
+class SavedVideosFeedScreen extends StatefulWidget {
+  final List<DocumentSnapshot> posts;
+  final int initialIndex;
+
+  const SavedVideosFeedScreen({
+    super.key,
+    required this.posts,
+    this.initialIndex = 0,
+  });
+
+  @override
+  State<SavedVideosFeedScreen> createState() => _SavedVideosFeedScreenState();
+}
+
+class _SavedVideosFeedScreenState extends State<SavedVideosFeedScreen> {
+  late final PageController _pageController =
+      PageController(initialPage: widget.initialIndex);
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+    _preloadAround(widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    WakelockPlus.disable();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  String _urlOf(int i) =>
+      ((widget.posts[i].data() as Map<String, dynamic>?)?['videoUrl']
+          as String?) ??
+      '';
+
+  // Same next-2 / prev-1 preload window as the other feed screens.
+  void _preloadAround(int index) {
+    final int count = widget.posts.length;
+    final Set<String> keep = {_urlOf(index)};
+    for (final int i in [index + 1, index + 2, index - 1]) {
+      if (i < 0 || i >= count) continue;
+      final String url = _urlOf(i);
+      keep.add(url);
+      VideoPreloadCache.preload(url);
+    }
+    VideoPreloadCache.evictExcept(keep);
+  }
+
+  void _goToNextVideo() {
+    final int? currentPage = _pageController.page?.round();
+    if (currentPage != null && currentPage < widget.posts.length - 1) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            scrollDirection: Axis.vertical,
+            itemCount: widget.posts.length,
+            onPageChanged: _preloadAround,
+            itemBuilder: (context, index) {
+              final postDoc = widget.posts[index];
+              final post = (postDoc.data() as Map<String, dynamic>?) ?? {};
+              final Map<String, dynamic> reactions =
+                  (post['reactions'] as Map<String, dynamic>?) ?? {};
+
+              return _VideoPostItem(
+                key: ValueKey(postDoc.id),
+                postId: postDoc.id,
+                userId: post['userId'] ?? '',
+                videoUrl: post['videoUrl'] ?? '',
+                caption: post['caption'] ?? '',
+                userEmail: post['userEmail'] ?? 'Unknown user',
+                reactions: reactions,
+                videoType: (post['videoType'] as String?) ?? 'short',
+                videoSpeed: ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+                filterType: (post['filterType'] as String?) ?? 'none',
+                textOverlays: ((post['textOverlays'] as List<dynamic>?)
+                        ?.map((m) =>
+                            TextOverlayData.fromMap(m as Map<String, dynamic>))
+                        .toList()) ??
+                    const [],
+                effectsBaked: post['effectsBaked'] as bool? ?? false,
+                onVideoEnd: _goToNextVideo,
+              );
+            },
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.4),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.arrow_back, color: Colors.white),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // Plays a single video full-screen. Used for reposts on a profile grid,
 // where we want to open just the one shared video rather than paging
 // through a whole user's feed.
@@ -2641,11 +2766,23 @@ class _VideoPostItemState extends State<_VideoPostItem>
         .doc(widget.postId)
         .collection('saves')
         .doc(user.uid);
+    // Also kept in the saver's own private list, users/{uid}/saved/
+    // {postId}, which is what the "Saved" screen (saved_videos_screen.dart)
+    // reads - a plain per-user query with no extra Firestore index, instead
+    // of searching every post's `saves` subcollection. Both docs are
+    // written in one batch so they never disagree.
+    final myListRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('saved')
+        .doc(widget.postId);
     try {
+      final batch = FirebaseFirestore.instance.batch();
       if (isSaved) {
-        await ref.delete();
+        batch.delete(ref);
+        batch.delete(myListRef);
       } else {
-        await ref.set({
+        batch.set(ref, {
           'uid': user.uid,
           'ownerId': widget.userId,
           'videoUrl': widget.videoUrl,
@@ -2653,7 +2790,14 @@ class _VideoPostItemState extends State<_VideoPostItem>
           'videoType': widget.videoType,
           'savedAt': FieldValue.serverTimestamp(),
         });
+        batch.set(myListRef, {
+          'postId': widget.postId,
+          'ownerId': widget.userId,
+          'videoUrl': widget.videoUrl,
+          'savedAt': FieldValue.serverTimestamp(),
+        });
       }
+      await batch.commit();
     } catch (_) {
       // Ignore save errors so the UI is never blocked.
     }
