@@ -13,7 +13,11 @@
 //
 //  POST /token          - mints a LiveKit access token
 //  POST /call-push       - sends an FCM push to wake a phone for an
-//                         incoming call, even if Fly is fully closed
+//                         incoming call, even if Fly is fully closed.
+//                         With `type: 'call_cancelled'` it instead tells
+//                         the callee's phone to stop ringing because the
+//                         caller hung up first (works even if Fly was
+//                         swiped away on that phone).
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -686,11 +690,42 @@ async function sha256Hex(input) {
 async function handleCallPush(body, env) {
   const { fcmToken, callerName, callerPhoto, roomName, callerId, isVideo } =
       body;
-  if (!fcmToken || !roomName || !callerName) {
+  // 'incoming_call' (default, so older app builds keep working unchanged)
+  // or 'call_cancelled' (the caller hung up before the callee answered).
+  const type = body.type === 'call_cancelled' ? 'call_cancelled' : 'incoming_call';
+
+  if (type === 'call_cancelled') {
+    if (!fcmToken || !roomName) {
+      return new Response('fcmToken and roomName are required', {
+        status: 400,
+      });
+    }
+  } else if (!fcmToken || !roomName || !callerName) {
     return new Response('fcmToken, roomName and callerName are required', {
       status: 400,
     });
   }
+
+  // A cancel only needs the room name - the phone just stops ringing, so
+  // there's nothing to show and no sound to play.
+  const data =
+    type === 'call_cancelled'
+      ? {
+          type,
+          roomName: String(roomName),
+        }
+      : {
+          type,
+          roomName: String(roomName),
+          callerId: String(callerId || ''),
+          callerName: String(callerName),
+          callerPhoto: String(callerPhoto || ''),
+          isVideo: String(!!isVideo),
+        };
+  const aps =
+    type === 'call_cancelled'
+      ? { 'content-available': 1 }
+      : { 'content-available': 1, sound: 'default' };
 
   try {
     const accessToken = await getGoogleAccessToken(env);
@@ -705,25 +740,16 @@ async function handleCallPush(body, env) {
         body: JSON.stringify({
           message: {
             token: fcmToken,
-            data: {
-              type: 'incoming_call',
-              roomName: String(roomName),
-              callerId: String(callerId || ''),
-              callerName: String(callerName),
-              callerPhoto: String(callerPhoto || ''),
-              isVideo: String(!!isVideo),
-            },
+            data,
             android: {
+              // High priority for both types: a cancel that arrives late
+              // (normal priority can be held back while the phone dozes)
+              // would leave the phone ringing for nothing.
               priority: 'high',
             },
             apns: {
               headers: { 'apns-priority': '10' },
-              payload: {
-                aps: {
-                  'content-available': 1,
-                  sound: 'default',
-                },
-              },
+              payload: { aps },
             },
           },
         }),

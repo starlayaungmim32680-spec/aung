@@ -416,7 +416,10 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       flow; `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/
       `FIREBASE_PRIVATE_KEY_B64` secrets) to wake a phone for an incoming
       call even if Fly is fully closed — see `firebaseMessagingBackgroundHandler`
-      in `main.dart`.
+      in `main.dart`. Body field `type` (Sep 2026): omitted/`'incoming_call'`
+      = ring (needs `callerName`); `'call_cancelled'` = stop ringing (needs
+      only `fcmToken` + `roomName`). Defaulting to incoming keeps old app
+      builds working.
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
@@ -477,11 +480,19 @@ force: enabled)` — used for both the video-call default-to-speaker
        now stop together. Gotcha: `GetOptions(source: Source.server)`
        doesn't compile in that file — `audioplayers` also exports a
        `Source` class (ambiguous import).
-       **Still open:** if the callee's app was fully swiped away, nothing
-       is listening, so it still rings the full 45s. That needs a new FCM
-       push type (e.g. `call_cancelled`, sent by the caller through the
-       Worker's `/call-push`, mirroring the incoming-call push) handled in
-       `main.dart`'s background handler to call `dismissIncomingCall()`.
+       **App fully swiped away — also FIXED (28 Sep 2026, confirmed on
+       two phones):** when the caller ends a call the other side never
+       joined (`!fromIncomingCall && !_remoteJoined` in
+       `video_call_screen.dart`'s `_endCall()` — covers hanging up and the
+       45s timer), it also calls `sendCallCancelledPush(roomName)`
+       (`call_push_service.dart`; reads `calleeId` from `calls/{roomName}`,
+       then their `fcmToken`) → Worker `/call-push` with
+       `type: 'call_cancelled'` → high-priority data message →
+       `firebaseMessagingBackgroundHandler` in `main.dart` calls
+       `dismissIncomingCall()` (no Firebase init needed for that). If the
+       app is still running, both the Firestore path and the push fire;
+       dismissing twice is harmless. Best-effort: a late push or an OEM
+       battery restriction falls back to the 45s ring duration.
 - **Rendering engine: Impeller is explicitly DISABLED.**
   `android/app/src/main/AndroidManifest.xml` sets
   `io.flutter.embedding.android.EnableImpeller` to `false`. This was a
@@ -586,7 +597,8 @@ issue if this comes up again.
 - `main.dart` — app entry, Firebase init (+ explicit Firestore offline-
   persistence settings, see §3), auth gate / auto-login (`_ensureUserDoc`
   creates the user's Firestore doc on first login),
-  `firebaseMessagingBackgroundHandler` for incoming-call push data messages,
+  `firebaseMessagingBackgroundHandler` for incoming-call and
+  `call_cancelled` push data messages,
   starts `NetworkService.instance.init()` after `runApp()`.
 - `network_service.dart` — app-wide `NetworkService` singleton
   (`ValueNotifier<NetworkStatus>` with offline/weak/good), probes
@@ -1079,10 +1091,10 @@ others only see it once encoded (Bunny webhook).
   upload, resumable (TUS) uploads.
 - Offline replay of a previously-watched video only works for old
   Cloudinary posts, not new Bunny (HLS) ones — see §3.
-- Call lifecycle when the callee's app is **fully swiped away**: a Decline
-  there doesn't reach the caller, and a caller hang-up doesn't stop the
-  ringing (the app-open/backgrounded hang-up case was fixed 27 Sep 2026) —
-  see §3 for what a fix would need.
+- If the callee's app is **fully swiped away** and they tap Decline, the
+  caller isn't told (plugin limitation) and waits for the 45s timer — see
+  §3. (Caller hang-up now stops the callee's ringing in every state,
+  fixed 27–28 Sep 2026.)
 - Cloudinary account (cloud_name `dwx402gy4`) is currently **disabled**
   (usage-quota exceeded) — all old Cloudinary-hosted content (videos,
   profile photos, stories) is unplayable/unloadable until Ko either

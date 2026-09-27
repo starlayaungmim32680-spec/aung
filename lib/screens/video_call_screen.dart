@@ -15,6 +15,7 @@ import '../call_kit_service.dart';
 import '../call_permissions.dart';
 import '../active_call.dart';
 import 'worker_auth.dart';
+import 'call_push_service.dart' show sendCallCancelledPush;
 
 // LiveKit connection details for the Fly project.
 //
@@ -831,6 +832,14 @@ class _VideoCallScreenState extends State<VideoCallScreen>
     // notification stuck on the leaving person's own phone even though
     // the other side correctly saw the call end via Firestore.
     unawaited(CallKitService.endCall(widget.roomName));
+    // I placed this call and the other person never joined (I hung up
+    // while it was still ringing, or the 45s no-answer timer fired): also
+    // push a "call cancelled" message so their phone stops ringing even
+    // if Fly is fully closed there - the Firestore status write below
+    // only reaches a phone where Fly is still running.
+    if (!widget.fromIncomingCall && !_remoteJoined) {
+      unawaited(sendCallCancelledPush(roomName: widget.roomName));
+    }
     try {
       await _callRef.update({'status': 'ended'});
     } catch (_) {}

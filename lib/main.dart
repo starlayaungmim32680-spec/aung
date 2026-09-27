@@ -24,9 +24,23 @@ import 'screens/home_screen.dart' show flyRouteObserver;
 // noticed), the OS itself handles waking the screen and ringing, the
 // same way WhatsApp/Messenger's calls do, rather than Fly having to
 // convince Android to treat a notification as urgent enough to do that.
+//
+// Also handles 'call_cancelled' (sent when the caller hangs up before this
+// person answers - see call_push_service.dart's sendCallCancelledPush):
+// stops the native ringing screen. That's the only thing that can stop it
+// when Fly was swiped away, since no Firestore listener is running then.
+// No Firebase setup is needed for that - it's a purely local CallKit call.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  if (message.data['type'] != 'incoming_call') return;
+  final String? type = message.data['type'] as String?;
+  if (type == 'call_cancelled') {
+    WidgetsFlutterBinding.ensureInitialized();
+    await CallKitService.dismissIncomingCall(
+      message.data['roomName'] as String? ?? '',
+    );
+    return;
+  }
+  if (type != 'incoming_call') return;
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await CallKitService.showIncomingCall(

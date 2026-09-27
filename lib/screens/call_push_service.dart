@@ -4,6 +4,9 @@
 // best-effort: if it fails, the call still rings normally for anyone
 // with the app open, since that path relies on the Firestore listener
 // in main_navigation_screen.dart, not this push.
+//
+// Also sends the matching "call cancelled" push (sendCallCancelledPush,
+// below) that stops that ringing again if the caller hangs up first.
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:http/http.dart' as http;
@@ -40,6 +43,51 @@ Future<void> sendCallPush({
         'callerPhoto': callerPhoto,
         'roomName': roomName,
         'isVideo': isVideo,
+      }),
+    );
+  } catch (_) {
+    // Best-effort, as noted above.
+  }
+}
+
+// Tells the callee's phone to stop ringing because the caller hung up (or
+// the caller's 45s no-answer timer ran out) before they answered. This is
+// what stops the ringing when Fly was fully swiped away on the callee's
+// phone - if Fly is still open or backgrounded there, the Firestore
+// listener in main_navigation_screen.dart already does it, and receiving
+// both is harmless (dismissing an already-dismissed call does nothing).
+//
+// Looks the callee up from the call doc itself (calls/{roomName}), so the
+// call screen doesn't need to know who it called. Best-effort, like
+// sendCallPush: if it fails, the callee's ringing screen still closes on
+// its own after its 45s duration.
+Future<void> sendCallCancelledPush({required String roomName}) async {
+  try {
+    final callDoc = await FirebaseFirestore.instance
+        .collection('calls')
+        .doc(roomName)
+        .get();
+    final String? calleeId = callDoc.data()?['calleeId'] as String?;
+    if (calleeId == null || calleeId.isEmpty) return;
+
+    final calleeDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(calleeId)
+        .get();
+    final String? fcmToken = calleeDoc.data()?['fcmToken'] as String?;
+    if (fcmToken == null || fcmToken.isEmpty) return;
+
+    final Uri uri = Uri.parse('$kTokenServerUrl/call-push');
+    await http.post(
+      uri,
+      headers: {
+        ...await workerAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'type': 'call_cancelled',
+        'fcmToken': fcmToken,
+        'roomName': roomName,
       }),
     );
   } catch (_) {
