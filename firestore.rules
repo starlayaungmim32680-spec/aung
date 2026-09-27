@@ -37,6 +37,13 @@ service cloud.firestore {
              .affectedKeys().hasOnly([request.auth.uid]);
     }
 
+    // The signed-in user owns this video post.
+    function isPostOwner(postId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/posts/$(postId))
+             .data.userId == request.auth.uid;
+    }
+
     // chatId / call room = '<uidA>_<uidB>' (sorted). Firebase uids never
     // contain '_', so splitting is safe.
     function inRoom(roomId) {
@@ -131,28 +138,41 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      // Comments & replies (Sep 2026: delete + hide). The author can delete
+      // their own; the VIDEO OWNER can delete any, and can hide/unhide any
+      // by changing only `hidden`/`hiddenAt`. The author may not touch
+      // those two fields, so they can't undo the owner's hide.
       match /comments/{commentId} {
         allow read: if signedIn();
         allow create: if signedIn()
-          && request.resource.data.userId == request.auth.uid;
+          && request.resource.data.userId == request.auth.uid
+          && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt']);
         allow update: if signedIn() && (
-          resource.data.userId == request.auth.uid || onlyMyReaction()
+          (resource.data.userId == request.auth.uid
+            && !changedKeys().hasAny(['hidden', 'hiddenAt']))
+          || onlyMyReaction()
+          || (isPostOwner(postId)
+            && changedKeys().hasOnly(['hidden', 'hiddenAt']))
         );
         allow delete: if signedIn() && (
-          resource.data.userId == request.auth.uid
-          || get(/databases/$(database)/documents/posts/$(postId))
-               .data.userId == request.auth.uid
+          resource.data.userId == request.auth.uid || isPostOwner(postId)
         );
 
         match /replies/{replyId} {
           allow read: if signedIn();
           allow create: if signedIn()
-            && request.resource.data.userId == request.auth.uid;
+            && request.resource.data.userId == request.auth.uid
+            && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt']);
           allow update: if signedIn() && (
-            resource.data.userId == request.auth.uid || onlyMyReaction()
+            (resource.data.userId == request.auth.uid
+              && !changedKeys().hasAny(['hidden', 'hiddenAt']))
+            || onlyMyReaction()
+            || (isPostOwner(postId)
+              && changedKeys().hasOnly(['hidden', 'hiddenAt']))
           );
-          allow delete: if signedIn()
-            && resource.data.userId == request.auth.uid;
+          allow delete: if signedIn() && (
+            resource.data.userId == request.auth.uid || isPostOwner(postId)
+          );
         }
       }
     }

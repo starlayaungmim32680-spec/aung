@@ -3538,8 +3538,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('comments'),
                         builder: (context, snap) {
-                          final int count =
-                              snap.hasData ? snap.data!.docs.length : 0;
+                          // Comments the video owner hid aren't counted.
+                          final int count = snap.hasData
+                              ? _visibleCommentCount(snap.data!.docs)
+                              : 0;
                           return GestureDetector(
                             onTap: _openComments,
                             child: Column(
@@ -3704,8 +3706,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                       StreamBuilder<QuerySnapshot>(
                         stream: _postSubStream('comments'),
                         builder: (context, snap) {
-                          final int count =
-                              snap.hasData ? snap.data!.docs.length : 0;
+                          // Comments the video owner hid aren't counted.
+                          final int count = snap.hasData
+                              ? _visibleCommentCount(snap.data!.docs)
+                              : 0;
                           return GestureDetector(
                             onTap: _openComments,
                             child: Row(
@@ -4133,6 +4137,31 @@ class _VideoPostItemState extends State<_VideoPostItem>
 }
 
 // Bottom sheet that shows comments, replies, and emoji reactions
+// Comment / reply visibility for the "Hide comment" feature. A hidden
+// comment (hidden: true, set by the VIDEO OWNER) is still shown to:
+//   - the video owner (dimmed, with a "Hidden" label, so they can unhide),
+//   - the person who wrote it (shown normally - like Facebook, the author
+//     isn't told, which avoids provoking them into re-posting).
+// Everyone else doesn't see it, and it isn't counted.
+bool _isCommentVisibleTo(
+  Map<String, dynamic> data, {
+  required String? myId,
+  required String postOwnerId,
+}) {
+  if (data['hidden'] != true) return true;
+  if (myId == null) return false;
+  return myId == postOwnerId || myId == data['userId'];
+}
+
+// How many comments/replies someone (not the video owner or author) can
+// actually see - used for the comment counts, so hidden ones don't count.
+int _visibleCommentCount(List<QueryDocumentSnapshot> docs) {
+  return docs.where((d) {
+    final data = d.data() as Map<String, dynamic>?;
+    return data?['hidden'] != true;
+  }).length;
+}
+
 class _CommentsSheet extends StatefulWidget {
   final String postId;
   final String ownerId;
@@ -4146,7 +4175,6 @@ class _CommentsSheet extends StatefulWidget {
 class _CommentsSheetState extends State<_CommentsSheet> {
   final TextEditingController _commentController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  bool _isSending = false;
 
   String? _replyToCommentId;
   String? _replyToName;
@@ -4155,14 +4183,36 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   Set<String> _blockedIds = {};
   StreamSubscription<QuerySnapshot>? _blockedSub;
 
+  // Built once in initState (Fly's stream rule): building it inside build()
+  // made every setState create a new stream, which flashed the loading
+  // spinner and made the list jump right when a comment was sent.
+  late final Stream<QuerySnapshot> _commentsStream;
+
+  // My own name/photo, fetched once when the sheet opens instead of on
+  // every send - one less network round trip before a comment appears.
+  late final Future<Map<String, String>> _myProfileFuture;
+
+  String? get _myId => FirebaseAuth.instance.currentUser?.uid;
+
+  CollectionReference get _commentsRef => FirebaseFirestore.instance
+      .collection('posts')
+      .doc(widget.postId)
+      .collection('comments');
+
   @override
   void initState() {
     super.initState();
-    final String? myId = FirebaseAuth.instance.currentUser?.uid;
-    if (myId != null) {
+    final User? me = FirebaseAuth.instance.currentUser;
+    _commentsStream =
+        _commentsRef.orderBy('createdAt', descending: true).snapshots();
+    _myProfileFuture = me == null
+        ? Future.value(const {'name': 'User', 'photo': ''})
+        : _getMyProfile(me.uid, me.email);
+
+    if (me != null) {
       _blockedSub = FirebaseFirestore.instance
           .collection('users')
-          .doc(myId)
+          .doc(me.uid)
           .collection('blocked')
           .snapshots()
           .listen((snap) {
@@ -4184,15 +4234,19 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   }
 
   Future<Map<String, String>> _getMyProfile(String uid, String? email) async {
-    final doc =
-        await FirebaseFirestore.instance.collection('users').doc(uid).get();
-    final data = doc.data();
-    final String name =
-        (data?['displayName'] as String?)?.trim().isNotEmpty == true
-            ? data!['displayName']
-            : (email?.split('@').first ?? 'User');
-    final String photo = (data?['photoUrl'] as String?) ?? '';
-    return {'name': name, 'photo': photo};
+    try {
+      final doc =
+          await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final data = doc.data();
+      final String name =
+          (data?['displayName'] as String?)?.trim().isNotEmpty == true
+              ? data!['displayName']
+              : (email?.split('@').first ?? 'User');
+      final String photo = (data?['photoUrl'] as String?) ?? '';
+      return {'name': name, 'photo': photo};
+    } catch (_) {
+      return {'name': email?.split('@').first ?? 'User', 'photo': ''};
+    }
   }
 
   void _startReply(String commentId, String name) {
@@ -4217,11 +4271,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
 
   // Calls the moderation service and returns whether the content was
   // flagged. Fails "open" (returns false / not flagged) on any network
-  // error or timeout - e.g. the free Render instance waking up from a
-  // cold start can take up to ~50s - so a moderation-service outage never
-  // blocks comments outright. The local ContentFilter word-list check
-  // still runs regardless as a first line of defense.
-  Future<bool> _isFlaggedByModerationServer(
+  // error or timeout, so a moderation-service outage never blocks
+  // comments outright. The free Render instance can take up to ~50s to
+  // wake from a cold start - which is exactly why this now runs AFTER the
+  // comment is posted (see _sendComment), never before it.
+  static Future<bool> _isFlaggedByModerationServer(
     String endpoint,
     Map<String, dynamic> body,
   ) async {
@@ -4241,94 +4295,132 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
   }
 
+  // Sends a comment (or a reply) instantly.
+  //
+  // Why it used to feel slow: it waited for the moderation server (a free
+  // Render instance that can take ~50s to wake up) and then a profile
+  // read, all BEFORE writing anything - and the input stayed locked with a
+  // spinner the whole time. Now:
+  //   1. the quick on-device word filter still runs first (blocks before
+  //      posting, as before);
+  //   2. the comment is written straight away and the input clears at
+  //      once - Firestore shows it in the list immediately, even before
+  //      the server confirms;
+  //   3. the moderation-server check runs in the background afterwards;
+  //      if it flags the comment, the comment is deleted again and the
+  //      author gets a message. The video owner's notification is only
+  //      sent once that check passes, so a flagged comment's text never
+  //      lands in their notifications.
   Future<void> _sendComment() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final User? user = FirebaseAuth.instance.currentUser;
     final String text = _commentController.text.trim();
     if (user == null || text.isEmpty) return;
 
-    // Block obviously inappropriate comments before writing to Firestore.
-    // The local word-list is small and English/Burmese-only, so it won't
-    // catch every language or every Burmese slang term.
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
     if (ContentFilter.containsBlockedContent(text)) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Your comment contains inappropriate language. Please edit it.'),
-          ),
-        );
-      }
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Your comment contains inappropriate language. Please edit it.'),
+        ),
+      );
       return;
     }
 
-    // Second line of defense: OpenAI's multilingual moderation model,
-    // which understands far more languages and slang (including Burmese)
-    // than the local word-list ever can.
-    setState(() => _isSending = true);
-    final bool commentFlagged =
-        await _isFlaggedByModerationServer('/moderate/text', {'text': text});
-    if (commentFlagged) {
-      if (mounted) {
-        setState(() => _isSending = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Your comment contains inappropriate language. Please edit it.'),
-          ),
-        );
-      }
-      return;
-    }
+    final String? replyToId = _replyToCommentId;
+    _commentController.clear();
+    _cancelReply();
 
-    final profile = await _getMyProfile(user.uid, user.email);
+    final Map<String, String> profile = await _myProfileFuture;
     final String displayName = profile['name']!;
     final String photoUrl = profile['photo']!;
 
-    final commentsRef = FirebaseFirestore.instance
-        .collection('posts')
-        .doc(widget.postId)
-        .collection('comments');
+    // The doc id is generated locally, so the write shows up in the list
+    // right away and the background check below can find it again.
+    final DocumentReference ref = replyToId == null
+        ? _commentsRef.doc()
+        : _commentsRef.doc(replyToId).collection('replies').doc();
 
-    if (_replyToCommentId == null) {
-      await commentsRef.add({
-        'userId': user.uid,
-        'displayName': displayName,
-        'photoUrl': photoUrl,
-        'text': text,
-        'reactions': <String, dynamic>{},
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+    ref.set({
+      'userId': user.uid,
+      'displayName': displayName,
+      'photoUrl': photoUrl,
+      'text': text,
+      'reactions': <String, dynamic>{},
+      'createdAt': FieldValue.serverTimestamp(),
+    }).catchError((_) {
+      messenger.showSnackBar(
+        const SnackBar(
+            content: Text("Couldn't send your comment. Please try again.")),
+      );
+    });
 
-      if (widget.ownerId.isNotEmpty && widget.ownerId != user.uid) {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(widget.ownerId)
-            .collection('notifications')
-            .add({
-          'type': 'comment',
-          'text': text,
-          'fromId': user.uid,
-          'fromName': displayName,
-          'fromPhoto': photoUrl,
-          'postId': widget.postId,
-          'seen': false,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      }
-    } else {
-      await commentsRef.doc(_replyToCommentId).collection('replies').add({
-        'userId': user.uid,
-        'displayName': displayName,
-        'photoUrl': photoUrl,
-        'text': text,
-        'reactions': <String, dynamic>{},
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+    // Not awaited: runs on even if the sheet is closed meanwhile.
+    unawaited(_moderateAfterPost(
+      ref: ref,
+      text: text,
+      isReply: replyToId != null,
+      myId: user.uid,
+      postId: widget.postId,
+      postOwnerId: widget.ownerId,
+      displayName: displayName,
+      photoUrl: photoUrl,
+      messenger: messenger,
+    ));
+  }
+
+  Future<void> _moderateAfterPost({
+    required DocumentReference ref,
+    required String text,
+    required bool isReply,
+    required String myId,
+    // Passed in (not read from `widget`) because this can finish after the
+    // sheet has been closed and this State disposed.
+    required String postId,
+    required String postOwnerId,
+    required String displayName,
+    required String photoUrl,
+    required ScaffoldMessengerState messenger,
+  }) async {
+    final bool flagged =
+        await _isFlaggedByModerationServer('/moderate/text', {'text': text});
+
+    if (flagged) {
+      try {
+        await ref.delete();
+      } catch (_) {}
+      messenger.showSnackBar(
+        const SnackBar(
+          content:
+              Text('Your comment was removed because it contains inappropriate '
+                  'language.'),
+        ),
+      );
+      return;
     }
 
-    _commentController.clear();
-    _cancelReply();
-    if (mounted) setState(() => _isSending = false);
+    // Replies don't notify the video owner (unchanged behaviour).
+    if (isReply) return;
+    if (postOwnerId.isEmpty || postOwnerId == myId) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(postOwnerId)
+          .collection('notifications')
+          .add({
+        'type': 'comment',
+        'text': text,
+        'fromId': myId,
+        'fromName': displayName,
+        'fromPhoto': photoUrl,
+        'postId': postId,
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      // A missed notification shouldn't bother the commenter.
+    }
   }
 
   Future<void> _setReaction(DocumentReference ref,
@@ -4375,6 +4467,146 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         );
       },
     );
+  }
+
+  // Long-press menu for a comment or reply. What shows depends on who you
+  // are:
+  //   - the author:      Delete
+  //   - the video owner: Hide / Unhide, and Delete (for others' comments)
+  //   - anyone else:     Report
+  void _showCommentOptions(
+    DocumentReference ref,
+    Map<String, dynamic> data, {
+    required bool isReply,
+  }) {
+    final String? myId = _myId;
+    if (myId == null) return;
+    final bool isMine = data['userId'] == myId;
+    final bool iOwnTheVideo = myId == widget.ownerId;
+    final bool isHidden = data['hidden'] == true;
+    final String noun = isReply ? 'reply' : 'comment';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        final List<Widget> items = [
+          if (iOwnTheVideo && !isMine)
+            ListTile(
+              leading: Icon(
+                isHidden
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined,
+                color: Colors.white,
+              ),
+              title: Text(
+                isHidden ? 'Unhide $noun' : 'Hide $noun',
+                style: const TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                isHidden
+                    ? 'Everyone will be able to see it again.'
+                    : 'Only you and the person who wrote it will see it.',
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _setHidden(ref, !isHidden, noun);
+              },
+            ),
+          if (isMine || iOwnTheVideo)
+            ListTile(
+              leading:
+                  const Icon(Icons.delete_outline, color: Colors.redAccent),
+              title: Text('Delete $noun',
+                  style: const TextStyle(color: Colors.redAccent)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _confirmDelete(ref, noun);
+              },
+            ),
+          if (!isMine)
+            ListTile(
+              leading: const Icon(Icons.flag_outlined, color: Colors.white70),
+              title: Text('Report $noun',
+                  style: const TextStyle(color: Colors.white70)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _showCommentReportSheet(ref, data);
+              },
+            ),
+        ];
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: items),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _setHidden(
+      DocumentReference ref, bool hidden, String noun) async {
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    try {
+      await ref.update({
+        'hidden': hidden,
+        'hiddenAt': hidden ? FieldValue.serverTimestamp() : FieldValue.delete(),
+      });
+      messenger.showSnackBar(SnackBar(
+        content: Text(hidden
+            ? 'The $noun is now hidden from others.'
+            : 'The $noun is visible to everyone again.'),
+      ));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't update it. Please try again.")),
+      );
+    }
+  }
+
+  Future<void> _confirmDelete(DocumentReference ref, String noun) async {
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: Text('Delete this $noun?',
+            style: const TextStyle(color: Colors.white)),
+        content: const Text(
+          "This can't be undone.",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    // Deleting a top-level comment removes the comment itself; its replies
+    // become unreachable in the app (Firestore can't cascade-delete a
+    // subcollection without a server).
+    try {
+      await ref.delete();
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't delete it. Please try again.")),
+      );
+    }
   }
 
   // Shows a reason picker and writes a 'reports' document for a comment.
@@ -4462,6 +4694,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   @override
   Widget build(BuildContext context) {
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final String? myId = _myId;
 
     return Container(
       height: MediaQuery.of(context).size.height * 0.75,
@@ -4494,24 +4727,21 @@ class _CommentsSheetState extends State<_CommentsSheet> {
           const Divider(color: Colors.white12, height: 1),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('posts')
-                  .doc(widget.postId)
-                  .collection('comments')
-                  .orderBy('createdAt', descending: true)
-                  .snapshots(),
+              stream: _commentsStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData) {
                   return const Center(
                     child: CircularProgressIndicator(color: Colors.redAccent),
                   );
                 }
 
                 final List<QueryDocumentSnapshot> comments =
-                    (snapshot.data?.docs ?? []).where((doc) {
+                    snapshot.data!.docs.where((doc) {
                   final data = doc.data() as Map<String, dynamic>;
                   final String commentUserId = data['userId'] ?? '';
-                  return !_blockedIds.contains(commentUserId);
+                  return !_blockedIds.contains(commentUserId) &&
+                      _isCommentVisibleTo(data,
+                          myId: myId, postOwnerId: widget.ownerId);
                 }).toList();
 
                 if (comments.isEmpty) {
@@ -4529,11 +4759,18 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   itemBuilder: (context, index) {
                     final doc = comments[index];
                     return _CommentTile(
+                      // Keyed by doc id so each tile keeps its own state
+                      // (open replies, reply stream) when comments are
+                      // added, hidden or deleted above it.
+                      key: ValueKey(doc.id),
                       commentRef: doc.reference,
                       data: doc.data() as Map<String, dynamic>,
+                      myId: myId,
+                      postOwnerId: widget.ownerId,
+                      blockedIds: _blockedIds,
                       onReply: _startReply,
                       onReact: _openReactionPicker,
-                      onReport: _showCommentReportSheet,
+                      onOptions: _showCommentOptions,
                     );
                   },
                 );
@@ -4595,7 +4832,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                 ),
                 const SizedBox(width: 8),
                 GestureDetector(
-                  onTap: _isSending ? null : _sendComment,
+                  onTap: _sendComment,
                   child: Container(
                     width: 44,
                     height: 44,
@@ -4605,15 +4842,8 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                         colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
                       ),
                     ),
-                    child: _isSending
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Icon(Icons.send, color: Colors.white, size: 20),
+                    child:
+                        const Icon(Icons.send, color: Colors.white, size: 20),
                   ),
                 ),
               ],
@@ -4673,22 +4903,59 @@ class _ReactionSummary extends StatelessWidget {
   }
 }
 
+// Small "Hidden" tag shown to the video owner on a comment/reply they hid.
+class _HiddenCommentTag extends StatelessWidget {
+  const _HiddenCommentTag();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(left: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: Colors.white12,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.visibility_off_outlined, color: Colors.white54, size: 11),
+          SizedBox(width: 3),
+          Text('Hidden', style: TextStyle(color: Colors.white54, fontSize: 10)),
+        ],
+      ),
+    );
+  }
+}
+
+typedef _CommentOptionsCallback = void Function(
+  DocumentReference ref,
+  Map<String, dynamic> data, {
+  required bool isReply,
+});
+
 // A single comment with emoji reactions, a reply button, and its replies
 class _CommentTile extends StatefulWidget {
   final DocumentReference commentRef;
   final Map<String, dynamic> data;
+  final String? myId;
+  final String postOwnerId;
+  final Set<String> blockedIds;
   final void Function(String commentId, String name) onReply;
   final void Function(DocumentReference ref, Map<String, dynamic> reactions)
       onReact;
-  final void Function(DocumentReference ref, Map<String, dynamic> data)
-      onReport;
+  final _CommentOptionsCallback onOptions;
 
   const _CommentTile({
+    super.key,
     required this.commentRef,
     required this.data,
+    required this.myId,
+    required this.postOwnerId,
+    required this.blockedIds,
     required this.onReply,
     required this.onReact,
-    required this.onReport,
+    required this.onOptions,
   });
 
   @override
@@ -4698,6 +4965,22 @@ class _CommentTile extends StatefulWidget {
 class _CommentTileState extends State<_CommentTile> {
   bool _showReplies = false;
 
+  // One replies stream per tile, built once (not in build()) - used both
+  // for the "View N replies" count and for the reply list itself.
+  late final Stream<QuerySnapshot> _repliesStream = widget.commentRef
+      .collection('replies')
+      .orderBy('createdAt', descending: false)
+      .snapshots();
+
+  List<QueryDocumentSnapshot> _visibleReplies(QuerySnapshot? snap) {
+    return (snap?.docs ?? []).where((d) {
+      final data = d.data() as Map<String, dynamic>;
+      return !widget.blockedIds.contains(data['userId'] ?? '') &&
+          _isCommentVisibleTo(data,
+              myId: widget.myId, postOwnerId: widget.postOwnerId);
+    }).toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final String name = widget.data['displayName'] ?? 'User';
@@ -4705,128 +4988,139 @@ class _CommentTileState extends State<_CommentTile> {
     final String photoUrl = widget.data['photoUrl'] ?? '';
     final Map<String, dynamic> reactions =
         (widget.data['reactions'] as Map<String, dynamic>?) ?? {};
+    // Only the video owner is ever shown the "Hidden" look.
+    final bool showAsHidden = widget.data['hidden'] == true &&
+        widget.myId != null &&
+        widget.myId == widget.postOwnerId;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        GestureDetector(
-          onLongPress: () => widget.onReport(widget.commentRef, widget.data),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: Colors.grey[800],
-                  backgroundImage:
-                      photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                  child: photoUrl.isEmpty
-                      ? Text(
-                          name.isNotEmpty ? name[0].toUpperCase() : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        )
-                      : null,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
+    return StreamBuilder<QuerySnapshot>(
+      stream: _repliesStream,
+      builder: (context, repliesSnap) {
+        final List<QueryDocumentSnapshot> replies =
+            _visibleReplies(repliesSnap.data);
+        final int replyCount = replies.length;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onLongPress: () => widget
+                  .onOptions(widget.commentRef, widget.data, isReply: false),
+              child: Opacity(
+                opacity: showAsHidden ? 0.5 : 1,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
+                      CircleAvatar(
+                        radius: 18,
+                        backgroundColor: Colors.grey[800],
+                        backgroundImage:
+                            photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                        child: photoUrl.isEmpty
+                            ? Text(
+                                name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              )
+                            : null,
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        text,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          GestureDetector(
-                            onTap: () =>
-                                widget.onReply(widget.commentRef.id, name),
-                            child: Text(
-                              'Reply',
-                              style: TextStyle(
-                                color: Colors.grey[400],
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          StreamBuilder<QuerySnapshot>(
-                            stream: widget.commentRef
-                                .collection('replies')
-                                .snapshots(),
-                            builder: (context, snapshot) {
-                              final int replyCount = snapshot.hasData
-                                  ? snapshot.data!.docs.length
-                                  : 0;
-                              if (replyCount == 0)
-                                return const SizedBox.shrink();
-                              return GestureDetector(
-                                onTap: () => setState(
-                                    () => _showReplies = !_showReplies),
-                                child: Text(
-                                  _showReplies
-                                      ? 'Hide replies'
-                                      : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
-                                  style: TextStyle(
-                                    color: Colors.grey[400],
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    name,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                    ),
                                   ),
                                 ),
-                              );
-                            },
-                          ),
-                        ],
+                                if (showAsHidden) const _HiddenCommentTag(),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              text,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                GestureDetector(
+                                  onTap: () => widget.onReply(
+                                      widget.commentRef.id, name),
+                                  child: Text(
+                                    'Reply',
+                                    style: TextStyle(
+                                      color: Colors.grey[400],
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                if (replyCount > 0)
+                                  GestureDetector(
+                                    onTap: () => setState(
+                                        () => _showReplies = !_showReplies),
+                                    child: Text(
+                                      _showReplies
+                                          ? 'Hide replies'
+                                          : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
+                                      style: TextStyle(
+                                        color: Colors.grey[400],
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      _ReactionSummary(
+                        reactions: reactions,
+                        onTap: () =>
+                            widget.onReact(widget.commentRef, reactions),
                       ),
                     ],
                   ),
                 ),
-                _ReactionSummary(
-                  reactions: reactions,
-                  onTap: () => widget.onReact(widget.commentRef, reactions),
-                ),
-              ],
+              ),
             ),
-          ),
-        ),
-        if (_showReplies)
-          StreamBuilder<QuerySnapshot>(
-            stream: widget.commentRef
-                .collection('replies')
-                .orderBy('createdAt', descending: false)
-                .snapshots(),
-            builder: (context, snapshot) {
-              final replies = snapshot.data?.docs ?? [];
-              return Column(
+            if (_showReplies)
+              Column(
                 children: replies.map((replyDoc) {
                   return _ReplyTile(
+                    key: ValueKey(replyDoc.id),
                     replyRef: replyDoc.reference,
                     data: replyDoc.data() as Map<String, dynamic>,
+                    myId: widget.myId,
+                    postOwnerId: widget.postOwnerId,
                     onReact: widget.onReact,
+                    onOptions: widget.onOptions,
                   );
                 }).toList(),
-              );
-            },
-          ),
-      ],
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -4835,13 +5129,20 @@ class _CommentTileState extends State<_CommentTile> {
 class _ReplyTile extends StatelessWidget {
   final DocumentReference replyRef;
   final Map<String, dynamic> data;
+  final String? myId;
+  final String postOwnerId;
   final void Function(DocumentReference ref, Map<String, dynamic> reactions)
       onReact;
+  final _CommentOptionsCallback onOptions;
 
   const _ReplyTile({
+    super.key,
     required this.replyRef,
     required this.data,
+    required this.myId,
+    required this.postOwnerId,
     required this.onReact,
+    required this.onOptions,
   });
 
   @override
@@ -4851,55 +5152,73 @@ class _ReplyTile extends StatelessWidget {
     final String photoUrl = data['photoUrl'] ?? '';
     final Map<String, dynamic> reactions =
         (data['reactions'] as Map<String, dynamic>?) ?? {};
+    final bool showAsHidden =
+        data['hidden'] == true && myId != null && myId == postOwnerId;
 
-    return Padding(
-      padding: const EdgeInsets.only(left: 56, right: 16, top: 6, bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 14,
-            backgroundColor: Colors.grey[800],
-            backgroundImage:
-                photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-            child: photoUrl.isEmpty
-                ? Text(
-                    name.isNotEmpty ? name[0].toUpperCase() : '?',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 11,
+    return GestureDetector(
+      onLongPress: () => onOptions(replyRef, data, isReply: true),
+      child: Opacity(
+        opacity: showAsHidden ? 0.5 : 1,
+        child: Padding(
+          padding:
+              const EdgeInsets.only(left: 56, right: 16, top: 6, bottom: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CircleAvatar(
+                radius: 14,
+                backgroundColor: Colors.grey[800],
+                backgroundImage:
+                    photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                child: photoUrl.isEmpty
+                    ? Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            name,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        if (showAsHidden) const _HiddenCommentTag(),
+                      ],
                     ),
-                  )
-                : null,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                  ),
+                    const SizedBox(height: 2),
+                    Text(
+                      text,
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  text,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                ),
-              ],
-            ),
+              ),
+              _ReactionSummary(
+                reactions: reactions,
+                onTap: () => onReact(replyRef, reactions),
+                emojiSize: 14,
+              ),
+            ],
           ),
-          _ReactionSummary(
-            reactions: reactions,
-            onTap: () => onReact(replyRef, reactions),
-            emojiSize: 14,
-          ),
-        ],
+        ),
       ),
     );
   }

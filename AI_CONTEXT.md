@@ -725,30 +725,52 @@ issue if this comes up again.
     horizontal row for reposts), sound/view-count row, the "Fly Frame"
     cinematic top/bottom gradient bands, reaction picker, flying-emoji
     animation, report/block entry point, hashtag handling, translation.
-    **Action dock look (28 Sep 2026, approved by Ko):** Facebook-Reels
-    style — Comment (`_FlyCommentIcon`) is a white outline oval speech
-    bubble with **three white dots inside** (Ko's must-keep detail), Share
-    (`_FlySwooshShareIcon`, name kept from the old paper-plane) is a white
-    outline forward arrow; both 28px with a soft black shadow, no gradient.
-    Compact spacing: 46x40 tap boxes, count 2px under each icon
-    (`_countLabel`), 6px between buttons. 12px gaps + 46px-tall boxes were
-    tried and rejected as too spread out.
-    Accepts `onTapToExpand` (only Home passes this — its absence is how the
-    code tells "already fullscreen" contexts apart from Home) and `isActive`.
-    `_initializeVideo()` here is also where the network-aware timeout/retry
-    UI ("Couldn't load - tap to retry", `_hasError` flag) and the
-    Cloudinary-only disk-cache logic (see `video_disk_cache.dart` above)
-    live — both apply per-instance, so the _same_ video can hit disk cache
-    in one `_VideoPostItem` instance (e.g. Home) and not another (e.g.
-    `FullScreenVideoScreen`) depending on timing; this is expected, not a
-    bug, for Cloudinary posts, and moot for Bunny posts (cache skipped
-    entirely). **(Sep 2026)** `_initializeVideo()` first checks
-    `LocalVideoCache` (uploader's own fresh video → play the local file),
-    and on a failed load of a Bunny post under 30 minutes old shows
-    "Processing video..." with a 5s auto-retry (`_isProcessing`,
-    `_processingRetryTimer`, cancelled in `dispose()`) instead of the error.
-    The two Home feed streams drop not-yet-ready videos via
-    `isVideoVisibleTo()`.
+    **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):**
+    - **Instant send:** only the on-device `ContentFilter` runs before
+      posting; the comment is written at once with a locally generated doc
+      id (input clears immediately, profile is pre-fetched in initState).
+      The moderation-server check (`fly-moderation.onrender.com`, free
+      Render — up to ~50s cold start, which is what made sending feel
+      slow) now runs in the background **after** posting
+      (`_moderateAfterPost`); if flagged, the comment is deleted again and
+      the author told. The owner's notification is only sent after the
+      check passes. Don't move moderation back in front of the write.
+    - The comments stream and each tile's replies stream are built once
+      (initState / `late final`), and tiles are keyed by doc id — the old
+      in-`build()` stream flashed a spinner on every send.
+    - **Long-press menu** (`_showCommentOptions`, comments and replies):
+      author → Delete; video owner → Hide/Unhide + Delete (others'
+      comments); anyone else → Report. Delete has a confirm dialog.
+    - **Hide:** `hidden: true` (+ `hiddenAt`) on the comment/reply, set only
+      by the video owner. `_isCommentVisibleTo()` shows it to the owner
+      (dimmed, "Hidden" tag) and to its author (normally, like Facebook —
+      not told), and filters it out for everyone else. Comment counts use
+      `_visibleCommentCount()` (hidden not counted). It's a client-side
+      filter — the doc is still readable via the API.
+      **Action dock look (28 Sep 2026, approved by Ko):** Facebook-Reels
+      style — Comment (`_FlyCommentIcon`) is a white outline oval speech
+      bubble with **three white dots inside** (Ko's must-keep detail), Share
+      (`_FlySwooshShareIcon`, name kept from the old paper-plane) is a white
+      outline forward arrow; both 28px with a soft black shadow, no gradient.
+      Compact spacing: 46x40 tap boxes, count 2px under each icon
+      (`_countLabel`), 6px between buttons. 12px gaps + 46px-tall boxes were
+      tried and rejected as too spread out.
+      Accepts `onTapToExpand` (only Home passes this — its absence is how the
+      code tells "already fullscreen" contexts apart from Home) and `isActive`.
+      `_initializeVideo()` here is also where the network-aware timeout/retry
+      UI ("Couldn't load - tap to retry", `_hasError` flag) and the
+      Cloudinary-only disk-cache logic (see `video_disk_cache.dart` above)
+      live — both apply per-instance, so the _same_ video can hit disk cache
+      in one `_VideoPostItem` instance (e.g. Home) and not another (e.g.
+      `FullScreenVideoScreen`) depending on timing; this is expected, not a
+      bug, for Cloudinary posts, and moot for Bunny posts (cache skipped
+      entirely). **(Sep 2026)** `_initializeVideo()` first checks
+      `LocalVideoCache` (uploader's own fresh video → play the local file),
+      and on a failed load of a Bunny post under 30 minutes old shows
+      "Processing video..." with a 5s auto-retry (`_isProcessing`,
+      `_processingRetryTimer`, cancelled in `dispose()`) instead of the error.
+      The two Home feed streams drop not-yet-ready videos via
+      `isVideoVisibleTo()`.
   - `_FeedSlots` / `_FeedItem` — feed ordering/pagination helpers, including
     periodic "Shorts shelf" slots inserted into the display sequence.
   - `VideoPreloadCache` lives in its own file (see below) but is used
@@ -993,7 +1015,9 @@ screen needs to be created from scratch — it may already exist there.)_
   (repostByName, repostByUserId, repostByPhoto, repostNote) when the item is
   a repost }
   - `posts/{id}/comments/{id}` (+ `.../replies/{id}`): { userId, displayName,
-    photoUrl, text, reactions, createdAt }
+    photoUrl, text, reactions, createdAt, hidden?, hiddenAt? } — rules
+    (`isPostOwner()`): author can delete; video owner can delete and may
+    change only `hidden`/`hiddenAt`; the author can't touch those two.
   - `posts/{id}/views/{uid}`, `posts/{id}/saves/{uid}`, `posts/{id}/shares/{uid}`
     — one doc per user, used for counting.
 - `stories/{id}`: { userId, userName, userPhoto, mediaUrl, mediaType('image'|
@@ -1039,7 +1063,8 @@ Auth + auto-login (with a mascot-guided login screen, recent-account
 quick-switch, and Forgot Password) · Flyla mascot onboarding tour for
 first-time users · full-screen video feed (short vs landscape, Smart-Fit
 sizing) · media controls + scrub slider + mute · reactions / comments /
-replies · follow · view / like / comment / share / save counts · profile
+replies (instant send, delete own, video owner can hide/delete) · follow ·
+view / like / comment / share / save counts · profile
 stats + video viewer + delete own posts · camera/gallery profile photo ·
 private Saved videos screen (Profile → bookmark icon) ·
 Sky Note (24h cloud-bubble thought) · Fly Memories (on-this-day card) ·
@@ -1146,6 +1171,9 @@ others only see it once encoded (Bunny webhook).
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already
    built — removed 27 Sep 2026.)
+7. **Upgrade AGP 8.9.1 → at least 8.11.1** (`android/settings.gradle`) —
+   `flutter build` warns support for 8.9.1 "will soon be dropped". Do it as
+   its own small step and test a build, not mixed with a feature.
 
 When one of these is done, remove it from this list in the same commit.
 
