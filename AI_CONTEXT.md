@@ -9,6 +9,15 @@
 > _Last major update: 26 Sep 2026 (photo-story effects, story music, sound
 > copyright safeguards, full Firestore rules, Bunny upload fixes + "video
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
+> _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
+> the nav-bar description, package list and feature list, and added Sky
+> Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
+> and back-button behavior, which were built but missing from this file._
+
+> ℹ️ **This file is long (~1,100 lines).** Some web-fetch tools return only a
+> short summary or a stale cached copy of it. If what you got has no
+> "Bunny Stream" section or no To-do list near the end, you did **not** get
+> the real file — fetch it again (or clone the repo) before relying on it.
 
 > ⚠️ **Keep deployed code and the repo in sync (Ko's standing rule).**
 > Two things run outside the Flutter app and are deployed **by hand**:
@@ -187,27 +196,36 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
        option for true resume-after-disconnect on bad connections, but only if
        the current path still fails in practice.
   - **"Video ready" flow (Sep 2026)** — so nobody but the uploader ever sees
-    "Processing" while Bunny encodes: - New video posts/stories are written with `bunnyVideoId` +
-    `videoReady: false` (`newVideoReadinessFields()`). - Bunny calls the Worker's **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`**
-    (set in Bunny → Stream → library → Webhook URL; the token is a Worker
-    secret, never commit or paste it). On status 3/4 (finished / first
-    resolution playable) it writes `videoStatus/{bunnyGuid}` `{ready,
-failed, status, updatedAt}` and sets `videoReady: true` on any
-    post/story whose `bunnyVideoId` matches (status 5 → `videoFailed:
-true`). It uses the same Firebase service account as `/call-push`,
-    with the Datastore OAuth scope, via Firestore's REST API. - Race-proofing: the app creates the doc and **then** calls
-    `syncVideoReady()`, which checks `videoStatus/{id}` and flips the flag
-    itself if encoding already finished first. - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
-    hides a doc, and never from its own uploader. Applied to the **Home
-    feed** (both post streams in `home_screen.dart`) and the **Stories
-    bar**. Old docs without the field stay visible. - The uploader plays their fresh video **instantly from the local file**
-    via `LocalVideoCache` (`local_video_cache.dart`, keyed by videoUrl,
-    in-memory only). If the app restarts before encoding ends, playback
-    falls back to the network and `_VideoPostItem` shows a
-    **"Processing video..."** card that silently retries every 5s for
-    Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't load". - Confirmed working end-to-end on two phones on 26 Sep 2026. - Encoding speed tip given to Ko: in Bunny → Stream → library →
-    Encoding, keep only **360p/480p/720p** (fewer renditions = faster
-    encoding and less storage cost).
+    "Processing" while Bunny encodes:
+    - New video posts/stories are written with `bunnyVideoId` +
+      `videoReady: false` (`newVideoReadinessFields()`).
+    - Bunny calls the Worker's
+      **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`** (set in Bunny →
+      Stream → library → Webhook URL; the token is a Worker secret, never
+      commit or paste it). On status 3/4 (finished / first resolution
+      playable) it writes `videoStatus/{bunnyGuid}` `{ready, failed,
+status, updatedAt}` and sets `videoReady: true` on any post/story
+      whose `bunnyVideoId` matches (status 5 → `videoFailed: true`). It
+      uses the same Firebase service account as `/call-push`, with the
+      Datastore OAuth scope, via Firestore's REST API.
+    - Race-proofing: the app creates the doc and **then** calls
+      `syncVideoReady()`, which checks `videoStatus/{id}` and flips the
+      flag itself if encoding already finished first.
+    - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
+      hides a doc, and never from its own uploader. Applied to the **Home
+      feed** (both post streams in `home_screen.dart`) and the **Stories
+      bar**. Old docs without the field stay visible.
+    - The uploader plays their fresh video **instantly from the local
+      file** via `LocalVideoCache` (`local_video_cache.dart`, keyed by
+      videoUrl, in-memory only). If the app restarts before encoding ends,
+      playback falls back to the network and `_VideoPostItem` shows a
+      **"Processing video..."** card that silently retries every 5s for
+      Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't
+      load".
+    - Confirmed working end-to-end on two phones on 26 Sep 2026.
+    - Encoding speed tip given to Ko: in Bunny → Stream → library →
+      Encoding, keep only **360p/480p/720p** (fewer renditions = faster
+      encoding and less storage cost).
   - **Playback:** the stored `videoUrl` for a Bunny post is the HLS playlist,
     `https://vz-a6ab9346-730.b-cdn.net/<videoId>/playlist.m3u8` —
     `video_player`'s underlying ExoPlayer/AVPlayer plays this as real
@@ -516,19 +534,32 @@ force: enabled)` — used for both the video-call default-to-speaker
 
 ### Key packages (pubspec.yaml)
 
+(Checked against `pubspec.yaml` on 27 Sep 2026.)
+
 firebase_core, firebase_auth, firebase_storage, cloud_firestore,
-connectivity_plus, http, image_picker, video_player, flutter_compress,
+firebase_messaging, shared_preferences, http, connectivity_plus,
+image_picker, video_player, flutter_compress, video_trimmer_2,
 cached_network_image, flutter_cache_manager, video_editor, share_plus,
 flutter_local_notifications, livekit_client, flutter_webrtc, audioplayers,
-path_provider, flutter_sound, permission_handler, shared_preferences,
-url_launcher, camera, google_mlkit_face_mesh_detection,
-google_mlkit_translation, google_mlkit_language_id, firebase_messaging,
-device_info_plus, flutter_callkit_incoming, proximity_sensor, gal.
+path_provider, flutter_sound, permission_handler, wakelock_plus, camera,
+google_mlkit_face_mesh_detection, google_mlkit_translation,
+google_mlkit_language_id, device_info_plus, android_intent_plus,
+flutter_callkit_incoming, proximity_sensor, uuid, url_launcher, gal,
+cupertino_icons.
 
-No `bunny_dart`, `tus_client`, `tusc`, or `cross_file` — all were tried and
-removed during the upload-mechanism debugging described above; the final
-Bunny upload path only needs the `http` package, already present. Also used:
-`video_trimmer_2` (physical trim) and `flutter_cache_manager`.
+- `google_mlkit_translation` / `google_mlkit_language_id` are pinned to
+  **0.13.x** on purpose: 0.14 needs `google_mlkit_commons ^0.12`, which
+  conflicts with `google_mlkit_face_mesh_detection ^0.4.2` (needs commons
+  ^0.11). Don't bump one ML Kit package alone.
+- `connectivity_plus` must stay on **^7.x** (`livekit_client` >= 2.6
+  requires it).
+- `wakelock_plus` keeps the screen on while watching videos, in calls and
+  on live screens.
+- No `bunny_dart`, `tus_client`, `tusc`, or `cross_file` — all were tried
+  and removed during the upload-mechanism debugging described above; the
+  final Bunny upload path only needs the `http` package.
+- No FFmpeg package on purpose (GPL licensing risk for a closed-source
+  commercial app) — see the Trim note in §3.
 
 ### Build toolchain (bleeding-edge but working)
 
@@ -582,7 +613,11 @@ issue if this comes up again.
   once the link is sent. Password reset itself always happens on Firebase's
   own hosted page (opened from the emailed link), not inside the app — no
   custom code/token flow was built for this, to stay on the Spark plan.
-- `screens/signup_screen.dart` — account creation.
+- `screens/signup_screen.dart` — account creation, with a **date-of-birth
+  picker and a 13+ age gate** (signup is blocked under 13 — needed for Play
+  Store, given chat, live streaming and gifting; checked in the app only,
+  the birth date is not saved to Firestore). Has a show/hide password
+  eye icon like the login screen.
 - `screens/recent_accounts.dart` — local-only (`shared_preferences`) store of
   previously logged-in accounts' name/email/photo, capped at 5, for the login
   screen's quick-switch chips. Deliberately never stores a password.
@@ -594,13 +629,24 @@ issue if this comes up again.
   the pre-existing `sawSwipeHint` flag) — chained so it always finishes before
   the swipe hint gets its turn.
 - `screens/main_navigation_screen.dart` — the shell.
-  - Bottom section: Home and Chat are swipeable via a `PageView` (both stay
-    mounted simultaneously — needed so the swipe feels responsive); Upload,
-    Profile, Live, and Gifting are separate, non-swipeable tabs. **Not**
+  - Tabs (checked 27 Sep 2026): **Home, Chat, Upload, Profile, Live**.
+    Home and Chat are swipeable via a `PageView` (both stay mounted
+    simultaneously — needed so the swipe feels responsive), with a one-time
+    swipe hint (`sawSwipeHint`). Upload, Profile and Live are tap-only;
+    Live opens a "Go Live" dialog → `GoLiveScreen`. The old standalone
+    Shorts/Reels tab was **removed** — videos only live on Home. **Not**
     `IndexedStack` (that was deliberately removed previously because it kept
-    every tab's videos alive/competing for playback).
-  - Draggable rainbow floating button that toggles a frosted-glass bottom nav
-    pill; shows an **X** when open, a rotating rainbow ≡ when closed.
+    every tab's videos alive/competing for playback). Gifting and the
+    wallet are not tabs (wallet opens from the Profile AppBar).
+  - Draggable circular **"orbit" menu button** (glass look, cyan glow,
+    orbit-ring + sparkle icon that swaps to an **X** when open) that can be
+    placed anywhere on screen, including over the video. It toggles the
+    small tab pill fixed at the very bottom (horizontally scrollable). The
+    active tab has **no background box** — a small satellite dot orbits the
+    active icon instead (deliberately, so less of the video is covered).
+  - **Back button:** from any tab, the phone's back button returns to Home
+    first; on Home, pressing back again within 2 seconds exits
+    (`PopScope`).
   - `_TopBars`: stacks the network-status banner above the minimized-call bar
     at the top of the screen (see `network_service.dart` above).
   - In-app "ding" sound on new messages; incoming-call listening/UI (see the
@@ -756,6 +802,14 @@ issue if this comes up again.
   (**Delete account** — has a confirmation dialog + password
   re-authentication). Also contains `EditProfileScreen` (edit name + profile
   photo via Camera or Gallery → uploads to **Bunny Storage**, see §3).
+  Also has two profile extras:
+  - **Sky Note** — a short (60-char) thought in a drifting cloud-shaped
+    bubble near the profile photo, auto-expiring after 24 hours (fields
+    `skyNoteText`, `skyNoteCreatedAt` on the user doc; also shown on
+    `public_profile_screen.dart`). A deliberately different take on
+    Facebook's permanent "feeling" tag.
+  - **Fly Memories** — an "on this day" recap card of the user's own past
+    posts.
 - `screens/public_profile_screen.dart` — another user's profile: photo
   (with the sparkle-star online badge), name, Follow / Message buttons,
   stats, video grid, and a 3-dot menu with **Block user**
@@ -802,9 +856,25 @@ issue if this comes up again.
 - `screens/worker_auth.dart` **(Sep 2026)** — `workerAuthHeaders()`: the
   signed-in user's Firebase ID token as an `Authorization` header, used by
   every Worker call (calls, live, call push, video/image uploads).
-- `screens/live_screen.dart` — live streaming.
-- `screens/gifting.dart` — virtual gifting.
-- `screens/wallet_screen.dart` — in-app wallet/coins.
+- `screens/live_screen.dart` — live streaming (LiveKit broadcaster/viewer,
+  `GoLiveScreen`): live comments, tap/long-press quick reactions
+  (❤️😂😮👏🔥) with flying animation, viewer count, gift button + flying
+  gift banners + coin badge. Host-only **Reaction Pulse** bar
+  (`ReactionPulseBar`, a small bar chart of recent reaction activity).
+  **Timeline Highlights**: in `_endLive()`, before marking the stream
+  ended, it scans the reaction history for the 30-second window with the
+  most reactions and shows the host a "biggest moment" recap. Ended lives
+  are kept (not deleted) as a grayed "ENDED" recap card with the comment
+  thread — there is no video replay (that would need paid LiveKit Egress +
+  a backend).
+- `screens/gifting.dart` — **cosmetic-only** virtual gifting: `GiftItem`
+  catalog, `CoinService`, `GiftPickerSheet`, `CoinBalanceBadge`,
+  `TopSupportersSheet`, flying gift animation. Coins are earned free
+  (daily login, follow, share/repost, watching to the end); **no real-money
+  purchase and no cash-out** — deliberately deferred until legal advice.
+- `screens/wallet_screen.dart` — coin balance, "how to earn" list, gifts
+  received (`liveStreams/{uid}/gifts`), and a disabled "Withdraw to cash"
+  placeholder. Opened from the 🪙 icon in `profile_screen.dart`'s AppBar.
 - `screens/sound_screen.dart`, `screens/sounds_library_screen.dart`,
   `screens/sound_sync_sheet.dart` — a sound's page (videos using it, "Use
   this sound", report/remove), the browsable/searchable library (hides
@@ -862,7 +932,8 @@ screen needs to be created from scratch — it may already exist there.)_
 ## 5. Firestore data model
 
 - `users/{uid}`: { displayName, photoUrl, email, fcmToken, isOnline,
-  lastActive, hasSeenOnboarding, sawSwipeHint }
+  lastActive, hasSeenOnboarding, sawSwipeHint, skyNoteText,
+  skyNoteCreatedAt } (+ coin fields, see Gifting/live below)
   - `users/{uid}/followers/{id}`, `users/{uid}/following/{id}`: { createdAt }
   - `users/{uid}/notifications/{id}`: { type, text, fromId, fromName, fromPhoto,
     postId?, seen, createdAt }
@@ -931,8 +1002,14 @@ first-time users · full-screen video feed (short vs landscape, Smart-Fit
 sizing) · media controls + scrub slider + mute · reactions / comments /
 replies · follow · view / like / comment / share / save counts · profile
 stats + video viewer + delete own posts · camera/gallery profile photo ·
-video filters/speed/text-overlays baked at upload time · sounds library ·
-face-filter camera · hashtags · content/keyword filtering · translation ·
+Sky Note (24h cloud-bubble thought) · Fly Memories (on-this-day card) ·
+13+ age gate at signup · back button returns to Home, double-back exits ·
+video filters/speed/text-overlays/stickers chosen at upload time and
+applied live at playback (never baked into the file) · sounds library ·
+face-filter camera · hashtags · reposts with a personal note · share sheet
+(WhatsApp/Messenger/Facebook/Telegram/X/SMS/Email/copy link/download) ·
+search/discover · Shorts shelf in the Home feed · content/keyword
+filtering · on-device caption translation (ML Kit; no Burmese support) ·
 report/block a post or a user, with a Settings → Blocked-accounts screen to
 unblock · chat (text/image/voice) + typing indicators + read receipts, sorted
 by most recent message/call activity, with an "online now" strip · video/voice
@@ -940,7 +1017,9 @@ calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
 incoming-call UI/push + caller ring-back tone + working speaker toggle +
 shared drawing + Picture-in-Picture · online-presence system (sparkle-star
 badge, Firestore heartbeat, a foreground service so it survives the screen
-locking) · live streaming · gifting · in-app wallet · notifications ·
+locking) · live streaming (with host Reaction Pulse bar and end-of-live
+Timeline Highlights) · cosmetic-only gifting (free coins, no cash-out) ·
+in-app wallet · notifications ·
 **Stories** (FB-style cards, 14h expiry, floating reactions, "who reacted"
 list, a 15s trim cap + video speed/filter/text-overlay effects on story
 videos, delete-own-story) · **network resilience** (status banner, adaptive
@@ -1023,8 +1102,9 @@ others only see it once encoded (Bunny webhook).
 5. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
 6. Optional / later: AudD song recognition, direct MP3 upload, resumable
-   (TUS) uploads, force-update check (old builds ignore `videoReady`),
-   show/hide password eye icon on the login screen too.
+   (TUS) uploads, force-update check (old builds ignore `videoReady`).
+   (The login-screen show/hide password icon listed here before is already
+   built — removed 27 Sep 2026.)
 
 When one of these is done, remove it from this list in the same commit.
 
