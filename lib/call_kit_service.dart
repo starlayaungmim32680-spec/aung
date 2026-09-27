@@ -191,6 +191,21 @@ class CallKitService {
     } catch (_) {}
   }
 
+  // Stops the native ringing screen for ONE incoming call that is still
+  // ringing - used when the caller hangs up (or their no-answer timer runs
+  // out) before this person answers. Deliberately does NOT call
+  // endAllCalls() like endCall() above does: if this person is already on
+  // another Fly call when a second one rings and then gets cancelled,
+  // endAllCalls() would also tear down that other, still-active call's
+  // notification. endCall(id) is enough to dismiss a call that was never
+  // accepted.
+  static Future<void> dismissIncomingCall(String roomName) async {
+    if (roomName.isEmpty) return;
+    try {
+      await FlutterCallkitIncoming.endCall(roomName);
+    } catch (_) {}
+  }
+
   // Registers the single, app-wide listener for Accept/Decline. Call once
   // from main() - calling it again is a harmless no-op.
   static void initListener() {

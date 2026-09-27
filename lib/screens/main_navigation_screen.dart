@@ -302,6 +302,16 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         if (!anyStillFresh) return;
       }
 
+      // A call leaving this query ("removed") means its status is no
+      // longer 'ringing'. Handled before the _isShowingIncomingCall
+      // early-return below so a cancel is never skipped just because the
+      // ringing screen is still being set up.
+      for (final change in snapshot.docChanges) {
+        if (change.type == DocumentChangeType.removed) {
+          _handleCallLeftRinging(change.doc.reference);
+        }
+      }
+
       if (_isShowingIncomingCall) return;
 
       for (final change in snapshot.docChanges) {
@@ -322,6 +332,42 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         }
       }
     });
+  }
+
+  // Called when a call I was being rung for stops being 'ringing'. That
+  // happens for three different reasons, and only one of them should stop
+  // the ringing screen:
+  //   - 'ended'    -> the caller hung up (or their 45s no-answer timer
+  //                   fired) before I answered: dismiss the ringing screen.
+  //   - 'accepted' -> I just tapped Accept: must NOT be touched, or the
+  //                   call I'm answering would be killed.
+  //   - 'declined' -> I tapped Decline: the ringing screen is already gone.
+  // The doc inside a "removed" change can still hold the OLD data (status
+  // 'ringing'), so the current status is read again instead. A plain get()
+  // asks the server first and only falls back to the local cache when
+  // offline - a stale cached 'ringing' simply means nothing is done, and
+  // the ringing screen still closes on its own after its 45s duration.
+  // (GetOptions(source: Source.server) is not used on purpose: this file
+  // also imports audioplayers, which has its own `Source` class, and the
+  // two names clash.)
+  Future<void> _handleCallLeftRinging(DocumentReference callRef) async {
+    try {
+      DocumentSnapshot doc;
+      try {
+        doc = await callRef.get();
+      } catch (_) {
+        return;
+      }
+      final data = doc.data() as Map<String, dynamic>?;
+      final String? status = data?['status'] as String?;
+      final bool callerCancelled = !doc.exists || status == 'ended';
+      if (!callerCancelled) return;
+
+      final String roomName = (data?['roomName'] as String?) ?? callRef.id;
+      await CallKitService.dismissIncomingCall(roomName);
+    } catch (_) {
+      // Best-effort - the 45s ring duration remains the fallback.
+    }
   }
 
   Future<void> _showIncomingCall({

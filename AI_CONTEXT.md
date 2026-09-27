@@ -196,36 +196,29 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
        option for true resume-after-disconnect on bad connections, but only if
        the current path still fails in practice.
   - **"Video ready" flow (Sep 2026)** — so nobody but the uploader ever sees
-    "Processing" while Bunny encodes:
-    - New video posts/stories are written with `bunnyVideoId` +
-      `videoReady: false` (`newVideoReadinessFields()`).
-    - Bunny calls the Worker's
-      **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`** (set in Bunny →
-      Stream → library → Webhook URL; the token is a Worker secret, never
-      commit or paste it). On status 3/4 (finished / first resolution
-      playable) it writes `videoStatus/{bunnyGuid}` `{ready, failed,
+    "Processing" while Bunny encodes: - New video posts/stories are written with `bunnyVideoId` +
+    `videoReady: false` (`newVideoReadinessFields()`). - Bunny calls the Worker's
+    **`/bunny-webhook?token=<BUNNY_WEBHOOK_TOKEN>`** (set in Bunny →
+    Stream → library → Webhook URL; the token is a Worker secret, never
+    commit or paste it). On status 3/4 (finished / first resolution
+    playable) it writes `videoStatus/{bunnyGuid}` `{ready, failed,
 status, updatedAt}` and sets `videoReady: true` on any post/story
-      whose `bunnyVideoId` matches (status 5 → `videoFailed: true`). It
-      uses the same Firebase service account as `/call-push`, with the
-      Datastore OAuth scope, via Firestore's REST API.
-    - Race-proofing: the app creates the doc and **then** calls
-      `syncVideoReady()`, which checks `videoStatus/{id}` and flips the
-      flag itself if encoding already finished first.
-    - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
-      hides a doc, and never from its own uploader. Applied to the **Home
-      feed** (both post streams in `home_screen.dart`) and the **Stories
-      bar**. Old docs without the field stay visible.
-    - The uploader plays their fresh video **instantly from the local
-      file** via `LocalVideoCache` (`local_video_cache.dart`, keyed by
-      videoUrl, in-memory only). If the app restarts before encoding ends,
-      playback falls back to the network and `_VideoPostItem` shows a
-      **"Processing video..."** card that silently retries every 5s for
-      Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't
-      load".
-    - Confirmed working end-to-end on two phones on 26 Sep 2026.
-    - Encoding speed tip given to Ko: in Bunny → Stream → library →
-      Encoding, keep only **360p/480p/720p** (fewer renditions = faster
-      encoding and less storage cost).
+    whose `bunnyVideoId` matches (status 5 → `videoFailed: true`). It
+    uses the same Firebase service account as `/call-push`, with the
+    Datastore OAuth scope, via Firestore's REST API. - Race-proofing: the app creates the doc and **then** calls
+    `syncVideoReady()`, which checks `videoStatus/{id}` and flips the
+    flag itself if encoding already finished first. - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
+    hides a doc, and never from its own uploader. Applied to the **Home
+    feed** (both post streams in `home_screen.dart`) and the **Stories
+    bar**. Old docs without the field stay visible. - The uploader plays their fresh video **instantly from the local
+    file** via `LocalVideoCache` (`local_video_cache.dart`, keyed by
+    videoUrl, in-memory only). If the app restarts before encoding ends,
+    playback falls back to the network and `_VideoPostItem` shows a
+    **"Processing video..."** card that silently retries every 5s for
+    Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't
+    load". - Confirmed working end-to-end on two phones on 26 Sep 2026. - Encoding speed tip given to Ko: in Bunny → Stream → library →
+    Encoding, keep only **360p/480p/720p** (fewer renditions = faster
+    encoding and less storage cost).
   - **Playback:** the stored `videoUrl` for a Bunny post is the HLS playlist,
     `https://vz-a6ab9346-730.b-cdn.net/<videoId>/playlist.m3u8` —
     `video_player`'s underlying ExoPlayer/AVPlayer plays this as real
@@ -468,18 +461,27 @@ force: enabled)` — used for both the video-call default-to-speaker
        existing 45s no-answer timer in `video_call_screen.dart` is the only
        current mitigation (the caller gives up automatically, just not
        instantly).
-    2. If the caller hangs up before the callee answers, the callee's phone
-       keeps ringing for the full 45s regardless, since nothing signals
-       their native ringing screen to stop. `main_navigation_screen.dart`'s
-       `_listenForIncomingCalls` never handles Firestore's
-       `DocumentChangeType.removed` case (which fires when a doc's `status`
-       changes away from `'ringing'`, the value that Firestore query
-       filters on) — so even the app-open/backgrounded case isn't handled
-       yet, and it's the more tractable of the two bugs to fix (no plugin
-       limitation involved). A full fix for the fully-killed case would also
-       need a new FCM push type (mirroring the existing incoming-call push)
-       handled in `main.dart`'s background handler to call
-       `FlutterCallkitIncoming.endCall()` directly.
+    2. **Caller hangs up before the callee answers — FIXED for app
+       open/backgrounded (27 Sep 2026, confirmed on two phones).**
+       `_listenForIncomingCalls` in `main_navigation_screen.dart` now
+       handles Firestore's `DocumentChangeType.removed` (fires when the
+       call doc's `status` leaves `'ringing'`) via
+       `_handleCallLeftRinging()`. The doc inside a `removed` change can
+       still hold the OLD data, so it re-reads the doc with a plain
+       `get()` and only dismisses when the status is `'ended'` (or the doc
+       is gone) — never on `'accepted'`, which would kill the call being
+       answered. It dismisses with `CallKitService.dismissIncomingCall()`
+       (`FlutterCallkitIncoming.endCall(id)` only — deliberately **not**
+       `endAllCalls()`, which would also end another active call). The
+       caller's 45s no-answer timer also writes `'ended'`, so both phones
+       now stop together. Gotcha: `GetOptions(source: Source.server)`
+       doesn't compile in that file — `audioplayers` also exports a
+       `Source` class (ambiguous import).
+       **Still open:** if the callee's app was fully swiped away, nothing
+       is listening, so it still rings the full 45s. That needs a new FCM
+       push type (e.g. `call_cancelled`, sent by the caller through the
+       Worker's `/call-push`, mirroring the incoming-call push) handled in
+       `main.dart`'s background handler to call `dismissIncomingCall()`.
 - **Rendering engine: Impeller is explicitly DISABLED.**
   `android/app/src/main/AndroidManifest.xml` sets
   `io.flutter.embedding.android.EnableImpeller` to `false`. This was a
@@ -650,8 +652,8 @@ issue if this comes up again.
   - `_TopBars`: stacks the network-status banner above the minimized-call bar
     at the top of the screen (see `network_service.dart` above).
   - In-app "ding" sound on new messages; incoming-call listening/UI (see the
-    known call bugs in §3 — this is where a Firestore `removed`-doc-change
-    handler for a caller-cancelled call would need to be added).
+    call bugs in §3 — `_handleCallLeftRinging()` here stops the callee's
+    ringing screen when the caller hangs up first).
   - Runs the **online-presence heartbeat**: on `initState()`, writes
     `isOnline: true` + `lastActive: serverTimestamp()` to the user's Firestore
     doc, refreshes it every 20s via a `Timer.periodic`, and starts
@@ -1077,9 +1079,10 @@ others only see it once encoded (Bunny webhook).
   upload, resumable (TUS) uploads.
 - Offline replay of a previously-watched video only works for old
   Cloudinary posts, not new Bunny (HLS) ones — see §3.
-- Two call-lifecycle bugs (decline-while-app-killed not reaching the
-  caller; caller-cancel not dismissing the callee's still-ringing screen) —
-  see §3 for the full explanation and what a fix would need.
+- Call lifecycle when the callee's app is **fully swiped away**: a Decline
+  there doesn't reach the caller, and a caller hang-up doesn't stop the
+  ringing (the app-open/backgrounded hang-up case was fixed 27 Sep 2026) —
+  see §3 for what a fix would need.
 - Cloudinary account (cloud_name `dwx402gy4`) is currently **disabled**
   (usage-quota exceeded) — all old Cloudinary-hosted content (videos,
   profile photos, stories) is unplayable/unloadable until Ko either
