@@ -445,11 +445,19 @@ class _StoriesBarState extends State<StoriesBar> {
                   latest: latest,
                   storyCount: stories.length,
                   onTap: () {
-                    final ordered = stories.reversed.toList();
+                    // Everyone's stories, one group per person in the
+                    // same order as the bar, so the viewer can move on to
+                    // the next person by itself.
+                    final groups = [
+                      for (final u in userIds) byUser[u]!.reversed.toList(),
+                    ];
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => StoryViewerScreen(stories: ordered),
+                        builder: (_) => StoryViewerScreen(
+                          groups: groups,
+                          initialGroup: userIds.indexOf(uid),
+                        ),
                       ),
                     );
                   },
@@ -871,17 +879,148 @@ class _SegmentedRingPainter extends CustomPainter {
 }
 
 // ---------------------------------------------------------------------------
-// Full-screen story viewer with progress bars, auto-advance and reactions
+// Full-screen story viewer (29 Sep 2026 redesign - "like Facebook, but
+// cooler"):
+//   - swipe left/right between PEOPLE with a 3D cube turn; when one
+//     person's stories end it moves on to the next person by itself;
+//   - tap right/left = next/previous story, press-and-hold = pause (the
+//     whole UI fades away so you can look at the story clean);
+//   - swipe down = close;
+//   - header shows name + how long ago ("3h");
+//   - bottom: quick emoji reactions + a "Send message..." reply box that
+//     drops the reply straight into your chat with that person (with a
+//     small preview of the story) - the owner sees "See who reacted"
+//     instead.
+// Only the page on screen plays; neighbours just show a still preview.
 // ---------------------------------------------------------------------------
 class StoryViewerScreen extends StatefulWidget {
-  final List<QueryDocumentSnapshot> stories;
-  const StoryViewerScreen({super.key, required this.stories});
+  // One list per person, each in viewing order (oldest story first).
+  final List<List<QueryDocumentSnapshot>> groups;
+  final int initialGroup;
+
+  const StoryViewerScreen({
+    super.key,
+    required this.groups,
+    this.initialGroup = 0,
+  });
 
   @override
   State<StoryViewerScreen> createState() => _StoryViewerScreenState();
 }
 
-class _StoryViewerScreenState extends State<StoryViewerScreen>
+class _StoryViewerScreenState extends State<StoryViewerScreen> {
+  late final PageController _pages =
+      PageController(initialPage: widget.initialGroup);
+  late int _active = widget.initialGroup;
+
+  @override
+  void dispose() {
+    _pages.dispose();
+    super.dispose();
+  }
+
+  // Moves to person [index]; past the last person closes the viewer.
+  void _goToGroup(int index) {
+    if (!mounted) return;
+    if (index < 0) return;
+    if (index >= widget.groups.length) {
+      Navigator.of(context).maybePop();
+      return;
+    }
+    _pages.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeInOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      // The reply box lifts itself above the keyboard; the story itself
+      // must not shrink when the keyboard opens.
+      resizeToAvoidBottomInset: false,
+      body: PageView.builder(
+        controller: _pages,
+        itemCount: widget.groups.length,
+        onPageChanged: (i) => setState(() => _active = i),
+        itemBuilder: (context, i) {
+          final group = widget.groups[i];
+          final String uid = ((group.first.data()
+                  as Map<String, dynamic>)['userId'] as String?) ??
+              '$i';
+          final Widget page = _UserStoriesPage(
+            key: ValueKey(uid),
+            stories: group,
+            isActive: i == _active,
+            onFinished: () => _goToGroup(i + 1),
+            onBeforeFirst: i > 0 ? () => _goToGroup(i - 1) : null,
+            onClose: () => Navigator.of(context).maybePop(),
+          );
+
+          // 3D cube turn between people: each page rotates around the edge
+          // it shares with its neighbour, and darkens as it turns away.
+          return AnimatedBuilder(
+            animation: _pages,
+            child: page,
+            builder: (context, child) {
+              double current = _active.toDouble();
+              if (_pages.hasClients && _pages.position.haveDimensions) {
+                current = _pages.page ?? current;
+              }
+              final double delta = (i - current).clamp(-1.0, 1.0);
+              if (delta == 0) return child!;
+              return Transform(
+                alignment:
+                    delta > 0 ? Alignment.centerLeft : Alignment.centerRight,
+                transform: Matrix4.identity()
+                  ..setEntry(3, 2, 0.0012)
+                  ..rotateY(delta * pi / 2.2),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    child!,
+                    IgnorePointer(
+                      child: ColoredBox(
+                        color: Colors.black
+                            .withOpacity((delta.abs() * 0.6).clamp(0.0, 0.6)),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+// All the stories of ONE person (one page of the viewer above).
+class _UserStoriesPage extends StatefulWidget {
+  final List<QueryDocumentSnapshot> stories;
+  final bool isActive;
+  final VoidCallback onFinished;
+  // null = this is the first person, so "back" just restarts the story.
+  final VoidCallback? onBeforeFirst;
+  final VoidCallback onClose;
+
+  const _UserStoriesPage({
+    super.key,
+    required this.stories,
+    required this.isActive,
+    required this.onFinished,
+    required this.onBeforeFirst,
+    required this.onClose,
+  });
+
+  @override
+  State<_UserStoriesPage> createState() => _UserStoriesPageState();
+}
+
+class _UserStoriesPageState extends State<_UserStoriesPage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _progress;
   VideoPlayerController? _video;
@@ -898,14 +1037,23 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   final StoryMusicPlayer _music = StoryMusicPlayer();
   bool _hasMusic = false;
   // Bumped on every _loadCurrent so a slow load for a story the viewer has
-  // already swiped past never starts playing over the current one.
+  // already moved past never starts playing over the current one.
   int _loadSeq = 0;
 
+  // Has this page loaded its current story yet? (Pages next to the one on
+  // screen are built during a swipe but only load once they're active.)
+  bool _loaded = false;
+  // Press-and-hold pause: hides the UI while held.
+  bool _holding = false;
+
+  // Reply box.
+  final TextEditingController _replyController = TextEditingController();
+  final FocusNode _replyFocus = FocusNode();
+  bool _sendingReply = false;
+
   // Wraps [child] in a ColorFiltered matrix only when a filter was actually
-  // picked at upload time - skips the layer entirely for 'none' rather than
-  // applying a technically-identity matrix, same reasoning as
-  // home_screen.dart's equivalent for feed posts (some devices render even
-  // an identity ColorFilter with a very slight colour/gamma shift).
+  // picked at upload time - skips the layer entirely for 'none' (some
+  // devices render even an identity ColorFilter with a slight shift).
   Widget _withOptionalFilter(String filterType, Widget child) {
     if (filterType == 'none') return child;
     return ColorFiltered(
@@ -941,9 +1089,42 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     super.initState();
     _progress = AnimationController(vsync: this)
       ..addStatusListener((status) {
-        if (status == AnimationStatus.completed) _next();
+        if (status == AnimationStatus.completed && widget.isActive) _next();
       });
-    _loadCurrent();
+    _replyFocus.addListener(() {
+      // Typing a reply pauses the story; leaving the box resumes it.
+      if (_replyFocus.hasFocus) {
+        _pausePlayback();
+      } else if (!_holding) {
+        _resumePlayback();
+      }
+      if (mounted) setState(() {});
+    });
+    if (widget.isActive) {
+      _loaded = true;
+      _loadCurrent();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _UserStoriesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive == oldWidget.isActive) return;
+    if (widget.isActive) {
+      if (_loaded && _progress.isCompleted) {
+        // Came back to a person whose last story had already finished -
+        // replay that story instead of sitting on a full progress bar.
+        _loadCurrent();
+      } else if (_loaded) {
+        _resumePlayback();
+      } else {
+        _loaded = true;
+        _loadCurrent();
+      }
+    } else {
+      _replyFocus.unfocus();
+      _pausePlayback();
+    }
   }
 
   Map<String, dynamic> get _current =>
@@ -986,6 +1167,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   }
 
   void _spawnFloating(String emoji) {
+    if (!mounted) return;
     final item = _FloatingReaction(
       id: DateTime.now().microsecondsSinceEpoch + _rand.nextInt(1000),
       emoji: emoji,
@@ -1007,6 +1189,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     final VideoPlayerController? old = _video;
     _video = null;
     await old?.dispose();
+    if (!mounted || seq != _loadSeq) return;
     _subscribeReactions();
 
     final data = _current;
@@ -1037,7 +1220,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
         // Unplayable video - still let the story time out and advance.
         setState(() {});
         _progress.duration = _imageDuration;
-        _progress.forward();
+        if (_canPlay) _progress.forward();
         return;
       }
       if (!mounted || seq != _loadSeq) {
@@ -1072,12 +1255,12 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
           await controller.dispose();
           return;
         }
-        _music.play();
+        if (_canPlay) _music.play();
       }
 
-      controller.play();
+      if (_canPlay) controller.play();
       setState(() => _video = controller);
-      _progress.forward();
+      if (_canPlay) _progress.forward();
     } else {
       if (!mounted) return;
       setState(() {});
@@ -1085,7 +1268,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       _progress.duration = _hasMusic
           ? Duration(milliseconds: (kStoryMusicClipSeconds * 1000).round())
           : _imageDuration;
-      _progress.forward();
+      if (_canPlay) _progress.forward();
       if (_hasMusic) {
         // Not awaited: the photo shows right away and the music joins in
         // as soon as it has been cleared and buffered.
@@ -1099,11 +1282,16 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
             musicUrl,
             startOffset: musicStart,
             clipSeconds: kStoryMusicClipSeconds,
+            autoPlay: _canPlay,
           );
         });
       }
     }
   }
+
+  // Playback may run only on the page on screen, not while held, and not
+  // while a reply is being typed.
+  bool get _canPlay => widget.isActive && !_holding && !_replyFocus.hasFocus;
 
   void _pausePlayback() {
     _progress.stop();
@@ -1112,7 +1300,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   }
 
   void _resumePlayback() {
-    if (!mounted) return;
+    if (!mounted || !_canPlay || !_loaded) return;
     _progress.forward();
     _video?.play();
     if (_hasMusic) _music.play();
@@ -1131,9 +1319,8 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   }
 
   // Deletes the currently-shown story (only the owner ever sees the button
-  // that calls this - see the build() check). Removes it from the local
-  // stories list too, so the viewer can keep going through whatever's left
-  // without needing to be reopened.
+  // that calls this). Removes it from the local list too, so the viewer
+  // keeps going through whatever's left.
   Future<void> _confirmDeleteStory(BuildContext context) async {
     _pausePlayback();
     final bool? confirm = await showDialog<bool>(
@@ -1180,7 +1367,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
 
     widget.stories.removeAt(_index);
     if (widget.stories.isEmpty) {
-      Navigator.pop(context);
+      widget.onFinished();
       return;
     }
     if (_index >= widget.stories.length) {
@@ -1194,7 +1381,9 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
       setState(() => _index++);
       _loadCurrent();
     } else {
-      Navigator.pop(context);
+      // This person is done - on to the next person (or close).
+      _pausePlayback();
+      widget.onFinished();
     }
   }
 
@@ -1202,10 +1391,13 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     if (_index > 0) {
       setState(() => _index--);
       _loadCurrent();
+    } else if (widget.onBeforeFirst != null) {
+      _pausePlayback();
+      widget.onBeforeFirst!();
     } else {
-      // Already on the first story - restart it from the beginning.
+      // Very first story overall - restart it from the beginning.
       _progress.reset();
-      _progress.forward();
+      if (_canPlay) _progress.forward();
       _video?.seekTo(Duration.zero);
       if (_hasMusic) _music.restart();
     }
@@ -1243,8 +1435,87 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     } catch (_) {}
   }
 
+  // Sends the reply as a normal chat message to the story's owner - the
+  // same chats/{chatId}/messages path, fields and chat-list update that
+  // chat_screen.dart uses - plus storyId/storyThumb so the chat bubble can
+  // show which story it answers.
+  Future<void> _sendReply() async {
+    final User? me = FirebaseAuth.instance.currentUser;
+    final String text = _replyController.text.trim();
+    final String ownerId = (_current['userId'] as String?) ?? '';
+    if (me == null || text.isEmpty || ownerId.isEmpty || ownerId == me.uid) {
+      return;
+    }
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    final String storyThumb = _storyPreviewUrl(_current);
+    final String storyId = _currentId;
+
+    setState(() => _sendingReply = true);
+    _replyController.clear();
+    _replyFocus.unfocus();
+
+    try {
+      final ids = [me.uid, ownerId]..sort();
+      final String chatId = '${ids[0]}_${ids[1]}';
+      final chatRef =
+          FirebaseFirestore.instance.collection('chats').doc(chatId);
+
+      await chatRef.collection('messages').add({
+        'senderId': me.uid,
+        'type': 'text',
+        'text': text,
+        'storyId': storyId,
+        'storyThumb': storyThumb,
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      final String preview = '↩ Story reply: $text';
+      await chatRef.set({
+        'participants': [me.uid, ownerId],
+        'lastMessage': preview,
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'lastSenderId': me.uid,
+      }, SetOptions(merge: true));
+
+      final myProfile = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(me.uid)
+          .get();
+      final myData = myProfile.data();
+      final String myName =
+          (myData?['displayName'] as String?)?.trim().isNotEmpty == true
+              ? myData!['displayName']
+              : 'Someone';
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(ownerId)
+          .collection('notifications')
+          .add({
+        'type': 'message',
+        'text': preview,
+        'fromId': me.uid,
+        'fromName': myName,
+        'fromPhoto': (myData?['photoUrl'] as String?) ?? '',
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Reply sent 💬'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Couldn't send. Please try again.")),
+      );
+    }
+    if (mounted) setState(() => _sendingReply = false);
+  }
+
   // Shows the list of accounts that reacted (for the story owner)
   void _showReactors() {
+    _pausePlayback();
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF161616),
@@ -1315,7 +1586,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
           ),
         );
       },
-    );
+    ).whenComplete(_resumePlayback);
   }
 
   @override
@@ -1324,6 +1595,8 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     _progress.dispose();
     _video?.dispose();
     _music.dispose();
+    _replyController.dispose();
+    _replyFocus.dispose();
     super.dispose();
   }
 
@@ -1368,6 +1641,112 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     );
   }
 
+  // While a video story loads (or on a neighbouring page that isn't
+  // playing yet): its thumbnail, with a spinner only on the active page.
+  Widget _videoPlaceholder(String url) {
+    final String thumb = cloudinaryThumbUrl(url);
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (thumb.isNotEmpty)
+          CachedNetworkImage(
+            imageUrl: thumb,
+            fit: BoxFit.contain,
+            errorWidget: (_, __, ___) => const SizedBox.shrink(),
+          ),
+        if (widget.isActive)
+          const Center(
+            child: CircularProgressIndicator(color: Colors.white),
+          ),
+      ],
+    );
+  }
+
+  Widget _replyBar() {
+    final String ownerName = (_current['userName'] as String?) ?? '';
+    final bool typing = _replyFocus.hasFocus;
+    final double keyboard = MediaQuery.of(context).viewInsets.bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboard),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Quick reactions (hidden while typing, like Facebook).
+          if (!typing)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: kStoryReactions.entries.map((e) {
+                  return _PressableScale(
+                    onTap: () => _react(e.key),
+                    child: Text(e.value, style: const TextStyle(fontSize: 28)),
+                  );
+                }).toList(),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.35),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(
+                        color:
+                            typing ? const Color(0xFFFF4B6E) : Colors.white54,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: TextField(
+                      controller: _replyController,
+                      focusNode: _replyFocus,
+                      style: const TextStyle(color: Colors.white),
+                      cursorColor: const Color(0xFFFF4B6E),
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendReply(),
+                      decoration: InputDecoration(
+                        border: InputBorder.none,
+                        hintText: ownerName.isEmpty
+                            ? 'Send message...'
+                            : 'Send message to $ownerName...',
+                        hintStyle: const TextStyle(color: Colors.white70),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _PressableScale(
+                  onTap: _sendingReply ? () {} : _sendReply,
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(colors: _kFlyStoryGradient),
+                    ),
+                    child: _sendingReply
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2),
+                          )
+                        : const Icon(Icons.send_rounded,
+                            color: Colors.white, size: 20),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final data = _current;
@@ -1375,9 +1754,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
     final String url = data['mediaUrl'] ?? '';
     final String name = data['userName'] ?? 'User';
     final String photo = data['userPhoto'] ?? '';
-    // Set for both video and photo stories (see addStory above). Older
-    // photo stories posted before the photo effects step simply don't have
-    // these fields and fall back to the identity defaults.
     final double? imageAspectRatio =
         (data['imageAspectRatio'] as num?)?.toDouble();
     final String filterType = data['filterType'] as String? ?? 'none';
@@ -1385,24 +1761,44 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
         ((data['textOverlays'] as List<dynamic>?) ?? const [])
             .map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
             .toList();
+    // UI (bars, header, reply box) fades out while holding to look.
+    final bool showUi = !_holding;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTapUp: (details) {
-          final w = MediaQuery.of(context).size.width;
-          if (details.globalPosition.dx < w / 3) {
-            _prev();
-          } else {
-            _next();
-          }
-        },
-        child: Stack(
-          children: [
-            // Media
-            Positioned.fill(
-              child: type == 'video'
-                  ? (_video != null && _video!.value.isInitialized
+    return Stack(
+      children: [
+        // Media + gestures
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (details) {
+              if (_replyFocus.hasFocus) {
+                _replyFocus.unfocus();
+                return;
+              }
+              final w = MediaQuery.of(context).size.width;
+              if (details.globalPosition.dx < w / 3) {
+                _prev();
+              } else {
+                _next();
+              }
+            },
+            onLongPressStart: (_) {
+              setState(() => _holding = true);
+              _pausePlayback();
+            },
+            onLongPressEnd: (_) {
+              setState(() => _holding = false);
+              _resumePlayback();
+            },
+            // Swipe down to close.
+            onVerticalDragEnd: (details) {
+              if ((details.primaryVelocity ?? 0) > 400) widget.onClose();
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (type == 'video')
+                  (_video != null && _video!.value.isInitialized
                       ? Center(
                           child: AspectRatio(
                             aspectRatio: _video!.value.aspectRatio,
@@ -1412,18 +1808,43 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                             ),
                           ),
                         )
-                      : const Center(
-                          child:
-                              CircularProgressIndicator(color: Colors.white)))
-                  : _buildImageStory(
+                      : _videoPlaceholder(url))
+                else
+                  _buildImageStory(
                       url, filterType, textOverlays, imageAspectRatio),
+                if (type == 'video')
+                  for (final overlay in textOverlays)
+                    _positionedOverlayText(overlay),
+                // Soft dark fades so the header and reply box stay readable.
+                const IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        stops: [0, 0.18, 0.75, 1],
+                        colors: [
+                          Color(0x99000000),
+                          Color(0x00000000),
+                          Color(0x00000000),
+                          Color(0x99000000),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-            if (type == 'video')
-              for (final overlay in textOverlays)
-                _positionedOverlayText(overlay),
+          ),
+        ),
 
-            // Top: progress bars + author + close
-            SafeArea(
+        // Top: progress bars + author + age + close
+        IgnorePointer(
+          ignoring: !showUi,
+          child: AnimatedOpacity(
+            opacity: showUi ? 1 : 0,
+            duration: const Duration(milliseconds: 180),
+            child: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 child: Column(
@@ -1444,27 +1865,39 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        CircleAvatar(
-                          radius: 16,
-                          backgroundColor: Colors.grey[800],
-                          backgroundImage: photo.isNotEmpty
-                              ? CachedNetworkImageProvider(photo)
-                              : null,
-                          child: photo.isEmpty
-                              ? Text(
-                                  name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                  style: const TextStyle(
-                                      color: Colors.white, fontSize: 13),
-                                )
-                              : null,
+                        // Avatar with Fly's gradient ring.
+                        Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient:
+                                LinearGradient(colors: _kFlyStoryGradient),
+                          ),
+                          child: CircleAvatar(
+                            radius: 17,
+                            backgroundColor: Colors.grey[800],
+                            backgroundImage: photo.isNotEmpty
+                                ? CachedNetworkImageProvider(photo)
+                                : null,
+                            child: photo.isEmpty
+                                ? Text(
+                                    name.isNotEmpty
+                                        ? name[0].toUpperCase()
+                                        : '?',
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 13),
+                                  )
+                                : null,
+                          ),
                         ),
                         const SizedBox(width: 10),
-                        Expanded(
+                        Flexible(
                           child: Text(
                             name,
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
+                              fontSize: 15,
                               shadows: [
                                 Shadow(color: Colors.black, blurRadius: 6)
                               ],
@@ -1472,8 +1905,19 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (data['userId'] ==
-                            FirebaseAuth.instance.currentUser?.uid)
+                        const SizedBox(width: 8),
+                        Text(
+                          _storyAgeLabel(data),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 6)
+                            ],
+                          ),
+                        ),
+                        const Spacer(),
+                        if (_isOwner)
                           GestureDetector(
                             onTap: () => _confirmDeleteStory(context),
                             child: const Padding(
@@ -1483,7 +1927,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                             ),
                           ),
                         GestureDetector(
-                          onTap: () => Navigator.pop(context),
+                          onTap: widget.onClose,
                           child: const Padding(
                             padding: EdgeInsets.all(6),
                             child: Icon(Icons.close, color: Colors.white),
@@ -1510,89 +1954,83 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                 ),
               ),
             ),
+          ),
+        ),
 
-            // Floating reactions rising up (non-interactive)
-            IgnorePointer(
-              child: Stack(
-                children: _floating.map((f) {
-                  return _FloatingReactionWidget(
-                    key: ValueKey(f.id),
-                    data: f,
-                    onDone: () => _removeFloating(f.id),
-                  );
-                }).toList(),
-              ),
-            ),
+        // Floating reactions rising up (non-interactive)
+        IgnorePointer(
+          child: Stack(
+            children: _floating.map((f) {
+              return _FloatingReactionWidget(
+                key: ValueKey(f.id),
+                data: f,
+                onDone: () => _removeFloating(f.id),
+              );
+            }).toList(),
+          ),
+        ),
 
-            // Bottom: reactions row (+ "who reacted" for the owner)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
+        // Bottom: reply box + reactions, or "See who reacted" for the owner
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: IgnorePointer(
+            ignoring: !showUi,
+            child: AnimatedOpacity(
+              opacity: showUi ? 1 : 0,
+              duration: const Duration(milliseconds: 180),
               child: SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_isOwner)
-                      GestureDetector(
-                        onTap: _showReactors,
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.45),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: StreamBuilder<QuerySnapshot>(
-                            stream: FirebaseFirestore.instance
-                                .collection('stories')
-                                .doc(_currentId)
-                                .collection('reactions')
-                                .snapshots(),
-                            builder: (context, snap) {
-                              final int c =
-                                  snap.hasData ? snap.data!.docs.length : 0;
-                              return Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.favorite,
-                                      color: Colors.white, size: 16),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    'See who reacted ($c)',
-                                    style: const TextStyle(
-                                        color: Colors.white, fontSize: 13),
-                                  ),
-                                ],
-                              );
-                            },
+                top: false,
+                child: _isOwner
+                    ? Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Center(
+                          child: GestureDetector(
+                            onTap: _showReactors,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.45),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                    color: Colors.white24, width: 0.8),
+                              ),
+                              child: StreamBuilder<QuerySnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('stories')
+                                    .doc(_currentId)
+                                    .collection('reactions')
+                                    .snapshots(),
+                                builder: (context, snap) {
+                                  final int c =
+                                      snap.hasData ? snap.data!.docs.length : 0;
+                                  return Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.favorite,
+                                          color: Color(0xFFFF4B6E), size: 16),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'See who reacted ($c)',
+                                        style: const TextStyle(
+                                            color: Colors.white, fontSize: 13),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: kStoryReactions.entries.map((e) {
-                          return GestureDetector(
-                            onTap: () => _react(e.key),
-                            child: Text(
-                              e.value,
-                              style: const TextStyle(fontSize: 32),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ],
-                ),
+                      )
+                    : _replyBar(),
               ),
             ),
-          ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }

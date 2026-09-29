@@ -1063,6 +1063,10 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                     } else if (type == 'audio') {
                       bubble = _VoiceBubble(audioUrl: audioUrl, isMine: isMine);
                     } else {
+                      // Reply sent from the story viewer (story_screen.dart):
+                      // a small preview of the story above the text.
+                      final String storyThumb =
+                          (msg['storyThumb'] as String?) ?? '';
                       bubble = Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 14, vertical: 10),
@@ -1086,11 +1090,49 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                             bottomRight: Radius.circular(isMine ? 4 : 16),
                           ),
                         ),
-                        child: Text(
-                          text,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 15),
-                        ),
+                        child: storyThumb.isEmpty
+                            ? Text(
+                                text,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 15),
+                              )
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    isMine
+                                        ? 'You replied to their story'
+                                        : 'Replied to your story',
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 11),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: Image.network(
+                                      storyThumb,
+                                      width: 90,
+                                      height: 140,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(
+                                        width: 90,
+                                        height: 140,
+                                        color: Colors.black26,
+                                        child: const Icon(
+                                            Icons.auto_stories_outlined,
+                                            color: Colors.white38),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    text,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 15),
+                                  ),
+                                ],
+                              ),
                       );
                     }
 

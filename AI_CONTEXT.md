@@ -907,8 +907,26 @@ position)` — Android drops the video surface in the background and a
   `_CreateStoryCard` is Facebook-style: own photo on top, dark "Create
   story" panel below, gradient "+" on the seam. My own stories come right
   after it. Bar height stays 182 so the Home header doesn't move.
-  **Next step planned:** Facebook-style story VIEWER (swipe between people,
-  reply box, etc.).
+  **Story viewer redesign (30 Sep 2026, confirmed on phones):**
+  `StoryViewerScreen(groups:, initialGroup:)` now takes ALL people's
+  stories (one list per person, same order as the bar) in a horizontal
+  `PageView` with a **3D cube turn** between people (AnimatedBuilder on the
+  PageController, rotateY around the shared edge + darkening). Each page
+  is a `_UserStoriesPage`; only the page on screen (`isActive`) loads and
+  plays — neighbours show a still preview (`_videoPlaceholder`), and a
+  page that's swiped back to after finishing replays its last story.
+  When a person's stories end it moves to the next person
+  (`onFinished`), tapping left on their first story goes to the previous
+  person (`onBeforeFirst`). Press-and-hold pauses and fades all UI out;
+  swipe down closes. Header shows name + `_storyAgeLabel`. Non-owners get
+  the emoji row + a **"Send message to NAME..." reply box** (pauses while
+  typing; Scaffold `resizeToAvoidBottomInset: false`, the bar lifts by
+  viewInsets) — `_sendReply` writes a normal `chats/{chatId}/messages`
+  text message (same fields/chat-list update/notification as
+  chat_screen.dart) plus `storyId` + `storyThumb`; `chat_screen.dart`
+  shows such messages with a small story preview ("Replied to your
+  story"). Owners get "See who reacted" + delete instead. No rules change
+  (chat rules already allow it).
 - `screens/chat_screen.dart` — chat list (`ChatScreen`/`_ChatScreenState`,
   actually lists **all other users**, not just existing conversations — it's
   also how you start a brand-new chat) + `ChatThreadScreen` (text / image /
