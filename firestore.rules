@@ -37,6 +37,20 @@ service cloud.firestore {
              .affectedKeys().hasOnly([request.auth.uid]);
     }
 
+    // The other person in a '<uidA>_<uidB>' room (see inRoom).
+    function otherInRoom(roomId) {
+      let ids = roomId.split('_');
+      return ids[0] == request.auth.uid ? ids[1] : ids[0];
+    }
+
+    // True when either person in the room has blocked the other - then no
+    // messages and no calls can be created between them (block_service.dart).
+    function blockedInRoom(roomId) {
+      let other = otherInRoom(roomId);
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)/blocked/$(other))
+        || exists(/databases/$(database)/documents/users/$(other)/blocked/$(request.auth.uid));
+    }
+
     // The signed-in user owns this video post.
     function isPostOwner(postId) {
       return signedIn()
@@ -90,6 +104,16 @@ service cloud.firestore {
 
       match /blocked/{blockedId} {
         allow read, write: if isMe(uid);
+      }
+
+      // users/{uid}/blockedBy/{blockerId} - mirror of someone else's block,
+      // so the blocked person's app can hide the blocker too (Sep 2026,
+      // see block_service.dart). Only the blocked person can read it; only
+      // the blocker can create/remove their own entry.
+      match /blockedBy/{blockerId} {
+        allow read: if isMe(uid);
+        allow create, delete: if isMe(blockerId);
+        allow update: if false;
       }
 
       // users/{uid}/saved/{postId} - my own saved-videos list (Sep 2026,
@@ -263,7 +287,8 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if inRoom(chatId);
         allow create: if inRoom(chatId)
-          && request.resource.data.senderId == request.auth.uid;
+          && request.resource.data.senderId == request.auth.uid
+          && !blockedInRoom(chatId);
         // sender: anything (unsend etc.); receiver: mark seen only
         allow update: if inRoom(chatId) && (
           resource.data.senderId == request.auth.uid
@@ -288,9 +313,14 @@ service cloud.firestore {
         || resource.data.callerId == request.auth.uid
         || resource.data.calleeId == request.auth.uid
       );
+      // No new call (a doc going to 'ringing') between blocked people. The
+      // call doc is reused per pair, so starting a call can be an update.
       allow create: if inRoom(roomId)
-        && request.resource.data.callerId == request.auth.uid;
-      allow update: if inRoom(roomId);
+        && request.resource.data.callerId == request.auth.uid
+        && !blockedInRoom(roomId);
+      allow update: if inRoom(roomId)
+        && !(request.resource.data.get('status', '') == 'ringing'
+             && blockedInRoom(roomId));
       allow delete: if inRoom(roomId);
     }
 
