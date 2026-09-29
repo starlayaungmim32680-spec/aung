@@ -725,71 +725,62 @@ issue if this comes up again.
     horizontal row for reposts), sound/view-count row, the "Fly Frame"
     cinematic top/bottom gradient bands, reaction picker, flying-emoji
     animation, report/block entry point, hashtag handling, translation.
-    **Playback lifecycle (29 Sep 2026, confirmed on Ko's phone):**
-    - Pause/resume tracks two separate "away" reasons, `_routeCovered`
-      (didPushNext/didPopNext) and `_appBackgrounded` (lifecycle). Only the
-      FIRST away-reason records `_wasPlayingBeforeLeaving`. Bug it fixed:
-      the phone's Home button fires inactive → hidden → paused in a row;
-      the 2nd event overwrote the flag with false, so returning via
-      Recents left the Home video black and silent.
-    - Returning to a video that was **paused on purpose**: `seekTo(same
+    **Playback lifecycle (29 Sep 2026, confirmed on Ko's phone):** - Pause/resume tracks two separate "away" reasons, `_routeCovered`
+    (didPushNext/didPopNext) and `_appBackgrounded` (lifecycle). Only the
+    FIRST away-reason records `_wasPlayingBeforeLeaving`. Bug it fixed:
+    the phone's Home button fires inactive → hidden → paused in a row;
+    the 2nd event overwrote the flag with false, so returning via
+    Recents left the Home video black and silent. - Returning to a video that was **paused on purpose**: `seekTo(same
 position)` — Android drops the video surface in the background and a
-      paused player never draws a new frame by itself (it came back black).
-    - `_FirstFrameCover`: thumbnail until the first frame shows, spinner
-      while (re)buffering — a ValueListenableBuilder on the controller, so
-      only it rebuilds.
-    - Stall watchdog (`_startStallWatchdog`, 8s): playback requested but
-      the position never moved → `_reloadAt(position, autoPlay:)` rebuilds
-      the controller at the same spot (max 2 tries, then "Couldn't load").
-      Also used after resuming. A dead player on resume is rebuilt too.
-    - The layout rebuilds when `controller.value.size` changes (HLS can
-      report 0x0 at initialize and the real size a moment later).
-      **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):**
-    - **Instant send:** only the on-device `ContentFilter` runs before
-      posting; the comment is written at once with a locally generated doc
-      id (input clears immediately, profile is pre-fetched in initState).
-      The moderation-server check (`fly-moderation.onrender.com`, free
-      Render — up to ~50s cold start, which is what made sending feel
-      slow) now runs in the background **after** posting
-      (`_moderateAfterPost`); if flagged, the comment is deleted again and
-      the author told. The owner's notification is only sent after the
-      check passes. Don't move moderation back in front of the write.
-    - The comments stream and each tile's replies stream are built once
-      (initState / `late final`), and tiles are keyed by doc id — the old
-      in-`build()` stream flashed a spinner on every send.
-    - **Long-press menu** (`_showCommentOptions`, comments and replies):
-      author → Delete; video owner → Hide/Unhide + Delete (others'
-      comments); anyone else → Report. Delete has a confirm dialog.
-    - **Hide:** `hidden: true` (+ `hiddenAt`) on the comment/reply, set only
-      by the video owner. `_isCommentVisibleTo()` shows it to the owner
-      (dimmed, "Hidden" tag) and to its author (normally, like Facebook —
-      not told), and filters it out for everyone else. Comment counts use
-      `_visibleCommentCount()` (hidden not counted). It's a client-side
-      filter — the doc is still readable via the API.
-      **Action dock look (28 Sep 2026, approved by Ko):** Facebook-Reels
-      style — Comment (`_FlyCommentIcon`) is a white outline oval speech
-      bubble with **three white dots inside** (Ko's must-keep detail), Share
-      (`_FlySwooshShareIcon`, name kept from the old paper-plane) is a white
-      outline forward arrow; both 28px with a soft black shadow, no gradient.
-      Compact spacing: 46x40 tap boxes, count 2px under each icon
-      (`_countLabel`), 6px between buttons. 12px gaps + 46px-tall boxes were
-      tried and rejected as too spread out.
-      Accepts `onTapToExpand` (only Home passes this — its absence is how the
-      code tells "already fullscreen" contexts apart from Home) and `isActive`.
-      `_initializeVideo()` here is also where the network-aware timeout/retry
-      UI ("Couldn't load - tap to retry", `_hasError` flag) and the
-      Cloudinary-only disk-cache logic (see `video_disk_cache.dart` above)
-      live — both apply per-instance, so the _same_ video can hit disk cache
-      in one `_VideoPostItem` instance (e.g. Home) and not another (e.g.
-      `FullScreenVideoScreen`) depending on timing; this is expected, not a
-      bug, for Cloudinary posts, and moot for Bunny posts (cache skipped
-      entirely). **(Sep 2026)** `_initializeVideo()` first checks
-      `LocalVideoCache` (uploader's own fresh video → play the local file),
-      and on a failed load of a Bunny post under 30 minutes old shows
-      "Processing video..." with a 5s auto-retry (`_isProcessing`,
-      `_processingRetryTimer`, cancelled in `dispose()`) instead of the error.
-      The two Home feed streams drop not-yet-ready videos via
-      `isVideoVisibleTo()`.
+    paused player never draws a new frame by itself (it came back black). - `_FirstFrameCover`: thumbnail until the first frame shows, spinner
+    while (re)buffering — a ValueListenableBuilder on the controller, so
+    only it rebuilds. - Stall watchdog (`_startStallWatchdog`, 8s): playback requested but
+    the position never moved → `_reloadAt(position, autoPlay:)` rebuilds
+    the controller at the same spot (max 2 tries, then "Couldn't load").
+    Also used after resuming. A dead player on resume is rebuilt too. - The layout rebuilds when `controller.value.size` changes (HLS can
+    report 0x0 at initialize and the real size a moment later).
+    **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):** - **Instant send:** only the on-device `ContentFilter` runs before
+    posting; the comment is written at once with a locally generated doc
+    id (input clears immediately, profile is pre-fetched in initState).
+    The moderation-server check (`fly-moderation.onrender.com`, free
+    Render — up to ~50s cold start, which is what made sending feel
+    slow) now runs in the background **after** posting
+    (`_moderateAfterPost`); if flagged, the comment is deleted again and
+    the author told. The owner's notification is only sent after the
+    check passes. Don't move moderation back in front of the write. - The comments stream and each tile's replies stream are built once
+    (initState / `late final`), and tiles are keyed by doc id — the old
+    in-`build()` stream flashed a spinner on every send. - **Long-press menu** (`_showCommentOptions`, comments and replies):
+    author → Delete; video owner → Hide/Unhide + Delete (others'
+    comments); anyone else → Report. Delete has a confirm dialog. - **Hide:** `hidden: true` (+ `hiddenAt`) on the comment/reply, set only
+    by the video owner. `_isCommentVisibleTo()` shows it to the owner
+    (dimmed, "Hidden" tag) and to its author (normally, like Facebook —
+    not told), and filters it out for everyone else. Comment counts use
+    `_visibleCommentCount()` (hidden not counted). It's a client-side
+    filter — the doc is still readable via the API.
+    **Action dock look (28 Sep 2026, approved by Ko):** Facebook-Reels
+    style — Comment (`_FlyCommentIcon`) is a white outline oval speech
+    bubble with **three white dots inside** (Ko's must-keep detail), Share
+    (`_FlySwooshShareIcon`, name kept from the old paper-plane) is a white
+    outline forward arrow; both 28px with a soft black shadow, no gradient.
+    Compact spacing: 46x40 tap boxes, count 2px under each icon
+    (`_countLabel`), 6px between buttons. 12px gaps + 46px-tall boxes were
+    tried and rejected as too spread out.
+    Accepts `onTapToExpand` (only Home passes this — its absence is how the
+    code tells "already fullscreen" contexts apart from Home) and `isActive`.
+    `_initializeVideo()` here is also where the network-aware timeout/retry
+    UI ("Couldn't load - tap to retry", `_hasError` flag) and the
+    Cloudinary-only disk-cache logic (see `video_disk_cache.dart` above)
+    live — both apply per-instance, so the _same_ video can hit disk cache
+    in one `_VideoPostItem` instance (e.g. Home) and not another (e.g.
+    `FullScreenVideoScreen`) depending on timing; this is expected, not a
+    bug, for Cloudinary posts, and moot for Bunny posts (cache skipped
+    entirely). **(Sep 2026)** `_initializeVideo()` first checks
+    `LocalVideoCache` (uploader's own fresh video → play the local file),
+    and on a failed load of a Bunny post under 30 minutes old shows
+    "Processing video..." with a 5s auto-retry (`_isProcessing`,
+    `_processingRetryTimer`, cancelled in `dispose()`) instead of the error.
+    The two Home feed streams drop not-yet-ready videos via
+    `isVideoVisibleTo()`.
   - `_FeedSlots` / `_FeedItem` — feed ordering/pagination helpers, including
     periodic "Shorts shelf" slots inserted into the display sequence.
   - `VideoPreloadCache` lives in its own file (see below) but is used
@@ -903,6 +894,21 @@ position)` — Android drops the video surface in the background and a
   video stories use `video_upload_service.dart` (now compressed), are
   hidden from others until `videoReady`, and play from the local file for
   their poster.
+  **Stories bar redesign (29 Sep 2026, approved by Ko — "like Facebook but
+  cooler"):** `StoriesBar` (now a StatefulWidget, stream built once) shows
+  tall rounded **cards** (104×166, `_kStoryCard*` consts) instead of the
+  old round avatars. Each `_StoryCard` uses the person's LATEST story as
+  its background (`_storyPreviewUrl`: the photo, or the video's Bunny
+  thumbnail — never run a Bunny _image_ URL through `cloudinaryThumbUrl`),
+  keeps Fly's segmented gradient ring on the corner avatar (one segment per
+  story), a glass age chip ("5m"/"3h", `_storyAgeLabel`), ▶/♪ badges for
+  video/music stories, a pink→purple gradient frame with glow
+  (`_StoryCardFrame`) and a press "squish" (`_PressableScale`).
+  `_CreateStoryCard` is Facebook-style: own photo on top, dark "Create
+  story" panel below, gradient "+" on the seam. My own stories come right
+  after it. Bar height stays 182 so the Home header doesn't move.
+  **Next step planned:** Facebook-style story VIEWER (swipe between people,
+  reply box, etc.).
 - `screens/chat_screen.dart` — chat list (`ChatScreen`/`_ChatScreenState`,
   actually lists **all other users**, not just existing conversations — it's
   also how you start a brand-new chat) + `ChatThreadScreen` (text / image /

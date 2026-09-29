@@ -21,6 +21,7 @@ import 'local_video_cache.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
+import 'media_utils.dart' show cloudinaryThumbUrl;
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -357,55 +358,91 @@ Future<void> addStory(BuildContext context) async {
 }
 
 // ---------------------------------------------------------------------------
-// Stories bar: a horizontal row of story circles shown at the top of Home
+// Stories bar (Home): Facebook-style tall story CARDS, with Fly's own
+// touches on top (29 Sep 2026 redesign - Ko asked for "like Facebook, but
+// cooler"):
+//   - each card previews the person's LATEST story (photo, or the video's
+//     thumbnail) - like Facebook;
+//   - the avatar in the corner keeps Fly's segmented gradient ring (one
+//     segment per active story), so you see "how many" before tapping;
+//   - a small glass chip shows how long ago the latest story was posted,
+//     and small badges mark video (▶) and music (♪) stories;
+//   - a soft pink→purple gradient frame and a press-down "squish" when
+//     tapped.
+// The bar keeps its old height (182), so the Home header layout above the
+// feed doesn't move.
 // ---------------------------------------------------------------------------
-class StoriesBar extends StatelessWidget {
+const double _kStoryCardWidth = 104;
+const double _kStoryCardHeight = 166;
+const double _kStoryCardRadius = 18;
+const List<Color> _kFlyStoryGradient = [Color(0xFFFF4B6E), Color(0xFF9C4DFF)];
+
+class StoriesBar extends StatefulWidget {
   const StoriesBar({super.key});
 
   @override
+  State<StoriesBar> createState() => _StoriesBarState();
+}
+
+class _StoriesBarState extends State<StoriesBar> {
+  // Built once (Fly's stream rule) - building it in build() resubscribed
+  // on every rebuild of the Home header.
+  late final Stream<QuerySnapshot> _storiesStream = FirebaseFirestore.instance
+      .collection('stories')
+      .where('expiresAt', isGreaterThan: Timestamp.now())
+      .orderBy('expiresAt', descending: true)
+      .snapshots();
+
+  @override
   Widget build(BuildContext context) {
-    final myId = FirebaseAuth.instance.currentUser?.uid;
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
 
     return SizedBox(
       height: 182,
       child: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('stories')
-            .where('expiresAt', isGreaterThan: Timestamp.now())
-            .orderBy('expiresAt', descending: true)
-            .snapshots(),
+        stream: _storiesStream,
         builder: (context, snapshot) {
           final docs = snapshot.data?.docs ?? [];
+          final DateTime now = DateTime.now();
 
-          // Group active stories by user (keep insertion order = newest first)
-          final String? myUid = FirebaseAuth.instance.currentUser?.uid;
+          // Group active stories by user (newest first within each user).
           final Map<String, List<QueryDocumentSnapshot>> byUser = {};
           for (final d in docs) {
             final m = d.data() as Map<String, dynamic>;
             final uid = (m['userId'] as String?) ?? '';
             if (uid.isEmpty) continue;
+            // The query's `now` is fixed when the stream starts, so also
+            // drop stories that have expired since.
+            final Timestamp? exp = m['expiresAt'] as Timestamp?;
+            if (exp != null && exp.toDate().isBefore(now)) continue;
             // A video story still being encoded is only shown to its poster.
-            if (!isVideoVisibleTo(m, myUid)) continue;
+            if (!isVideoVisibleTo(m, myId)) continue;
             byUser.putIfAbsent(uid, () => []).add(d);
           }
 
-          final List<String> userIds = byUser.keys.toList();
+          // My own stories first (right after "Create story"), then others.
+          final List<String> userIds = byUser.keys.toList()
+            ..sort((a, b) {
+              if (a == myId) return -1;
+              if (b == myId) return 1;
+              return 0;
+            });
 
           return ListView(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             children: [
-              // "Create Story" card (shows my own profile photo, Facebook-style)
               _CreateStoryCard(onTap: () => addStory(context)),
-              // One big card per user with an active story
               ...userIds.map((uid) {
                 final stories = byUser[uid]!;
-                final first = stories.first.data() as Map<String, dynamic>;
+                final latest = stories.first.data() as Map<String, dynamic>;
                 return _StoryCard(
+                  key: ValueKey(uid),
                   name: uid == myId
-                      ? 'You'
-                      : (first['userName'] as String? ?? 'User'),
-                  photoUrl: first['userPhoto'] as String? ?? '',
+                      ? 'Your story'
+                      : (latest['userName'] as String? ?? 'User'),
+                  photoUrl: latest['userPhoto'] as String? ?? '',
+                  latest: latest,
                   storyCount: stories.length,
                   onTap: () {
                     final ordered = stories.reversed.toList();
@@ -426,116 +463,199 @@ class StoriesBar extends StatelessWidget {
   }
 }
 
-// Builds a Cloudinary first-frame JPG thumbnail from a video URL
-String _videoThumbUrl(String videoUrl) {
-  const marker = '/upload/';
-  final i = videoUrl.indexOf(marker);
-  if (i == -1) return videoUrl;
-  var u = videoUrl.substring(0, i + marker.length) +
-      'so_0/' +
-      videoUrl.substring(i + marker.length);
-  final dot = u.lastIndexOf('.');
-  if (dot > u.lastIndexOf('/')) {
-    u = '${u.substring(0, dot)}.jpg';
-  } else {
-    u = '$u.jpg';
-  }
-  return u;
+// Preview image for a story card: the photo itself, or the video's
+// thumbnail. (Bunny *image* URLs must not go through cloudinaryThumbUrl -
+// it would turn them into a video-thumbnail path.)
+String _storyPreviewUrl(Map<String, dynamic> story) {
+  final String url = (story['mediaUrl'] as String?) ?? '';
+  if (url.isEmpty) return '';
+  return story['mediaType'] == 'video' ? cloudinaryThumbUrl(url) : url;
 }
 
-// Facebook-style "Create Story" card: shows the current user's own profile
-// photo filling the card, with a "+" badge overlapping the bottom of the
-// photo (matching how Facebook/Instagram show your own avatar on this card).
-class _CreateStoryCard extends StatelessWidget {
+// "now", "5m", "3h" - the story's age, shown in the card's corner chip.
+String _storyAgeLabel(Map<String, dynamic> story) {
+  final Timestamp? ts = story['createdAt'] as Timestamp?;
+  if (ts == null) return 'now';
+  final Duration age = DateTime.now().difference(ts.toDate());
+  if (age.inMinutes < 1) return 'now';
+  if (age.inHours < 1) return '${age.inMinutes}m';
+  return '${age.inHours}h';
+}
+
+// Shrinks slightly while pressed, then springs back - the "squish".
+class _PressableScale extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTap;
+  const _PressableScale({required this.child, required this.onTap});
+
+  @override
+  State<_PressableScale> createState() => _PressableScaleState();
+}
+
+class _PressableScaleState extends State<_PressableScale> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: widget.onTap,
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedScale(
+        scale: _pressed ? 0.94 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+// Card shell shared by both card types: size, rounded corners and Fly's
+// thin gradient frame.
+class _StoryCardFrame extends StatelessWidget {
+  final Widget child;
+  final bool glow;
+  const _StoryCardFrame({required this.child, this.glow = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: _kStoryCardWidth,
+      height: _kStoryCardHeight,
+      margin: const EdgeInsets.symmetric(horizontal: 4),
+      padding: const EdgeInsets.all(1.5),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(_kStoryCardRadius),
+        gradient: glow
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: _kFlyStoryGradient,
+              )
+            : null,
+        color: glow ? null : Colors.white12,
+        boxShadow: glow
+            ? [
+                BoxShadow(
+                  color: const Color(0xFF9C4DFF).withOpacity(0.25),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(_kStoryCardRadius - 1.5),
+        child: child,
+      ),
+    );
+  }
+}
+
+// "Create story" card, Facebook-style: my profile photo fills the top, a
+// dark panel with "Create story" sits below, and a round gradient "+"
+// button straddles the line between them.
+class _CreateStoryCard extends StatefulWidget {
   final VoidCallback onTap;
   const _CreateStoryCard({required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
-    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+  State<_CreateStoryCard> createState() => _CreateStoryCardState();
+}
 
-    return GestureDetector(
-      onTap: onTap,
-      child: SizedBox(
-        width: 78,
+class _CreateStoryCardState extends State<_CreateStoryCard> {
+  final String? _myId = FirebaseAuth.instance.currentUser?.uid;
+  late final Stream<DocumentSnapshot>? _profileStream = _myId == null
+      ? null
+      : FirebaseFirestore.instance.collection('users').doc(_myId).snapshots();
+
+  @override
+  Widget build(BuildContext context) {
+    const double photoHeight = 112;
+
+    return _PressableScale(
+      onTap: widget.onTap,
+      child: _StoryCardFrame(
+        glow: false,
         child: StreamBuilder<DocumentSnapshot>(
-          stream: myId == null
-              ? null
-              : FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(myId)
-                  .snapshots(),
+          stream: _profileStream,
           builder: (context, snapshot) {
             final Map<String, dynamic>? profile =
                 snapshot.data?.data() as Map<String, dynamic>?;
             final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
 
-            return Column(
-              mainAxisSize: MainAxisSize.min,
+            return Stack(
+              clipBehavior: Clip.none,
               children: [
-                SizedBox(
-                  width: 72,
-                  height: 72,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white24, width: 1.5),
-                        ),
-                        padding: const EdgeInsets.all(3),
-                        child: ClipOval(
-                          child: photoUrl.isNotEmpty
-                              ? CachedNetworkImage(
-                                  imageUrl: photoUrl,
-                                  fit: BoxFit.cover,
-                                  placeholder: (_, __) =>
-                                      Container(color: Colors.grey[850]),
-                                  errorWidget: (_, __, ___) =>
-                                      Container(color: Colors.grey[850]),
-                                )
-                              : Container(
-                                  color: Colors.grey[850],
-                                  child: const Icon(Icons.person,
-                                      color: Colors.white38, size: 30),
-                                ),
-                        ),
-                      ),
-                      // "+" badge overlapping the bottom-right of the circle
-                      Positioned(
-                        bottom: -2,
-                        right: -2,
-                        child: Container(
-                          width: 24,
-                          height: 24,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFFFF4B6E),
-                            border: Border.all(
-                              color: Colors.black,
-                              width: 2,
+                Column(
+                  children: [
+                    SizedBox(
+                      height: photoHeight,
+                      width: double.infinity,
+                      child: photoUrl.isNotEmpty
+                          ? CachedNetworkImage(
+                              imageUrl: photoUrl,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) =>
+                                  Container(color: Colors.grey[850]),
+                              errorWidget: (_, __, ___) =>
+                                  Container(color: Colors.grey[850]),
+                            )
+                          : Container(
+                              color: Colors.grey[850],
+                              child: const Icon(Icons.person,
+                                  color: Colors.white38, size: 40),
                             ),
+                    ),
+                    Expanded(
+                      child: Container(
+                        width: double.infinity,
+                        color: const Color(0xFF1C1C1E),
+                        alignment: Alignment.bottomCenter,
+                        padding: const EdgeInsets.only(bottom: 9),
+                        child: const Text(
+                          'Create story',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
                           ),
-                          child: const Icon(Icons.add,
-                              color: Colors.white, size: 15),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Your Story',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600),
+                // Round "+" button on the seam between photo and panel.
+                Positioned(
+                  top: photoHeight - 17,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          colors: _kFlyStoryGradient,
+                        ),
+                        border: Border.all(
+                          color: const Color(0xFF1C1C1E),
+                          width: 3,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFFFF4B6E).withOpacity(0.45),
+                            blurRadius: 10,
+                          ),
+                        ],
+                      ),
+                      child:
+                          const Icon(Icons.add, color: Colors.white, size: 20),
+                    ),
+                  ),
                 ),
               ],
             );
@@ -546,61 +666,156 @@ class _CreateStoryCard extends StatelessWidget {
   }
 }
 
-// Circular story avatar with a segmented gradient ring — the number of
-// segments matches how many active stories this person has, so it reads
-// differently from the plain solid ring other apps use.
+// One person's story card: their latest story as the background, their
+// avatar with Fly's segmented ring top-left, age chip top-right, name at
+// the bottom over a dark fade.
 class _StoryCard extends StatelessWidget {
   final String name;
   final String photoUrl;
+  final Map<String, dynamic> latest;
   final int storyCount;
   final VoidCallback onTap;
 
   const _StoryCard({
+    super.key,
     required this.name,
     required this.photoUrl,
+    required this.latest,
     required this.storyCount,
     required this.onTap,
   });
 
+  Widget _glassBadge(Widget child) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white24, width: 0.6),
+      ),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    final String previewUrl = _storyPreviewUrl(latest);
+    final bool isVideo = latest['mediaType'] == 'video';
+    final bool hasMusic = ((latest['soundTitle'] as String?) ?? '').isNotEmpty;
+
+    return _PressableScale(
       onTap: onTap,
-      child: SizedBox(
-        width: 78,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+      child: _StoryCardFrame(
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            SizedBox(
-              width: 72,
-              height: 72,
-              child: CustomPaint(
-                painter: _SegmentedRingPainter(segments: storyCount),
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: CircleAvatar(
-                    backgroundColor: Colors.grey[800],
-                    backgroundImage: photoUrl.isNotEmpty
-                        ? CachedNetworkImageProvider(photoUrl)
-                        : null,
-                    child: photoUrl.isEmpty
-                        ? Text(
-                            name.isNotEmpty ? name[0].toUpperCase() : '?',
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 20),
-                          )
-                        : null,
+            // Latest story as the card background.
+            if (previewUrl.isNotEmpty)
+              CachedNetworkImage(
+                imageUrl: previewUrl,
+                fit: BoxFit.cover,
+                placeholder: (_, __) => Container(color: Colors.grey[900]),
+                errorWidget: (_, __, ___) => Container(color: Colors.grey[900]),
+              )
+            else
+              Container(color: Colors.grey[900]),
+            // Dark fades top and bottom so the avatar and name stay readable
+            // on any photo.
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0, 0.3, 0.6, 1],
+                  colors: [
+                    Color(0x80000000),
+                    Color(0x00000000),
+                    Color(0x00000000),
+                    Color(0xCC000000),
+                  ],
+                ),
+              ),
+            ),
+            // Avatar with the segmented ring (one segment per story).
+            Positioned(
+              top: 7,
+              left: 7,
+              child: SizedBox(
+                width: 40,
+                height: 40,
+                child: CustomPaint(
+                  painter: _SegmentedRingPainter(
+                      segments: storyCount, strokeWidth: 2.6),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: CircleAvatar(
+                      backgroundColor: Colors.grey[800],
+                      backgroundImage: photoUrl.isNotEmpty
+                          ? CachedNetworkImageProvider(photoUrl)
+                          : null,
+                      child: photoUrl.isEmpty
+                          ? Text(
+                              name.isNotEmpty ? name[0].toUpperCase() : '?',
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 14),
+                            )
+                          : null,
+                    ),
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 6),
-            Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 12),
+            // How long ago.
+            Positioned(
+              top: 9,
+              right: 7,
+              child: _glassBadge(Text(
+                _storyAgeLabel(latest),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              )),
+            ),
+            // Name at the bottom, with small video / music badges.
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isVideo || hasMusic)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(
+                        children: [
+                          if (isVideo)
+                            _glassBadge(const Icon(Icons.play_arrow_rounded,
+                                color: Colors.white, size: 12)),
+                          if (isVideo && hasMusic) const SizedBox(width: 4),
+                          if (hasMusic)
+                            _glassBadge(const Icon(Icons.music_note_rounded,
+                                color: Colors.white, size: 12)),
+                        ],
+                      ),
+                    ),
+                  Text(
+                    name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      height: 1.15,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
