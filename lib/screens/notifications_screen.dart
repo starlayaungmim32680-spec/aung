@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../block_service.dart';
 
 // Shows the current user's notifications (reactions, comments, messages, follows)
 class NotificationsScreen extends StatelessWidget {
@@ -110,12 +111,19 @@ class NotificationsScreen extends StatelessWidget {
                   );
                 }
 
-                final docs = snapshot.data?.docs ?? [];
+                final allDocs = snapshot.data?.docs ?? [];
 
                 // Mark notifications as seen now that the user is viewing them
-                if (docs.isNotEmpty) {
-                  _markAllSeen(myId, docs);
+                if (allDocs.isNotEmpty) {
+                  _markAllSeen(myId, allDocs);
                 }
+
+                // Nothing from blocked accounts (either way).
+                final docs = allDocs.where((d) {
+                  final data = d.data() as Map<String, dynamic>;
+                  return !BlockService.instance
+                      .isHidden(data['fromId'] as String?);
+                }).toList();
 
                 if (docs.isEmpty) {
                   return Center(

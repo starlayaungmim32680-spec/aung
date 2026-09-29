@@ -14,6 +14,7 @@ import 'public_profile_screen.dart';
 import 'video_call_screen.dart';
 import '../call_kit_service.dart';
 import 'call_push_service.dart';
+import '../block_service.dart';
 import 'presence_badge.dart';
 
 // Cloudinary upload details (unsigned)
@@ -35,9 +36,22 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
+  // Blocked accounts (either way - see block_service.dart) disappear from
+  // the list and the "online now" strip.
+  @override
+  void initState() {
+    super.initState();
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
+  }
+
+  void _onBlockedChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
     super.dispose();
   }
 
@@ -98,7 +112,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
 
                 var users = (snapshot.data?.docs ?? [])
-                    .where((doc) => doc.id != currentUser?.uid)
+                    .where((doc) =>
+                        doc.id != currentUser?.uid &&
+                        !BlockService.instance.isHidden(doc.id))
                     .toList();
 
                 if (_searchQuery.isNotEmpty) {
@@ -402,9 +418,19 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   Timer? _typingTimer;
   String? _currentActivity;
 
+  // Blocked either way (see block_service.dart): no sending, no calls.
+  bool get _blocked => BlockService.instance.isHidden(widget.otherUserId);
+  bool get _iBlockedThem =>
+      BlockService.instance.blockedByMe.value.contains(widget.otherUserId);
+
+  void _onBlockedChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
     _initRecorder();
     _messageController.addListener(() {
       final bool has = _messageController.text.trim().isNotEmpty;
@@ -476,6 +502,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   @override
   void dispose() {
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
     _typingTimer?.cancel();
     _setActivity(null);
     _messageController.dispose();
@@ -819,6 +846,50 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     }
   }
 
+  // Replaces the message box when either side has blocked the other -
+  // like Messenger's "You can't reply to this conversation".
+  Widget _blockedBanner() {
+    final bool iBlocked = _iBlockedThem;
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(
+          20, 14, 20, 14 + MediaQuery.of(context).padding.bottom),
+      decoration: const BoxDecoration(
+        color: Color(0xFF161616),
+        border: Border(top: BorderSide(color: Colors.white12)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.block, color: Colors.white38, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            iBlocked
+                ? "You blocked this account. You can't message or call them."
+                : "You can't reply to this conversation.",
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          if (iBlocked) ...[
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () async {
+                try {
+                  await BlockService.instance.unblock(widget.otherUserId);
+                } catch (_) {
+                  _showError("Couldn't unblock. Please try again.");
+                }
+              },
+              child: const Text('Unblock',
+                  style: TextStyle(
+                      color: Color(0xFF3A8DFF), fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> _startVideoCall({required bool withCamera}) async {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -960,16 +1031,18 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.call, color: Colors.white),
-            tooltip: 'Voice call',
-            onPressed: () => _startVideoCall(withCamera: false),
-          ),
-          IconButton(
-            icon: const Icon(Icons.videocam, color: Colors.white),
-            tooltip: 'Video call',
-            onPressed: () => _startVideoCall(withCamera: true),
-          ),
+          if (!_blocked) ...[
+            IconButton(
+              icon: const Icon(Icons.call, color: Colors.white),
+              tooltip: 'Voice call',
+              onPressed: () => _startVideoCall(withCamera: false),
+            ),
+            IconButton(
+              icon: const Icon(Icons.videocam, color: Colors.white),
+              tooltip: 'Video call',
+              onPressed: () => _startVideoCall(withCamera: true),
+            ),
+          ],
         ],
       ),
       body: Column(
@@ -1263,79 +1336,83 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                 ],
               ),
             ),
-          Padding(
-            padding: EdgeInsets.only(
-              left: 12,
-              right: 12,
-              top: 8,
-              bottom: 8 + MediaQuery.of(context).padding.bottom + bottomInset,
-            ),
-            child: Row(
-              children: [
-                GestureDetector(
-                  onTap: _isUploading ? null : _pickAndSendImage,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[900],
-                      shape: BoxShape.circle,
+          if (_blocked)
+            _blockedBanner()
+          else
+            Padding(
+              padding: EdgeInsets.only(
+                left: 12,
+                right: 12,
+                top: 8,
+                bottom: 8 + MediaQuery.of(context).padding.bottom + bottomInset,
+              ),
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: _isUploading ? null : _pickAndSendImage,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[900],
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.image,
+                          color: Color(0xFF3A8DFF), size: 24),
                     ),
-                    child: const Icon(Icons.image,
-                        color: Color(0xFF3A8DFF), size: 24),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _messageController,
-                    style: const TextStyle(color: Colors.white),
-                    minLines: 1,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      hintText: 'Message...',
-                      hintStyle: const TextStyle(color: Colors.grey),
-                      filled: true,
-                      fillColor: Colors.grey[900],
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _messageController,
+                      style: const TextStyle(color: Colors.white),
+                      minLines: 1,
+                      maxLines: 4,
+                      decoration: InputDecoration(
+                        hintText: 'Message...',
+                        hintStyle: const TextStyle(color: Colors.grey),
+                        filled: true,
+                        fillColor: Colors.grey[900],
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                GestureDetector(
-                  onLongPressStart: _hasText ? null : (_) => _startRecording(),
-                  onLongPressEnd:
-                      _hasText ? null : (_) => _stopAndSendRecording(),
-                  onTap: _hasText ? _sendMessage : null,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: _isRecording
-                            ? [Colors.red, Colors.redAccent]
-                            : [
-                                const Color(0xFF3A8DFF),
-                                const Color(0xFF1565C0)
-                              ],
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onLongPressStart:
+                        _hasText ? null : (_) => _startRecording(),
+                    onLongPressEnd:
+                        _hasText ? null : (_) => _stopAndSendRecording(),
+                    onTap: _hasText ? _sendMessage : null,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: _isRecording
+                              ? [Colors.red, Colors.redAccent]
+                              : [
+                                  const Color(0xFF3A8DFF),
+                                  const Color(0xFF1565C0)
+                                ],
+                        ),
+                      ),
+                      child: Icon(
+                        (_isRecording || !_hasText) ? Icons.mic : Icons.send,
+                        color: Colors.white,
+                        size: 20,
                       ),
                     ),
-                    child: Icon(
-                      (_isRecording || !_hasText) ? Icons.mic : Icons.send,
-                      color: Colors.white,
-                      size: 20,
-                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );

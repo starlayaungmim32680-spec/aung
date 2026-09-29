@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
 import 'public_profile_screen.dart';
+import '../block_service.dart';
 
 // Search / Discover screen: shows a browsable grid of recent videos by
 // default, and filters to matching accounts + videos once the user types.
@@ -97,7 +98,11 @@ class _DiscoverGrid extends StatelessWidget {
           );
         }
 
-        final docs = snapshot.data?.docs ?? [];
+        // Blocked accounts (either way) never show up in search/discover.
+        final docs = (snapshot.data?.docs ?? []).where((d) {
+          final data = d.data() as Map<String, dynamic>;
+          return !BlockService.instance.isHidden(data['userId'] as String?);
+        }).toList();
         if (docs.isEmpty) {
           return const Center(
             child: Text('No videos yet', style: TextStyle(color: Colors.grey)),
@@ -173,6 +178,7 @@ class _SearchResults extends StatelessWidget {
             }
 
             final matchedUsers = (userSnap.data?.docs ?? []).where((doc) {
+              if (BlockService.instance.isHidden(doc.id)) return false;
               final data = doc.data() as Map<String, dynamic>;
               final String name =
                   (data['displayName'] as String? ?? '').toLowerCase();
@@ -183,6 +189,9 @@ class _SearchResults extends StatelessWidget {
 
             final matchedPosts = (postSnap.data?.docs ?? []).where((doc) {
               final data = doc.data() as Map<String, dynamic>;
+              if (BlockService.instance.isHidden(data['userId'] as String?)) {
+                return false;
+              }
               final String caption =
                   (data['caption'] as String? ?? '').toLowerCase();
               return caption.contains(query);

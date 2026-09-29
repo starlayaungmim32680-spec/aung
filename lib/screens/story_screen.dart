@@ -22,6 +22,7 @@ import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 import 'media_utils.dart' show cloudinaryThumbUrl;
+import '../block_service.dart';
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -393,9 +394,27 @@ class _StoriesBarState extends State<StoriesBar> {
       .orderBy('expiresAt', descending: true)
       .snapshots();
 
+  // Blocked accounts (either way) never show in the bar.
+  @override
+  void initState() {
+    super.initState();
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
+  }
+
+  @override
+  void dispose() {
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    super.dispose();
+  }
+
+  void _onBlockedChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    final Set<String> hiddenIds = BlockService.instance.hidden.value;
 
     return SizedBox(
       height: 182,
@@ -410,7 +429,7 @@ class _StoriesBarState extends State<StoriesBar> {
           for (final d in docs) {
             final m = d.data() as Map<String, dynamic>;
             final uid = (m['userId'] as String?) ?? '';
-            if (uid.isEmpty) continue;
+            if (uid.isEmpty || hiddenIds.contains(uid)) continue;
             // The query's `now` is fixed when the stream starts, so also
             // drop stories that have expired since.
             final Timestamp? exp = m['expiresAt'] as Timestamp?;

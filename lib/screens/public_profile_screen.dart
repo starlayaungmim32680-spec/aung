@@ -11,6 +11,7 @@ import 'media_utils.dart';
 import 'gifting.dart';
 import 'profile_screen.dart' show SkyNoteBubble;
 import 'presence_badge.dart';
+import '../block_service.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -55,357 +56,450 @@ class PublicProfileScreen extends StatelessWidget {
             ),
         ],
       ),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('users')
-            .doc(userId)
-            .snapshots(),
-        builder: (context, profileSnapshot) {
-          final Map<String, dynamic>? profile =
-              profileSnapshot.data?.data() as Map<String, dynamic>?;
-
-          final String displayName =
-              (profile?['displayName'] as String?)?.trim().isNotEmpty == true
-                  ? profile!['displayName']
-                  : 'User';
-          final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
-          final String? skyNoteText = profile?['skyNoteText'] as String?;
-          final DateTime? skyNoteCreatedAt =
-              (profile?['skyNoteCreatedAt'] as Timestamp?)?.toDate();
-          final bool isOnline = isUserOnline(profile);
-
-          return StreamBuilder<QuerySnapshot>(
+      // Blocked either way (see block_service.dart): the profile is closed.
+      body: ValueListenableBuilder<Set<String>>(
+        valueListenable: BlockService.instance.hidden,
+        builder: (context, hiddenIds, _) {
+          if (!isMe && hiddenIds.contains(userId)) {
+            return _BlockedProfileView(userId: userId);
+          }
+          return StreamBuilder<DocumentSnapshot>(
             stream: FirebaseFirestore.instance
-                .collection('posts')
-                .where('userId', isEqualTo: userId)
+                .collection('users')
+                .doc(userId)
                 .snapshots(),
-            builder: (context, snapshot) {
+            builder: (context, profileSnapshot) {
+              final Map<String, dynamic>? profile =
+                  profileSnapshot.data?.data() as Map<String, dynamic>?;
+
+              final String displayName =
+                  (profile?['displayName'] as String?)?.trim().isNotEmpty ==
+                          true
+                      ? profile!['displayName']
+                      : 'User';
+              final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+              final String? skyNoteText = profile?['skyNoteText'] as String?;
+              final DateTime? skyNoteCreatedAt =
+                  (profile?['skyNoteCreatedAt'] as Timestamp?)?.toDate();
+              final bool isOnline = isUserOnline(profile);
+
               return StreamBuilder<QuerySnapshot>(
                 stream: FirebaseFirestore.instance
-                    .collection('reposts')
-                    .where('sharedBy', isEqualTo: userId)
+                    .collection('posts')
+                    .where('userId', isEqualTo: userId)
                     .snapshots(),
-                builder: (context, repostSnapshot) {
-                  final ownDocs = snapshot.data?.docs ?? [];
-                  final repostDocs = repostSnapshot.data?.docs ?? [];
-                  final int postCount = ownDocs.length;
+                builder: (context, snapshot) {
+                  return StreamBuilder<QuerySnapshot>(
+                    stream: FirebaseFirestore.instance
+                        .collection('reposts')
+                        .where('sharedBy', isEqualTo: userId)
+                        .snapshots(),
+                    builder: (context, repostSnapshot) {
+                      final ownDocs = snapshot.data?.docs ?? [];
+                      final repostDocs = repostSnapshot.data?.docs ?? [];
+                      final int postCount = ownDocs.length;
 
-                  // Combined grid: this user's own uploads + videos they
-                  // shared (reposts), newest first.
-                  final List<_PublicProfileGridItem> gridItems = [
-                    for (int i = 0; i < ownDocs.length; i++)
-                      _PublicProfileGridItem.own(ownDocs[i], i),
-                    for (final d in repostDocs)
-                      _PublicProfileGridItem.repost(d),
-                  ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+                      // Combined grid: this user's own uploads + videos they
+                      // shared (reposts), newest first.
+                      final List<_PublicProfileGridItem> gridItems = [
+                        for (int i = 0; i < ownDocs.length; i++)
+                          _PublicProfileGridItem.own(ownDocs[i], i),
+                        for (final d in repostDocs)
+                          _PublicProfileGridItem.repost(d),
+                      ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-                  final bool isLoading = snapshot.connectionState ==
-                          ConnectionState.waiting ||
-                      repostSnapshot.connectionState == ConnectionState.waiting;
+                      final bool isLoading =
+                          snapshot.connectionState == ConnectionState.waiting ||
+                              repostSnapshot.connectionState ==
+                                  ConnectionState.waiting;
 
-                  return CustomScrollView(
-                    slivers: [
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Column(
-                            children: [
-                              Stack(
-                                clipBehavior: Clip.none,
+                      return CustomScrollView(
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.all(20),
+                              child: Column(
                                 children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(3),
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      gradient: LinearGradient(
-                                        colors: [
-                                          Color(0xFFFF4B6E),
-                                          Color(0xFF9C4DFF)
-                                        ],
-                                      ),
-                                    ),
-                                    child: CircleAvatar(
-                                      radius: 44,
-                                      backgroundColor: Colors.grey[850],
-                                      backgroundImage: photoUrl.isNotEmpty
-                                          ? NetworkImage(photoUrl)
-                                          : null,
-                                      child: photoUrl.isEmpty
-                                          ? Text(
-                                              displayName.isNotEmpty
-                                                  ? displayName[0].toUpperCase()
-                                                  : '?',
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 36,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            )
-                                          : null,
-                                    ),
-                                  ),
-                                  if (isOnline)
-                                    const Positioned(
-                                      right: 2,
-                                      bottom: 2,
-                                      child: SparkleStarBadge(size: 22),
-                                    ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                displayName,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              // Sky Note - only shown to people who follow
-                              // this person, same as Instagram Notes; a
-                              // stranger just sees nothing here, not even
-                              // an empty placeholder.
-                              if (!isMe && myId != null)
-                                StreamBuilder<DocumentSnapshot>(
-                                  stream: FirebaseFirestore.instance
-                                      .collection('users')
-                                      .doc(userId)
-                                      .collection('followers')
-                                      .doc(myId)
-                                      .snapshots(),
-                                  builder: (context, followSnap) {
-                                    final bool amFollowing =
-                                        followSnap.data?.exists ?? false;
-                                    if (!amFollowing) {
-                                      return const SizedBox.shrink();
-                                    }
-                                    return Padding(
-                                      padding: const EdgeInsets.only(top: 10),
-                                      child: SkyNoteBubble(
-                                        text: skyNoteText,
-                                        createdAt: skyNoteCreatedAt,
-                                      ),
-                                    );
-                                  },
-                                ),
-                              const SizedBox(height: 16),
-
-                              // Stats row: posts / followers / following
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  _StatColumn(label: 'Posts', value: postCount),
-                                  _CountStat(
-                                    label: 'Followers',
-                                    collectionRef: FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(userId)
-                                        .collection('followers'),
-                                  ),
-                                  _CountStat(
-                                    label: 'Following',
-                                    collectionRef: FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(userId)
-                                        .collection('following'),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 18),
-
-                              // Follow + Message + Video call buttons
-                              // (Facebook style, hidden on your own profile)
-                              if (!isMe && myId != null)
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: _FollowButton(
-                                        myId: myId,
-                                        otherUserId: userId,
-                                        otherUserName: displayName,
-                                        otherUserPhoto: photoUrl,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: ElevatedButton.icon(
-                                        onPressed: () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (context) =>
-                                                  ChatThreadScreen(
-                                                otherUserId: userId,
-                                                otherUserName: displayName,
-                                                otherUserPhoto: photoUrl,
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                        icon: const Icon(Icons.message,
-                                            size: 18, color: Colors.white),
-                                        label: const Text('Message',
-                                            style: TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold)),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor:
-                                              const Color(0xFF3A3B3C),
-                                          foregroundColor: Colors.white,
-                                          elevation: 0,
-                                          padding: const EdgeInsets.symmetric(
-                                              vertical: 10),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
+                                  Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.all(3),
+                                        decoration: const BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          gradient: LinearGradient(
+                                            colors: [
+                                              Color(0xFFFF4B6E),
+                                              Color(0xFF9C4DFF)
+                                            ],
                                           ),
                                         ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    GestureDetector(
-                                      onTap: () => _startVideoCall(
-                                        context,
-                                        myId,
-                                        userId,
-                                        displayName,
-                                        photoUrl,
-                                        withCamera: false,
-                                      ),
-                                      child: Container(
-                                        width: 42,
-                                        height: 42,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF3A3B3C),
-                                          borderRadius:
-                                              BorderRadius.circular(8),
+                                        child: CircleAvatar(
+                                          radius: 44,
+                                          backgroundColor: Colors.grey[850],
+                                          backgroundImage: photoUrl.isNotEmpty
+                                              ? NetworkImage(photoUrl)
+                                              : null,
+                                          child: photoUrl.isEmpty
+                                              ? Text(
+                                                  displayName.isNotEmpty
+                                                      ? displayName[0]
+                                                          .toUpperCase()
+                                                      : '?',
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 36,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                )
+                                              : null,
                                         ),
-                                        child: const Icon(Icons.call,
-                                            color: Colors.white, size: 20),
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    GestureDetector(
-                                      onTap: () => _startVideoCall(
-                                        context,
-                                        myId,
-                                        userId,
-                                        displayName,
-                                        photoUrl,
-                                        withCamera: true,
-                                      ),
-                                      child: Container(
-                                        width: 42,
-                                        height: 42,
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF3A3B3C),
-                                          borderRadius:
-                                              BorderRadius.circular(8),
+                                      if (isOnline)
+                                        const Positioned(
+                                          right: 2,
+                                          bottom: 2,
+                                          child: SparkleStarBadge(size: 22),
                                         ),
-                                        child: const Icon(Icons.videocam,
-                                            color: Colors.white, size: 20),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    displayName,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  // Sky Note - only shown to people who follow
+                                  // this person, same as Instagram Notes; a
+                                  // stranger just sees nothing here, not even
+                                  // an empty placeholder.
+                                  if (!isMe && myId != null)
+                                    StreamBuilder<DocumentSnapshot>(
+                                      stream: FirebaseFirestore.instance
+                                          .collection('users')
+                                          .doc(userId)
+                                          .collection('followers')
+                                          .doc(myId)
+                                          .snapshots(),
+                                      builder: (context, followSnap) {
+                                        final bool amFollowing =
+                                            followSnap.data?.exists ?? false;
+                                        if (!amFollowing) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        return Padding(
+                                          padding:
+                                              const EdgeInsets.only(top: 10),
+                                          child: SkyNoteBubble(
+                                            text: skyNoteText,
+                                            createdAt: skyNoteCreatedAt,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  const SizedBox(height: 16),
+
+                                  // Stats row: posts / followers / following
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      _StatColumn(
+                                          label: 'Posts', value: postCount),
+                                      _CountStat(
+                                        label: 'Followers',
+                                        collectionRef: FirebaseFirestore
+                                            .instance
+                                            .collection('users')
+                                            .doc(userId)
+                                            .collection('followers'),
                                       ),
+                                      _CountStat(
+                                        label: 'Following',
+                                        collectionRef: FirebaseFirestore
+                                            .instance
+                                            .collection('users')
+                                            .doc(userId)
+                                            .collection('following'),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 18),
+
+                                  // Follow + Message + Video call buttons
+                                  // (Facebook style, hidden on your own profile)
+                                  if (!isMe && myId != null)
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: _FollowButton(
+                                            myId: myId,
+                                            otherUserId: userId,
+                                            otherUserName: displayName,
+                                            otherUserPhoto: photoUrl,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: ElevatedButton.icon(
+                                            onPressed: () {
+                                              Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) =>
+                                                      ChatThreadScreen(
+                                                    otherUserId: userId,
+                                                    otherUserName: displayName,
+                                                    otherUserPhoto: photoUrl,
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                            icon: const Icon(Icons.message,
+                                                size: 18, color: Colors.white),
+                                            label: const Text('Message',
+                                                style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight:
+                                                        FontWeight.bold)),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  const Color(0xFF3A3B3C),
+                                              foregroundColor: Colors.white,
+                                              elevation: 0,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 10),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        GestureDetector(
+                                          onTap: () => _startVideoCall(
+                                            context,
+                                            myId,
+                                            userId,
+                                            displayName,
+                                            photoUrl,
+                                            withCamera: false,
+                                          ),
+                                          child: Container(
+                                            width: 42,
+                                            height: 42,
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF3A3B3C),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            ),
+                                            child: const Icon(Icons.call,
+                                                color: Colors.white, size: 20),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        GestureDetector(
+                                          onTap: () => _startVideoCall(
+                                            context,
+                                            myId,
+                                            userId,
+                                            displayName,
+                                            photoUrl,
+                                            withCamera: true,
+                                          ),
+                                          child: Container(
+                                            width: 42,
+                                            height: 42,
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF3A3B3C),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                            ),
+                                            child: const Icon(Icons.videocam,
+                                                color: Colors.white, size: 20),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  const SizedBox(height: 20),
+                                  const Divider(
+                                      color: Colors.white12, height: 1),
+                                ],
+                              ),
+                            ),
+                          ),
+                          if (isLoading)
+                            const SliverFillRemaining(
+                              hasScrollBody: false,
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                    color: Colors.redAccent),
+                              ),
+                            )
+                          else if (gridItems.isEmpty)
+                            SliverFillRemaining(
+                              hasScrollBody: false,
+                              child: Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.videocam_off_outlined,
+                                        color: Colors.grey[700], size: 56),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      'No posts yet',
+                                      style: TextStyle(
+                                          color: Colors.grey[600],
+                                          fontSize: 15),
                                     ),
                                   ],
                                 ),
-                              const SizedBox(height: 20),
-                              const Divider(color: Colors.white12, height: 1),
-                            ],
-                          ),
-                        ),
-                      ),
-                      if (isLoading)
-                        const SliverFillRemaining(
-                          hasScrollBody: false,
-                          child: Center(
-                            child: CircularProgressIndicator(
-                                color: Colors.redAccent),
-                          ),
-                        )
-                      else if (gridItems.isEmpty)
-                        SliverFillRemaining(
-                          hasScrollBody: false,
-                          child: Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.videocam_off_outlined,
-                                    color: Colors.grey[700], size: 56),
-                                const SizedBox(height: 12),
-                                Text(
-                                  'No posts yet',
-                                  style: TextStyle(
-                                      color: Colors.grey[600], fontSize: 15),
+                              ),
+                            )
+                          else
+                            SliverPadding(
+                              padding: const EdgeInsets.all(2),
+                              sliver: SliverGrid(
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 3,
+                                  crossAxisSpacing: 2,
+                                  mainAxisSpacing: 2,
+                                  childAspectRatio: 0.7,
                                 ),
-                              ],
-                            ),
-                          ),
-                        )
-                      else
-                        SliverPadding(
-                          padding: const EdgeInsets.all(2),
-                          sliver: SliverGrid(
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              crossAxisSpacing: 2,
-                              mainAxisSpacing: 2,
-                              childAspectRatio: 0.7,
-                            ),
-                            delegate: SliverChildBuilderDelegate(
-                              (context, index) {
-                                final item = gridItems[index];
-                                return GestureDetector(
-                                  onTap: () {
-                                    if (item.isRepost) {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => SingleVideoScreen(
-                                            postId: item.postId,
-                                            userId: item.originalUserId,
-                                            videoUrl: item.videoUrl,
-                                            caption: item.caption,
-                                            userEmail: item.userEmail,
-                                            videoType: item.videoType,
-                                            repostNote: item.note,
-                                            repostByName: item.sharedByName,
-                                            repostByUserId: item.sharedByUserId,
-                                            repostByPhoto: item.sharedByPhoto,
-                                          ),
-                                        ),
-                                      );
-                                    } else {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => UserVideoFeedScreen(
-                                            userId: userId,
-                                            initialIndex: item.ownIndex,
-                                          ),
-                                        ),
-                                      );
-                                    }
+                                delegate: SliverChildBuilderDelegate(
+                                  (context, index) {
+                                    final item = gridItems[index];
+                                    return GestureDetector(
+                                      onTap: () {
+                                        if (item.isRepost) {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => SingleVideoScreen(
+                                                postId: item.postId,
+                                                userId: item.originalUserId,
+                                                videoUrl: item.videoUrl,
+                                                caption: item.caption,
+                                                userEmail: item.userEmail,
+                                                videoType: item.videoType,
+                                                repostNote: item.note,
+                                                repostByName: item.sharedByName,
+                                                repostByUserId:
+                                                    item.sharedByUserId,
+                                                repostByPhoto:
+                                                    item.sharedByPhoto,
+                                              ),
+                                            ),
+                                          );
+                                        } else {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  UserVideoFeedScreen(
+                                                userId: userId,
+                                                initialIndex: item.ownIndex,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      child: _VideoThumbnail(
+                                        videoUrl: item.videoUrl,
+                                        caption: item.caption,
+                                        postId: item.postId,
+                                        isRepost: item.isRepost,
+                                      ),
+                                    );
                                   },
-                                  child: _VideoThumbnail(
-                                    videoUrl: item.videoUrl,
-                                    caption: item.caption,
-                                    postId: item.postId,
-                                    isRepost: item.isRepost,
-                                  ),
-                                );
-                              },
-                              childCount: gridItems.length,
+                                  childCount: gridItems.length,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                    ],
+                        ],
+                      );
+                    },
                   );
                 },
               );
             },
           );
         },
+      ),
+    );
+  }
+}
+
+// Shown instead of a profile when either side has blocked the other. The
+// person who blocked gets an Unblock button; the blocked person just sees
+// that the account isn't available (they aren't told they were blocked).
+class _BlockedProfileView extends StatelessWidget {
+  final String userId;
+  const _BlockedProfileView({required this.userId});
+
+  @override
+  Widget build(BuildContext context) {
+    final bool iBlocked =
+        BlockService.instance.blockedByMe.value.contains(userId);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 36),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.block, color: Colors.white38, size: 56),
+            const SizedBox(height: 16),
+            Text(
+              iBlocked
+                  ? 'You blocked this account'
+                  : "This account isn't available",
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              iBlocked
+                  ? "You won't see each other's posts, stories or comments, and you can't message each other."
+                  : 'The profile may have been removed or is no longer visible to you.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+            if (iBlocked) ...[
+              const SizedBox(height: 20),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF3A8DFF),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                ),
+                onPressed: () async {
+                  try {
+                    await BlockService.instance.unblock(userId);
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text("Couldn't unblock. Try again.")),
+                      );
+                    }
+                  }
+                },
+                child: const Text('Unblock'),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -649,12 +743,8 @@ Future<void> _confirmBlockUser(
   if (myId == null) return;
 
   try {
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(myId)
-        .collection('blocked')
-        .doc(userIdToBlock)
-        .set({'createdAt': FieldValue.serverTimestamp()});
+    // Both directions + unfollow (see block_service.dart).
+    await BlockService.instance.block(userIdToBlock);
     if (context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('User blocked.')));

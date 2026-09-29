@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../block_service.dart';
 
 // Lists everyone the current user has blocked (public_profile_screen.dart
 // and home_screen.dart are what actually write into
@@ -95,12 +96,8 @@ class _BlockedUserTile extends StatelessWidget {
     if (confirmed != true) return;
 
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(myId)
-          .collection('blocked')
-          .doc(blockedUserId)
-          .delete();
+      // Removes both the block and its mirror (see block_service.dart).
+      await BlockService.instance.unblock(blockedUserId);
       if (context.mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('User unblocked.')));

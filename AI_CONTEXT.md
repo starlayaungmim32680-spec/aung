@@ -609,6 +609,27 @@ issue if this comes up again.
   screen status banner in `main_navigation_screen.dart` (red=offline,
   amber=weak, via a `_TopBars` widget stacked above the existing minimized-
   call bar).
+- `block_service.dart` **(30 Sep 2026, confirmed on two phones)** —
+  app-wide two-way blocking, like Facebook/Messenger. `block(uid)` writes
+  in ONE batch `users/{me}/blocked/{them}` + a mirror
+  `users/{them}/blockedBy/{me}` (and removes my follow of them);
+  `unblock(uid)` deletes both. `BlockService.instance.start()` (called in
+  `main_navigation_screen.dart` initState, follows auth changes) listens to
+  both lists and exposes `blockedByMe`, `blockedMe` and `hidden` (union)
+  as ValueNotifiers + `isHidden(uid)`; old blocks get their mirror
+  back-filled on start. Everything reads `hidden`, so BOTH people vanish
+  for each other: Home feed + Reels + comments/replies (`home_screen.dart`,
+  listener instead of their old per-screen `blocked` streams), Stories bar
+  (and so the viewer), chat list + online strip, search/discover,
+  notifications, public profile (`_BlockedProfileView`: blocker sees "You
+  blocked this account" + Unblock, the blocked person just "This account
+  isn't available"). A chat thread with a blocked person replaces the input
+  with a banner (Unblock for the blocker) and hides the call buttons.
+  **Rules enforce it too:** `blockedInRoom(roomId)` (uses `otherInRoom`)
+  denies new `chats/*/messages` and any call doc going to 'ringing'
+  between blocked people; `blockedBy` is readable only by its owner,
+  creatable/deletable only by the blocker. Follow isn't restored on unblock
+  (same as Facebook).
 - `video_disk_cache.dart` — `VideoDiskCache` singleton wrapping
   `flutter_cache_manager` (7-day stale period, max 60 cached videos). Used by
   `home_screen.dart`'s `_initializeVideo()` to check for/save a previously-
@@ -693,9 +714,9 @@ issue if this comes up again.
   video's "More" menu) — both write into the same
   `users/{myId}/blocked/{blockedUserId}` subcollection, which
   `home_screen.dart`'s feed queries already read to filter out blocked users'
-  posts. **Blocking does not yet stop a blocked/blocking user from sending
-  chat messages** — `chat_screen.dart` has no block-check — this is a known,
-  not-yet-closed gap Ko is aware of.
+  posts. **(30 Sep 2026)** Blocking is now two-way and complete — see
+  `block_service.dart` below; unblocking here goes through
+  `BlockService.unblock`.
 - `screens/home_screen.dart` — the main video feed (very large file; several
   screens live here as separate classes rather than separate files — always
   check here first before assuming a screen doesn't exist):
@@ -1042,9 +1063,10 @@ screen needs to be created from scratch — it may already exist there.)_
   - `users/{uid}/saved/{postId}` (Sep 2026): { postId, ownerId, videoUrl,
     savedAt } — private Saved list; rules: owner-only read/write.
   - `users/{uid}/blocked/{blockedUserId}`: { createdAt } — who this user has
-    blocked; read by `home_screen.dart`'s feed queries to filter out blocked
-    users' posts, and by `blocked_users_screen.dart` to list/unblock. Not yet
-    enforced in chat (see `blocked_users_screen.dart` note above).
+    blocked (listed/unblocked in `blocked_users_screen.dart`).
+  - `users/{uid}/blockedBy/{blockerId}`: { createdAt } (30 Sep 2026) — mirror
+    written by the blocker so the blocked person's app hides them too; see
+    `block_service.dart`.
 - `posts/{id}`: { userId, userEmail, videoUrl (Bunny HLS playlist for new
   posts, Cloudinary mp4 for old ones — see §3), bunnyVideoId, videoReady,
   videoFailed (Sep 2026, see §3 "Video ready"), soundId ('' when the audio
@@ -1118,8 +1140,9 @@ face-filter camera · hashtags · reposts with a personal note · share sheet
 (WhatsApp/Messenger/Facebook/Telegram/X/SMS/Email/copy link/download) ·
 search/discover · Shorts shelf in the Home feed · content/keyword
 filtering · on-device caption translation (ML Kit; no Burmese support) ·
-report/block a post or a user, with a Settings → Blocked-accounts screen to
-unblock · chat (text/image/voice) + typing indicators + read receipts, sorted
+report a post or a user · two-way block (both people vanish for each
+other everywhere; no messages or calls - also enforced in Firestore rules),
+unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + read receipts, sorted
 by most recent message/call activity, with an "online now" strip · video/voice
 calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
 incoming-call UI/push + caller ring-back tone + working speaker toggle +
@@ -1144,8 +1167,6 @@ others only see it once encoded (Bunny webhook).
 
 ### Known, deliberately-not-yet-fixed gaps
 
-- Blocking a user does not currently stop them from sending chat messages
-  (only feed visibility is filtered).
 - No true real-time "offline the instant they lose connection" presence
   (Fly has no Realtime Database) — presence is heartbeat + a 60s staleness
   window, which is accurate enough for the UI's purposes but not instant.

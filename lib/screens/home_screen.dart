@@ -34,6 +34,7 @@ import 'content_filter.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'local_video_cache.dart';
+import '../block_service.dart';
 
 // Watches full-screen route pushes so a playing video can pause itself
 // when the user navigates somewhere else. Registered in main.dart.
@@ -101,10 +102,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Set<String> _followingIds = {};
   StreamSubscription<QuerySnapshot>? _followingSub;
 
-  // Accounts the current user has blocked — their posts/reposts are hidden
-  // from the feed regardless of which tab is active.
-  Set<String> _blockedIds = {};
-  StreamSubscription<QuerySnapshot>? _blockedSub;
+  // Accounts to hide - people I blocked AND people who blocked me (see
+  // block_service.dart). Their posts/reposts never show, on either tab.
+  Set<String> _blockedIds = BlockService.instance.hidden.value;
+  void _onBlockedChanged() {
+    if (mounted) {
+      setState(() => _blockedIds = BlockService.instance.hidden.value);
+    }
+  }
 
   @override
   void initState() {
@@ -112,6 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // Stop the phone from dimming/locking while videos are playing.
     WakelockPlus.enable();
     homeFeedScrollToTopSignal.addListener(_onScrollToTopSignal);
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
     _postsStream = FirebaseFirestore.instance
         .collection('posts')
         .orderBy('createdAt', descending: true)
@@ -137,18 +143,6 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         }
       });
-      _blockedSub = FirebaseFirestore.instance
-          .collection('users')
-          .doc(myId)
-          .collection('blocked')
-          .snapshots()
-          .listen((snap) {
-        if (mounted) {
-          setState(() {
-            _blockedIds = snap.docs.map((d) => d.id).toSet();
-          });
-        }
-      });
     }
   }
 
@@ -157,7 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
     WakelockPlus.disable();
     homeFeedScrollToTopSignal.removeListener(_onScrollToTopSignal);
     _followingSub?.cancel();
-    _blockedSub?.cancel();
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
     _pageController.dispose();
     super.dispose();
   }
@@ -621,10 +615,13 @@ class _ShortsScreenState extends State<ShortsScreen> {
   late final Stream<QuerySnapshot> _shortPostsStream;
   late final Stream<QuerySnapshot> _shortRepostsStream;
 
-  // Accounts the current user has blocked — their posts/reposts are hidden
-  // from Reels too.
-  Set<String> _blockedIds = {};
-  StreamSubscription<QuerySnapshot>? _blockedSub;
+  // Accounts to hide (blocked either way - see block_service.dart).
+  Set<String> _blockedIds = BlockService.instance.hidden.value;
+  void _onBlockedChanged() {
+    if (mounted) {
+      setState(() => _blockedIds = BlockService.instance.hidden.value);
+    }
+  }
 
   @override
   void initState() {
@@ -640,28 +637,13 @@ class _ShortsScreenState extends State<ShortsScreen> {
         .where('videoType', isEqualTo: 'short')
         .orderBy('createdAt', descending: true)
         .snapshots();
-
-    final String? myId = FirebaseAuth.instance.currentUser?.uid;
-    if (myId != null) {
-      _blockedSub = FirebaseFirestore.instance
-          .collection('users')
-          .doc(myId)
-          .collection('blocked')
-          .snapshots()
-          .listen((snap) {
-        if (mounted) {
-          setState(() {
-            _blockedIds = snap.docs.map((d) => d.id).toSet();
-          });
-        }
-      });
-    }
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
-    _blockedSub?.cancel();
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
     _pageController.dispose();
     super.dispose();
   }
@@ -4266,12 +4248,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
     if (myId == null) return;
 
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(myId)
-          .collection('blocked')
-          .doc(userIdToBlock)
-          .set({'createdAt': FieldValue.serverTimestamp()});
+      // Both directions + unfollow (see block_service.dart).
+      await BlockService.instance.block(userIdToBlock);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('User blocked.')),
@@ -4330,9 +4308,14 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   String? _replyToCommentId;
   String? _replyToName;
 
-  // Accounts the current user has blocked — their comments are hidden here.
-  Set<String> _blockedIds = {};
-  StreamSubscription<QuerySnapshot>? _blockedSub;
+  // Accounts to hide (blocked either way - see block_service.dart): their
+  // comments and replies don't show here.
+  Set<String> _blockedIds = BlockService.instance.hidden.value;
+  void _onBlockedChanged() {
+    if (mounted) {
+      setState(() => _blockedIds = BlockService.instance.hidden.value);
+    }
+  }
 
   // Built once in initState (Fly's stream rule): building it inside build()
   // made every setState create a new stream, which flashed the loading
@@ -4360,27 +4343,14 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         ? Future.value(const {'name': 'User', 'photo': ''})
         : _getMyProfile(me.uid, me.email);
 
-    if (me != null) {
-      _blockedSub = FirebaseFirestore.instance
-          .collection('users')
-          .doc(me.uid)
-          .collection('blocked')
-          .snapshots()
-          .listen((snap) {
-        if (mounted) {
-          setState(() {
-            _blockedIds = snap.docs.map((d) => d.id).toSet();
-          });
-        }
-      });
-    }
+    BlockService.instance.hidden.addListener(_onBlockedChanged);
   }
 
   @override
   void dispose() {
     _commentController.dispose();
     _focusNode.dispose();
-    _blockedSub?.cancel();
+    BlockService.instance.hidden.removeListener(_onBlockedChanged);
     super.dispose();
   }
 
