@@ -725,7 +725,26 @@ issue if this comes up again.
     horizontal row for reposts), sound/view-count row, the "Fly Frame"
     cinematic top/bottom gradient bands, reaction picker, flying-emoji
     animation, report/block entry point, hashtag handling, translation.
-    **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):**
+    **Playback lifecycle (29 Sep 2026, confirmed on Ko's phone):**
+    - Pause/resume tracks two separate "away" reasons, `_routeCovered`
+      (didPushNext/didPopNext) and `_appBackgrounded` (lifecycle). Only the
+      FIRST away-reason records `_wasPlayingBeforeLeaving`. Bug it fixed:
+      the phone's Home button fires inactive → hidden → paused in a row;
+      the 2nd event overwrote the flag with false, so returning via
+      Recents left the Home video black and silent.
+    - Returning to a video that was **paused on purpose**: `seekTo(same
+position)` — Android drops the video surface in the background and a
+      paused player never draws a new frame by itself (it came back black).
+    - `_FirstFrameCover`: thumbnail until the first frame shows, spinner
+      while (re)buffering — a ValueListenableBuilder on the controller, so
+      only it rebuilds.
+    - Stall watchdog (`_startStallWatchdog`, 8s): playback requested but
+      the position never moved → `_reloadAt(position, autoPlay:)` rebuilds
+      the controller at the same spot (max 2 tries, then "Couldn't load").
+      Also used after resuming. A dead player on resume is rebuilt too.
+    - The layout rebuilds when `controller.value.size` changes (HLS can
+      report 0x0 at initialize and the real size a moment later).
+      **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):**
     - **Instant send:** only the on-device `ContentFilter` runs before
       posting; the comment is written at once with a locally generated doc
       id (input clears immediately, profile is pre-fetched in initState).

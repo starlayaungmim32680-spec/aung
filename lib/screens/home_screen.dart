@@ -1789,6 +1789,19 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // instead of the "Couldn't load" error.
   bool _isProcessing = false;
   Timer? _processingRetryTimer;
+  // Stall watchdog: sometimes (mostly the very first video after opening
+  // the app, on a slow start) initialize() finished but the stream never
+  // actually started - a black screen with no spinner. If playback was
+  // asked for but hasn't moved after _stallTimeout, the controller is
+  // rebuilt once automatically.
+  Timer? _stallTimer;
+  int _stallRetries = 0;
+  static const Duration _stallTimeout = Duration(seconds: 8);
+  static const int _maxStallRetries = 2;
+  // Last video size the layout was built with. HLS (Bunny) streams can
+  // report a size of 0x0 at initialize() and the real size a moment later;
+  // the layout is rebuilt when it changes (see _onVideoProgress).
+  Size _lastVideoSize = Size.zero;
   // Cached post upload time (read once, only after a failed load).
   DateTime? _postCreatedAt;
   bool _postCreatedAtLoaded = false;
@@ -1830,38 +1843,88 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
-  // Remembers whether playback was running, so returning to the screen
-  // resumes only videos that were actually playing.
+  // Remembers whether playback was running, so returning resumes only
+  // videos that were actually playing.
+  //
+  // Two separate "away" reasons are tracked, because they overlap:
+  //   _routeCovered     - another screen was pushed on top (didPushNext)
+  //   _appBackgrounded  - Fly left the foreground (Home button, recents,
+  //                       a call...)
+  // Bug this fixes (28-29 Sep 2026): leaving with the phone's Home button
+  // fires several lifecycle events in a row (inactive -> hidden ->
+  // paused). The first one paused the video; the next ones then saw it
+  // "not playing" and overwrote the flag with false - so coming back via
+  // recents never resumed it, and the video sat there black and silent.
+  // Now only the FIRST away-reason records the state; later ones are
+  // ignored until everything is clear again.
   bool _wasPlayingBeforeLeaving = false;
+  bool _routeCovered = false;
+  bool _appBackgrounded = false;
+
+  bool get _isAway => _routeCovered || _appBackgrounded;
 
   void _pauseForNavigation() {
+    if (_isAway) return; // already paused for an earlier reason
     final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
+    if (c == null || !c.value.isInitialized) {
+      _wasPlayingBeforeLeaving = false;
+      return;
+    }
     _wasPlayingBeforeLeaving = c.value.isPlaying;
     if (c.value.isPlaying) c.pause();
   }
 
   void _resumeAfterNavigation() {
+    if (_isAway) return; // still covered / still in the background
     final c = _controller;
-    if (c == null || !c.value.isInitialized) return;
-    if (_wasPlayingBeforeLeaving) c.play();
+    if (c == null) return;
+    // The phone may have torn the player down while Fly was in the
+    // background (some OEM skins do this to save memory) - rebuild it at
+    // the same spot instead of calling play() on a dead player.
+    if (!c.value.isInitialized || c.value.hasError) {
+      _reloadAt(c.value.position, autoPlay: _wasPlayingBeforeLeaving);
+      _wasPlayingBeforeLeaving = false;
+      return;
+    }
+    if (_wasPlayingBeforeLeaving) {
+      c.play();
+      // If it still doesn't move (surface lost in the background), the
+      // watchdog rebuilds it - see _startStallWatchdog.
+      _startStallWatchdog(c, from: c.value.position);
+    } else {
+      // Paused on purpose before leaving (bug seen 29 Sep 2026): Android
+      // throws away the video's drawing surface while Fly is in the
+      // background, and a paused player never draws a new frame on its
+      // own - so it came back black. Seeking to the same spot makes the
+      // player draw that frame again, and it stays paused.
+      c.seekTo(c.value.position);
+    }
+    _wasPlayingBeforeLeaving = false;
   }
 
   // Another full screen was pushed on top of this one - stop the sound.
   @override
-  void didPushNext() => _pauseForNavigation();
+  void didPushNext() {
+    _pauseForNavigation();
+    _routeCovered = true;
+  }
 
   // That screen was closed and this one is visible again.
   @override
-  void didPopNext() => _resumeAfterNavigation();
+  void didPopNext() {
+    _routeCovered = false;
+    _resumeAfterNavigation();
+  }
 
   // App sent to the background / a call came in, etc.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _appBackgrounded = false;
       _resumeAfterNavigation();
     } else {
       _pauseForNavigation();
+      _appBackgrounded = true;
     }
   }
 
@@ -1949,7 +2012,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
     });
   }
 
-  Future<void> _initializeVideo() async {
+  // [startAt]: resume from this position (used when a stuck or torn-down
+  // player is rebuilt mid-video) instead of from the beginning.
+  // [autoPlay]: false rebuilds a video the person had paused - it comes
+  // back showing its frame, still paused.
+  Future<void> _initializeVideo(
+      {Duration? startAt, bool autoPlay = true}) async {
     if (widget.videoUrl.isEmpty) return;
 
     _processingRetryTimer?.cancel();
@@ -2037,15 +2105,28 @@ class _VideoPostItemState extends State<_VideoPostItem>
       if (!widget.effectsBaked) {
         await controller.setPlaybackSpeed(widget.videoSpeed);
       }
-      controller.play();
+      if (startAt != null && startAt > Duration.zero) {
+        await controller.seekTo(startAt);
+      }
+      // Don't start playing if the screen was covered / Fly went to the
+      // background while this was loading - remember to play on return.
+      if (!autoPlay) {
+        // Stay paused (the seek above already drew the frame).
+      } else if (_isAway) {
+        _wasPlayingBeforeLeaving = true;
+      } else {
+        controller.play();
+      }
       controller.addListener(_onVideoProgress);
 
       if (mounted) {
+        _lastVideoSize = controller.value.size;
         setState(() {
           _controller = controller;
           _isInitialized = true;
           _isProcessing = false;
         });
+        _startStallWatchdog(controller);
       } else {
         // Scrolled away / disposed while this load was in flight.
         controller.removeListener(_onVideoProgress);
@@ -2080,6 +2161,50 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
+  // See _stallTimer. Only acts when playback was actually requested
+  // (isPlaying) - a video paused on purpose, or by leaving the screen,
+  // naturally doesn't move and must not be reloaded. [from] is where
+  // playback started (0:00 for a fresh load, the resume point after
+  // coming back to the app); "stuck" means it never got past it.
+  void _startStallWatchdog(VideoPlayerController controller,
+      {Duration from = Duration.zero}) {
+    _stallTimer?.cancel();
+    _stallTimer = Timer(_stallTimeout, () {
+      if (!mounted || !identical(controller, _controller) || _isAway) return;
+      final VideoPlayerValue v = controller.value;
+      final bool stuck = v.isPlaying && v.position <= from;
+      if (!stuck) {
+        _stallRetries = 0; // healthy again - allow retries next time
+        return;
+      }
+      _reloadAt(from);
+    });
+  }
+
+  // Throws away the current (stuck / dead) player and builds a fresh one
+  // at [at]. After _maxStallRetries attempts, shows the normal
+  // "Couldn't load - tap to retry" instead of a silent black screen.
+  void _reloadAt(Duration at, {bool autoPlay = true}) {
+    final VideoPlayerController? old = _controller;
+    final bool giveUp = _stallRetries >= _maxStallRetries;
+    if (!giveUp) _stallRetries++;
+
+    // Take the old controller off screen first, and only dispose it after
+    // that frame - disposing it while VideoPlayer/_FirstFrameCover are
+    // still listening to it would throw.
+    old?.removeListener(_onVideoProgress);
+    setState(() {
+      _controller = null;
+      _isInitialized = false;
+      _hasError = giveUp;
+    });
+    if (old != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
+
+    if (!giveUp) _initializeVideo(startAt: at, autoPlay: autoPlay);
+  }
+
   // Fire-and-forget: downloads this video to disk for offline replay next
   // time. Stored under [cacheKey] - the original, unmodified video URL -
   // rather than [url] itself, since [url] can be either the normal or the
@@ -2106,12 +2231,22 @@ class _VideoPostItemState extends State<_VideoPostItem>
 
   // Called when the person taps the retry button in the error state.
   void _retryVideoLoad() {
+    _stallRetries = 0;
     _initializeVideo();
   }
 
   void _onVideoProgress() {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
+
+    // The real video size arrived after initialize() (common with HLS):
+    // rebuild once so Smart Fit uses the right shape. Only on a size
+    // change - not on every position tick.
+    final Size size = controller.value.size;
+    if (size != _lastVideoSize) {
+      _lastVideoSize = size;
+      if (mounted) setState(() {});
+    }
 
     final position = controller.value.position;
     final duration = controller.value.duration;
@@ -2844,6 +2979,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
     flyRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _processingRetryTimer?.cancel();
+    _stallTimer?.cancel();
     _controller?.removeListener(_onVideoProgress);
     _controller?.dispose();
     _controlsVisible.dispose();
@@ -3009,6 +3145,21 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   if (!widget.effectsBaked)
                     for (final overlay in widget.textOverlays)
                       _positionedOverlayText(overlay),
+                  // Until the first frame is actually on screen (and while
+                  // the stream rebuffers), keep the thumbnail + a small
+                  // spinner up instead of a bare black screen.
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: _kCaptionPanelHeight,
+                    child: IgnorePointer(
+                      child: _FirstFrameCover(
+                        controller: _controller!,
+                        thumbUrl: cloudinaryThumbUrl(widget.videoUrl),
+                      ),
+                    ),
+                  ),
                 ],
               ] else
                 Stack(
@@ -5950,6 +6101,56 @@ class _NotificationBell extends StatelessWidget {
                 ),
             ],
           ),
+        );
+      },
+    );
+  }
+}
+
+// Covers a video until its first frame is really showing: the thumbnail
+// plus a small spinner, and just the spinner if the stream later stops to
+// rebuffer. Listens to the controller itself, so only this small widget
+// rebuilds as playback moves - never the whole video item.
+class _FirstFrameCover extends StatelessWidget {
+  final VideoPlayerController controller;
+  final String thumbUrl;
+
+  const _FirstFrameCover({required this.controller, required this.thumbUrl});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (context, v, _) {
+        final bool started = v.position > Duration.zero;
+        // No spinner for a video sitting paused at 0:00 on purpose (e.g.
+        // the screen was left before it started) - just the thumbnail.
+        final bool showSpinner = (!started && v.isPlaying) || v.isBuffering;
+        if (started && !showSpinner) return const SizedBox.shrink();
+
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (!started && thumbUrl.isNotEmpty)
+              CachedNetworkImage(
+                imageUrl: thumbUrl,
+                fit: BoxFit.cover,
+                placeholder: (_, __) => const ColoredBox(color: Colors.black),
+                errorWidget: (_, __, ___) =>
+                    const ColoredBox(color: Colors.black),
+              ),
+            if (showSpinner)
+              const Center(
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    color: Colors.white70,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+              ),
+          ],
         );
       },
     );
