@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -16,14 +15,13 @@ import '../call_kit_service.dart';
 import 'call_push_service.dart';
 import '../block_service.dart';
 import 'presence_badge.dart';
+import 'worker_auth.dart';
 
-// Cloudinary upload details (unsigned)
-const String kCloudinaryImageUrl =
-    'https://api.cloudinary.com/v1_1/dwx402gy4/image/upload';
-// Voice notes are audio files - Cloudinary stores them under the "video" endpoint
-const String kCloudinaryAudioUrl =
-    'https://api.cloudinary.com/v1_1/dwx402gy4/video/upload';
-const String kCloudinaryPreset = 'fly_unsigned';
+// Chat photos and voice notes go to Bunny Storage through the Worker's
+// /upload-image pass-through (1 Oct 2026) - the same path story images and
+// profile photos use. They used to go to Cloudinary, whose account is
+// disabled, so sending a photo or voice note failed.
+const String _bunnyChatCdnHostname = 'fly-images-aungdev756617.b-cdn.net';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -36,11 +34,27 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
+  // Streams are built ONCE here, never inside build() (1 Oct 2026). Before,
+  // every rebuild (a block-list update, typing in search) threw away the
+  // listener and started a new one, which goes back to "waiting" - on a slow
+  // connection the list could spin forever and only showed when offline
+  // (where the cache answers instantly).
+  late final Stream<QuerySnapshot> _usersStream;
+  Stream<QuerySnapshot>? _chatsStream;
+
   // Blocked accounts (either way - see block_service.dart) disappear from
   // the list and the "online now" strip.
   @override
   void initState() {
     super.initState();
+    _usersStream = FirebaseFirestore.instance.collection('users').snapshots();
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId != null) {
+      _chatsStream = FirebaseFirestore.instance
+          .collection('chats')
+          .where('participants', arrayContains: myId)
+          .snapshots();
+    }
     BlockService.instance.hidden.addListener(_onBlockedChanged);
   }
 
@@ -102,10 +116,17 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance.collection('users').snapshots(),
+              stream: _usersStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Text(
+                        "Couldn't load chats. Check your connection.",
+                        style: TextStyle(color: Colors.grey[600], fontSize: 15),
+                      ),
+                    );
+                  }
                   return const Center(
                     child: CircularProgressIndicator(color: Colors.redAccent),
                   );
@@ -143,12 +164,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 // (lastMessageAt) and starting a call (lastCallAt, see
                 // _startVideoCall below) already write.
                 return StreamBuilder<QuerySnapshot>(
-                  stream: currentUser == null
-                      ? null
-                      : FirebaseFirestore.instance
-                          .collection('chats')
-                          .where('participants', arrayContains: currentUser.uid)
-                          .snapshots(),
+                  stream: _chatsStream,
                   builder: (context, chatSnap) {
                     final Map<String, DateTime> lastActivity = {};
                     for (final doc in chatSnap.data?.docs ?? []) {
@@ -418,6 +434,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   Timer? _typingTimer;
   String? _currentActivity;
 
+  // Built once in initState - never inside build() (see ChatScreen above):
+  // this screen rebuilds a lot (recording, typing, uploading), and each
+  // rebuild used to restart these listeners.
+  late final Stream<QuerySnapshot> _messagesStream;
+  late final Stream<DocumentSnapshot> _activityStream;
+
   // Blocked either way (see block_service.dart): no sending, no calls.
   bool get _blocked => BlockService.instance.isHidden(widget.otherUserId);
   bool get _iBlockedThem =>
@@ -430,6 +452,13 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   @override
   void initState() {
     super.initState();
+    final chatDoc = FirebaseFirestore.instance.collection('chats').doc(_chatId);
+    _messagesStream = chatDoc
+        .collection('messages')
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+    _activityStream =
+        chatDoc.collection('activity').doc(widget.otherUserId).snapshots();
     BlockService.instance.hidden.addListener(_onBlockedChanged);
     _initRecorder();
     _messageController.addListener(() {
@@ -571,6 +600,51 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     await _afterSend(text);
   }
 
+  // File extension (from the recorder's codec) -> MIME type for Bunny.
+  static const Map<String, String> _audioContentTypes = {
+    'm4a': 'audio/mp4',
+    'aac': 'audio/aac',
+    'ogg': 'audio/ogg',
+    'wav': 'audio/wav',
+  };
+
+  // Uploads a chat photo / voice note to Bunny Storage via the Worker and
+  // returns its public URL, or null (after showing a friendly error) if it
+  // failed. The file name must start with my own uid - the Worker rejects
+  // anything else - and stays plain ASCII (it travels in an HTTP header).
+  Future<String?> _uploadChatFile(
+    File file, {
+    required String extension,
+    required String contentType,
+  }) async {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return null;
+    try {
+      final bytes = await file.readAsBytes();
+      final String fileName =
+          '${myId}_chat_${DateTime.now().millisecondsSinceEpoch}.$extension';
+      final response = await http
+          .post(
+            Uri.parse('$kTokenServerUrl/upload-image'),
+            headers: {
+              ...await workerAuthHeaders(),
+              'X-File-Name': fileName,
+              'Content-Type': contentType,
+            },
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 60));
+      if (response.statusCode != 200) {
+        _showError("Couldn't send it. Please try again.");
+        return null;
+      }
+      return 'https://$_bunnyChatCdnHostname/$fileName';
+    } catch (_) {
+      _showError("Couldn't send it. Check your connection and try again.");
+      return null;
+    }
+  }
+
   Future<void> _pickAndSendImage() async {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -585,18 +659,13 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     setState(() => _isUploading = true);
 
     try {
-      final request =
-          http.MultipartRequest('POST', Uri.parse(kCloudinaryImageUrl));
-      request.fields['upload_preset'] = kCloudinaryPreset;
-      request.files.add(await http.MultipartFile.fromPath('file', picked.path));
+      final String? imageUrl = await _uploadChatFile(
+        File(picked.path),
+        extension: 'jpg',
+        contentType: 'image/jpeg',
+      );
 
-      final response = await request.send();
-      final respStr = await response.stream.bytesToString();
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(respStr) as Map<String, dynamic>;
-        final String imageUrl = data['secure_url'] as String;
-
+      if (imageUrl != null) {
         await FirebaseFirestore.instance
             .collection('chats')
             .doc(_chatId)
@@ -611,8 +680,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         });
 
         await _afterSend('📷 Photo');
-      } else {
-        _showError('Image upload failed: HTTP ${response.statusCode}');
       }
     } catch (e) {
       _showError('Send image failed: $e');
@@ -718,18 +785,14 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     setState(() => _isUploading = true);
 
     try {
-      final request =
-          http.MultipartRequest('POST', Uri.parse(kCloudinaryAudioUrl));
-      request.fields['upload_preset'] = kCloudinaryPreset;
-      request.files.add(await http.MultipartFile.fromPath('file', path));
+      final String ext = path.split('.').last.toLowerCase();
+      final String? audioUrl = await _uploadChatFile(
+        file,
+        extension: ext,
+        contentType: _audioContentTypes[ext] ?? 'application/octet-stream',
+      );
 
-      final response = await request.send();
-      final respStr = await response.stream.bytesToString();
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(respStr) as Map<String, dynamic>;
-        final String audioUrl = data['secure_url'] as String;
-
+      if (audioUrl != null) {
         await FirebaseFirestore.instance
             .collection('chats')
             .doc(_chatId)
@@ -744,8 +807,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         });
 
         await _afterSend('🎤 Voice message');
-      } else {
-        _showError('Upload failed ${response.statusCode}: $respStr');
       }
     } catch (e) {
       _showError('Send voice failed: $e');
@@ -1000,12 +1061,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   style: const TextStyle(color: Colors.white, fontSize: 16),
                 ),
                 StreamBuilder<DocumentSnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('chats')
-                      .doc(_chatId)
-                      .collection('activity')
-                      .doc(widget.otherUserId)
-                      .snapshots(),
+                  stream: _activityStream,
                   builder: (context, snap) {
                     final data = snap.data?.data() as Map<String, dynamic>?;
                     final status = data?['status'] as String?;
@@ -1049,14 +1105,17 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         children: [
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('chats')
-                  .doc(_chatId)
-                  .collection('messages')
-                  .orderBy('createdAt', descending: true)
-                  .snapshots(),
+              stream: _messagesStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Text(
+                        "Couldn't load messages. Check your connection.",
+                        style: TextStyle(color: Colors.grey[600], fontSize: 15),
+                      ),
+                    );
+                  }
                   return const Center(
                     child: CircularProgressIndicator(color: Colors.redAccent),
                   );

@@ -82,8 +82,12 @@ class BlockService {
     );
   }
 
+  // Only notify when the set really changed - every Firestore snapshot used
+  // to hand out a new Set, which rebuilt every listening screen for nothing.
   void _updateHidden() {
-    hidden.value = {...blockedByMe.value, ...blockedMe.value};
+    final Set<String> next = {...blockedByMe.value, ...blockedMe.value};
+    if (setEquals(next, hidden.value)) return;
+    hidden.value = next;
   }
 
   void _backfillMirrors(String myId, Set<String> ids) {

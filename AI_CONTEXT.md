@@ -9,6 +9,9 @@
 > _Last major update: 26 Sep 2026 (photo-story effects, story music, sound
 > copyright safeguards, full Firestore rules, Bunny upload fixes + "video
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
+> _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
+> Cloudinary to Bunny Storage; chat streams built once; note on networks
+> that can't reach Firestore._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -279,6 +282,13 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     `/upload-image` endpoint: a plain PUT pass-through, mirroring
     `/upload-video`'s pattern. Story videos go to **Bunny Stream** via the
     existing `/upload-video`, exactly like feed posts.
+  - **Chat photos and voice notes (1 Oct 2026, confirmed on phones)** use
+    the same `/upload-image` path (`chat_screen.dart`'s
+    `_uploadChatFile()`): file name `{uid}_chat_{ms}.jpg` / `.m4a` (etc.),
+    Content-Type `image/jpeg` or the matching audio type, and the message
+    stores `https://fly-images-aungdev756617.b-cdn.net/{fileName}`. They
+    used to go to Cloudinary (disabled), so sending either failed. Old chat
+    photos/voice notes on Cloudinary stay broken. No Worker/rules change.
   - Bunny Storage zone: `fly-images-aungdev756617` (Singapore region -
     its API host is the **region-specific** `sg.storage.bunnycdn.com`, not
     the generic `storage.bunnycdn.com` — using the generic one caused a
@@ -428,7 +438,7 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       authenticated by the `BUNNY_WEBHOOK_TOKEN` secret in the URL; sets
       `videoReady` (see "Video ready" flow above).
     - `POST /upload-image` — plain pass-through PUT to Bunny Storage, used
-      for profile photos and story images (see the profile/story note
+      for profile photos, story images and chat photos/voice notes (see the profile/story note
       further down in this section).
   - Confirm the current token-fetch code path in `video_call_screen.dart`
     (constant `kTokenServerUrl`, a plain top-level `const` imported with a
@@ -616,7 +626,8 @@ issue if this comes up again.
   `unblock(uid)` deletes both. `BlockService.instance.start()` (called in
   `main_navigation_screen.dart` initState, follows auth changes) listens to
   both lists and exposes `blockedByMe`, `blockedMe` and `hidden` (union)
-  as ValueNotifiers + `isHidden(uid)`; old blocks get their mirror
+  as ValueNotifiers + `isHidden(uid)` (`hidden` only notifies when the set
+  really changes — `setEquals`, 1 Oct 2026); old blocks get their mirror
   back-filled on start. Everything reads `hidden`, so BOTH people vanish
   for each other: Home feed + Reels + comments/replies (`home_screen.dart`,
   listener instead of their old per-screen `blocked` streams), Stories bar
@@ -962,6 +973,11 @@ position)` — Android drops the video surface in the background and a
     (`chats/{chatId}.lastCallAt`, written by `_startVideoCall()` alongside
     the pre-existing `calls/{chatId}` doc) moves to the top. Users with no
     chat/call history yet sort after, in a stable (not random) order.
+  - **Streams are built once** (`_usersStream`, `_chatsStream`, and in the
+    thread `_messagesStream`, `_activityStream`, all in `initState`) — never
+    inside `build()` (1 Oct 2026). The spinner only shows while there's no
+    data yet; an error shows "Couldn't load chats/messages" instead.
+  - Photos and voice notes upload to Bunny Storage (see §3, 1 Oct 2026).
 - `screens/video_call_screen.dart`, `screens/incoming_call_screen.dart`,
   `call_kit_service.dart`, `screens/call_push_service.dart`,
   `active_call.dart` — LiveKit calls (voice/video via a shared
@@ -1214,10 +1230,19 @@ others only see it once encoded (Bunny webhook).
   (usage-quota exceeded) — all old Cloudinary-hosted content (videos,
   profile photos, stories) is unplayable/unloadable until Ko either
   upgrades the plan or enough of the rolling 30-day usage window rolls off.
-  Profile photos and stories no longer depend on it going forward (now on
-  Bunny), but old Cloudinary-hosted ones are still affected.
+  Profile photos, stories and chat photos/voice notes no longer depend on
+  it going forward (now on Bunny), but old Cloudinary-hosted ones are still
+  affected.
+- **Some networks can't reach Firestore at all (seen 1 Oct 2026).** On one
+  test phone's mobile data / hotspot, every Firestore screen (Home,
+  Profile, Chat) spun forever while online and showed cached data only when
+  offline; the same phone on another Wi-Fi worked. Firestore uses a
+  long-lived gRPC connection that some carriers/hotspots break (Auth and
+  Bunny still work, so it looks like "only Fly is broken"). Not a code bug —
+  check the network (other Wi-Fi, VPN, Private DNS off, Google Play
+  services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 27 Sep 2026)
+### To-do list (Ko's next steps, most urgent first — updated 1 Oct 2026)
 
 1. **Recharge Bunny before the trial ends (~3 Oct 2026).** Balance is $0;
    once the trial ends, uploads and playback can stop. Remind Ko early.
