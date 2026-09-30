@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:image_picker/image_picker.dart';
@@ -22,6 +23,11 @@ import 'worker_auth.dart';
 // profile photos use. They used to go to Cloudinary, whose account is
 // disabled, so sending a photo or voice note failed.
 const String _bunnyChatCdnHostname = 'fly-images-aungdev756617.b-cdn.net';
+
+// Messenger's six quick reactions (1 Oct 2026). Stored per message as
+// `reactions: {<uid>: emoji}` - each person has at most one, and the
+// Firestore rules only let you change your own.
+const List<String> _kMessageReactions = ['👍', '❤️', '😆', '😮', '😢', '😡'];
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -553,6 +559,14 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'lastSenderId': myId,
     }, SetOptions(merge: true));
 
+    await _notifyOther(previewText);
+  }
+
+  // Adds an in-app notification for the other person (new message, or a
+  // reaction to one of their messages).
+  Future<void> _notifyOther(String text) async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
     final myProfile =
         await FirebaseFirestore.instance.collection('users').doc(myId).get();
     final myData = myProfile.data();
@@ -568,7 +582,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         .collection('notifications')
         .add({
       'type': 'message',
-      'text': previewText,
+      'text': text,
       'fromId': myId,
       'fromName': myName,
       'fromPhoto': myPhoto,
@@ -594,6 +608,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'type': 'text',
       'text': text,
       'seen': false,
+      'delivered': false,
       'createdAt': FieldValue.serverTimestamp(),
     });
 
@@ -676,6 +691,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           'imageUrl': imageUrl,
           'text': '',
           'seen': false,
+          'delivered': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
 
@@ -803,6 +819,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           'audioUrl': audioUrl,
           'text': '',
           'seen': false,
+          'delivered': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
 
@@ -867,6 +884,211 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     }
   }
 
+  // Sets my reaction on a message, or removes it when I pick the same one
+  // again (like Messenger).
+  Future<void> _setReaction(
+    String messageId,
+    String emoji, {
+    required String? current,
+    required bool messageIsMine,
+  }) async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+    final ref = FirebaseFirestore.instance
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .doc(messageId);
+    try {
+      if (current == emoji) {
+        await ref.update({'reactions.$myId': FieldValue.delete()});
+      } else {
+        await ref.update({'reactions.$myId': emoji});
+        if (!messageIsMine) {
+          unawaited(_notifyOther('Reacted $emoji to your message')
+              .catchError((_) {}));
+        }
+      }
+    } catch (_) {
+      _showError("Couldn't react. Please try again.");
+    }
+  }
+
+  // Long-press menu: the reaction bar on top, then Copy / Unsend.
+  Future<void> _showMessageActions({
+    required String messageId,
+    required Map<String, dynamic> msg,
+    required bool isMine,
+  }) async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+    HapticFeedback.mediumImpact();
+    final Map<String, dynamic> reactions =
+        (msg['reactions'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final String? current = reactions[myId] as String?;
+    final String type = msg['type'] ?? 'text';
+    final String text = msg['text'] ?? '';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (!_blocked)
+                  _ReactionBar(
+                    selected: current,
+                    onPick: (emoji) {
+                      Navigator.pop(sheetContext);
+                      _setReaction(messageId, emoji,
+                          current: current, messageIsMine: isMine);
+                    },
+                  ),
+                const SizedBox(height: 10),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (type == 'text' && text.isNotEmpty)
+                        ListTile(
+                          leading:
+                              const Icon(Icons.copy, color: Colors.white70),
+                          title: const Text('Copy',
+                              style: TextStyle(color: Colors.white)),
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: text));
+                            Navigator.pop(sheetContext);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                        ),
+                      if (isMine)
+                        ListTile(
+                          leading: const Icon(Icons.delete_outline,
+                              color: Colors.redAccent),
+                          title: const Text('Unsend',
+                              style: TextStyle(color: Colors.redAccent)),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _deleteMessage(messageId);
+                          },
+                        ),
+                      ListTile(
+                        leading: const Icon(Icons.close, color: Colors.white54),
+                        title: const Text('Cancel',
+                            style: TextStyle(color: Colors.white70)),
+                        onTap: () => Navigator.pop(sheetContext),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // Who reacted with what; tapping my own row removes my reaction.
+  void _showReactionDetails({
+    required String messageId,
+    required Map<String, dynamic> reactions,
+    required bool isMine,
+  }) {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) {
+        final entries = reactions.entries
+            .where((e) => e.value is String)
+            .toList()
+          ..sort((a, b) => a.key == myId ? -1 : (b.key == myId ? 1 : 0));
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 10),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('Reactions',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600)),
+              ),
+              for (final e in entries)
+                ListTile(
+                  leading: CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.grey[850],
+                    backgroundImage:
+                        e.key != myId && widget.otherUserPhoto.isNotEmpty
+                            ? NetworkImage(widget.otherUserPhoto)
+                            : null,
+                    child: e.key == myId || widget.otherUserPhoto.isEmpty
+                        ? Text(
+                            e.key == myId
+                                ? 'Y'
+                                : (widget.otherUserName.isNotEmpty
+                                    ? widget.otherUserName[0].toUpperCase()
+                                    : '?'),
+                            style: const TextStyle(color: Colors.white),
+                          )
+                        : null,
+                  ),
+                  title: Text(
+                    e.key == myId ? 'You' : widget.otherUserName,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  subtitle: e.key == myId
+                      ? const Text('Tap to remove',
+                          style: TextStyle(color: Colors.white38, fontSize: 12))
+                      : null,
+                  trailing: Text(e.value as String,
+                      style: const TextStyle(fontSize: 24)),
+                  onTap: e.key == myId
+                      ? () {
+                          Navigator.pop(sheetContext);
+                          _setReaction(messageId, e.value as String,
+                              current: e.value as String,
+                              messageIsMine: isMine);
+                        }
+                      : null,
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   void _viewImage(String url) {
     Navigator.push(
       context,
@@ -897,7 +1119,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     for (final doc in messages) {
       final data = doc.data() as Map<String, dynamic>;
       if (data['senderId'] == widget.otherUserId && data['seen'] != true) {
-        batch.update(doc.reference, {'seen': true});
+        // Seen always implies delivered.
+        batch.update(doc.reference, {'seen': true, 'delivered': true});
         hasUnseen = true;
       }
     }
@@ -1136,6 +1359,11 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   );
                 }
 
+                // Like Messenger, the Sent/Delivered/Seen row shows only
+                // under my newest message (plus any still sending).
+                final int newestMineIndex = messages.indexWhere((d) =>
+                    (d.data() as Map<String, dynamic>)['senderId'] == myId);
+
                 return ListView.builder(
                   controller: _scrollController,
                   reverse: true,
@@ -1159,6 +1387,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                     final String imageUrl = msg['imageUrl'] ?? '';
                     final String audioUrl = msg['audioUrl'] ?? '';
                     final bool seen = msg['seen'] == true;
+                    final bool delivered = seen || msg['delivered'] == true;
+                    final Map<String, dynamic> reactions =
+                        (msg['reactions'] as Map?)?.cast<String, dynamic>() ??
+                            const {};
+                    final bool showStatus =
+                        isMine && (isPending || index == newestMineIndex);
 
                     Widget bubble;
                     if (type == 'image') {
@@ -1280,50 +1514,34 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                                 ? Alignment.centerRight
                                 : Alignment.centerLeft,
                             child: GestureDetector(
-                              onLongPress: isMine
-                                  ? () => _deleteMessage(messageId)
-                                  : null,
-                              child: bubble,
+                              onLongPress: () => _showMessageActions(
+                                messageId: messageId,
+                                msg: msg,
+                                isMine: isMine,
+                              ),
+                              child: _ReactedBubble(
+                                bubble: bubble,
+                                reactions: reactions,
+                                isMine: isMine,
+                                onTapReactions: () => _showReactionDetails(
+                                  messageId: messageId,
+                                  reactions: reactions,
+                                  isMine: isMine,
+                                ),
+                              ),
                             ),
                           ),
                         ),
-                        if (isMine)
+                        if (showStatus)
                           Padding(
                             padding: const EdgeInsets.only(
                                 top: 2, right: 4, bottom: 2),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  isPending
-                                      ? Icons.access_time_rounded
-                                      : seen
-                                          ? Icons.visibility
-                                          : Icons.visibility_off,
-                                  size: 14,
-                                  color: isPending
-                                      ? Colors.grey
-                                      : seen
-                                          ? const Color(0xFF3A8DFF)
-                                          : Colors.grey,
-                                ),
-                                const SizedBox(width: 3),
-                                Text(
-                                  isPending
-                                      ? 'Sending...'
-                                      : seen
-                                          ? 'Seen'
-                                          : 'Sent',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: isPending
-                                        ? Colors.grey
-                                        : seen
-                                            ? const Color(0xFF3A8DFF)
-                                            : Colors.grey,
-                                  ),
-                                ),
-                              ],
+                            child: _DeliveryStatus(
+                              isPending: isPending,
+                              delivered: delivered,
+                              seen: seen,
+                              otherPhoto: widget.otherUserPhoto,
+                              otherName: widget.otherUserName,
                             ),
                           ),
                       ],
@@ -1548,6 +1766,204 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
           const SizedBox(width: 6),
           const Text('Voice',
               style: TextStyle(color: Colors.white70, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+// Messenger-style status under my newest message:
+//   Sending...  - still only on my phone (offline queue)
+//   Sent        - reached Fly's server, not their phone yet (hollow tick)
+//   Delivered   - reached their phone (filled tick)
+//   Seen        - they opened the chat (their tiny photo)
+class _DeliveryStatus extends StatelessWidget {
+  final bool isPending;
+  final bool delivered;
+  final bool seen;
+  final String otherPhoto;
+  final String otherName;
+
+  const _DeliveryStatus({
+    required this.isPending,
+    required this.delivered,
+    required this.seen,
+    required this.otherPhoto,
+    required this.otherName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const Color blue = Color(0xFF3A8DFF);
+    Widget icon;
+    String label;
+    Color color = Colors.grey;
+
+    if (isPending) {
+      icon = const Icon(Icons.radio_button_unchecked,
+          size: 13, color: Colors.grey);
+      label = 'Sending...';
+    } else if (seen) {
+      icon = CircleAvatar(
+        radius: 7,
+        backgroundColor: Colors.grey[800],
+        backgroundImage:
+            otherPhoto.isNotEmpty ? NetworkImage(otherPhoto) : null,
+        child: otherPhoto.isEmpty
+            ? Text(
+                otherName.isNotEmpty ? otherName[0].toUpperCase() : '?',
+                style: const TextStyle(color: Colors.white, fontSize: 8),
+              )
+            : null,
+      );
+      label = 'Seen';
+      color = blue;
+    } else if (delivered) {
+      icon = const Icon(Icons.check_circle, size: 13, color: blue);
+      label = 'Delivered';
+    } else {
+      icon =
+          const Icon(Icons.check_circle_outline, size: 13, color: Colors.grey);
+      label = 'Sent';
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        icon,
+        const SizedBox(width: 4),
+        Text(label, style: TextStyle(fontSize: 10, color: color)),
+      ],
+    );
+  }
+}
+
+// A message bubble with its reactions pill hanging off the bottom corner.
+class _ReactedBubble extends StatelessWidget {
+  final Widget bubble;
+  final Map<String, dynamic> reactions;
+  final bool isMine;
+  final VoidCallback onTapReactions;
+
+  const _ReactedBubble({
+    required this.bubble,
+    required this.reactions,
+    required this.isMine,
+    required this.onTapReactions,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final List<String> emojis = reactions.values.whereType<String>().toList();
+    if (emojis.isEmpty) return bubble;
+    // Most-used first, each shown once.
+    final Map<String, int> counts = {};
+    for (final e in emojis) {
+      counts[e] = (counts[e] ?? 0) + 1;
+    }
+    final List<String> unique = counts.keys.toList()
+      ..sort((a, b) => counts[b]!.compareTo(counts[a]!));
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: bubble,
+        ),
+        Positioned(
+          bottom: 0,
+          right: isMine ? null : 6,
+          left: isMine ? 6 : null,
+          child: GestureDetector(
+            onTap: onTapReactions,
+            child: TweenAnimationBuilder<double>(
+              key: ValueKey(emojis.join()),
+              tween: Tween(begin: 0.6, end: 1),
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutBack,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2A2A2A),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.black, width: 1.5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(unique.take(3).join(),
+                        style: const TextStyle(fontSize: 13)),
+                    if (emojis.length > 1) ...[
+                      const SizedBox(width: 3),
+                      Text('${emojis.length}',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 11)),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// The row of six reactions shown on long-press; each pops in one after
+// another and the one I already picked is highlighted.
+class _ReactionBar extends StatelessWidget {
+  final String? selected;
+  final ValueChanged<String> onPick;
+
+  const _ReactionBar({required this.selected, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(32),
+        boxShadow: const [
+          BoxShadow(
+              color: Colors.black54, blurRadius: 12, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (int i = 0; i < _kMessageReactions.length; i++)
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: Duration(milliseconds: 220 + i * 45),
+              curve: Curves.easeOutBack,
+              builder: (context, t, child) => Transform.scale(
+                scale: t.clamp(0.0, 1.2),
+                child: child,
+              ),
+              child: GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  onPick(_kMessageReactions[i]);
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: selected == _kMessageReactions[i]
+                        ? Colors.white24
+                        : Colors.transparent,
+                  ),
+                  child: Text(_kMessageReactions[i],
+                      style: const TextStyle(fontSize: 30)),
+                ),
+              ),
+            ),
         ],
       ),
     );

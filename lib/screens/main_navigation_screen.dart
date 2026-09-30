@@ -11,6 +11,7 @@ import '../call_kit_service.dart';
 import '../active_call.dart';
 import '../network_service.dart';
 import '../block_service.dart';
+import '../chat_delivery_service.dart';
 import 'video_call_screen.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
@@ -112,6 +113,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // Who's blocked (either way) - read by the feed, stories, chat,
     // search and profiles to hide those accounts everywhere.
     BlockService.instance.start();
+    // Marks messages sent to me as "Delivered" once they reach this phone.
+    ChatDeliveryService.instance.start();
     _setOnlineStatus(true);
     _presenceHeartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       _setOnlineStatus(true);

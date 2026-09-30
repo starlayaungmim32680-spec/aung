@@ -11,7 +11,8 @@
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
-> that can't reach Firestore._
+> that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
+> message reactions (`chat_delivery_service.dart`)._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -641,6 +642,16 @@ issue if this comes up again.
   between blocked people; `blockedBy` is readable only by its owner,
   creatable/deletable only by the blocker. Follow isn't restored on unblock
   (same as Facebook).
+- `chat_delivery_service.dart` **(1 Oct 2026, confirmed on two phones)** —
+  Messenger-style "Delivered". `ChatDeliveryService.instance.start()`
+  (called next to `BlockService.instance.start()` in
+  `main_navigation_screen.dart`, follows auth changes) listens to my
+  `chats` (participants array-contains me); when a chat's
+  `lastSenderId` is the other person and `lastMessageAt` is new, it
+  fetches their messages with `seen == false` (two equality filters, no
+  composite index) and sets `delivered: true`. Only messages actually on
+  this phone get marked. Limitation: if the receiver's app is fully
+  closed it stays "Sent" until they open Fly (no chat push yet).
 - `video_disk_cache.dart` — `VideoDiskCache` singleton wrapping
   `flutter_cache_manager` (7-day stale period, max 60 cached videos). Used by
   `home_screen.dart`'s `_initializeVideo()` to check for/save a previously-
@@ -978,6 +989,21 @@ position)` — Android drops the video surface in the background and a
     inside `build()` (1 Oct 2026). The spinner only shows while there's no
     data yet; an error shows "Couldn't load chats/messages" instead.
   - Photos and voice notes upload to Bunny Storage (see §3, 1 Oct 2026).
+- `ChatThreadScreen` status + reactions **(1 Oct 2026, confirmed)**:
+  - Messages are created with `seen: false, delivered: false`; opening the
+    chat sets `seen` + `delivered`. `_DeliveryStatus` shows under my
+    **newest** message only (plus any still pending): Sending... (hollow
+    circle, `hasPendingWrites`) → Sent (outlined tick) → Delivered (filled
+    blue tick) → Seen (their tiny photo).
+  - Long-press any message → `_showMessageActions`: `_ReactionBar`
+    (👍 ❤️ 😆 😮 😢 😡, `_kMessageReactions`, hidden when blocked) + Copy
+    (text) / Unsend (mine, the old `_deleteMessage`). Stored as
+    `reactions: {<uid>: emoji}` via `update({'reactions.<uid>': ...})`;
+    picking the same one again removes it. `_ReactedBubble` draws the pill
+    on the bubble corner (count when >1); tapping it opens
+    `_showReactionDetails` (tap my row to remove). Reacting to their
+    message adds a "Reacted 😆 to your message" notification
+    (`_notifyOther`, shared with `_afterSend`).
 - `screens/video_call_screen.dart`, `screens/incoming_call_screen.dart`,
   `call_kit_service.dart`, `screens/call_push_service.dart`,
   `active_call.dart` — LiveKit calls (voice/video via a shared
@@ -1111,7 +1137,11 @@ screen needs to be created from scratch — it may already exist there.)_
   - `stories/{id}/reactions/{uid}`: { uid, type, userName, userPhoto, createdAt }
 - `chats/{chatId}` (chatId = sorted `{uidA}_{uidB}`): { participants: [uidA,
   uidB], lastMessage, lastMessageAt, lastSenderId, lastCallAt }, plus
-  `messages`/`activity` subcollections.
+  `messages`/`activity` subcollections. A message: { senderId, type
+  (text/image/audio), text/imageUrl/audioUrl, seen, delivered (1 Oct
+  2026), reactions: {uid: emoji} (optional), createdAt, storyId/storyThumb
+  (story replies) }. Rules: the receiver may change only `seen`/`delivered`,
+  or their own `reactions.<uid>` (`onlyMyReaction`, not when blocked).
 - `calls/{chatId}`: { callerId, callerName, callerPhoto, calleeId, roomName,
   status ('ringing'/...), createdAt } — call signaling. See §3 for the two
   known bugs around this doc's lifecycle (decline-while-killed,
@@ -1158,7 +1188,7 @@ search/discover · Shorts shelf in the Home feed · content/keyword
 filtering · on-device caption translation (ML Kit; no Burmese support) ·
 report a post or a user · two-way block (both people vanish for each
 other everywhere; no messages or calls - also enforced in Firestore rules),
-unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + read receipts, sorted
+unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + Sent/Delivered/Seen + message reactions, sorted
 by most recent message/call activity, with an "online now" strip · video/voice
 calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
 incoming-call UI/push + caller ring-back tone + working speaker toggle +
