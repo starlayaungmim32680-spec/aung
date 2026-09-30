@@ -289,10 +289,14 @@ service cloud.firestore {
         allow create: if inRoom(chatId)
           && request.resource.data.senderId == request.auth.uid
           && !blockedInRoom(chatId);
-        // sender: anything (unsend etc.); receiver: mark seen only
+        // sender: anything (unsend etc.); receiver: mark seen/delivered
+        // (chat_delivery_service.dart). Either person may set or remove
+        // only their OWN reaction ({'reactions.<uid>': emoji}), unless
+        // one of them has blocked the other.
         allow update: if inRoom(chatId) && (
           resource.data.senderId == request.auth.uid
-          || changedKeys().hasOnly(['seen'])
+          || changedKeys().hasOnly(['seen', 'delivered'])
+          || (onlyMyReaction() && !blockedInRoom(chatId))
         );
         allow delete: if inRoom(chatId)
           && resource.data.senderId == request.auth.uid;
