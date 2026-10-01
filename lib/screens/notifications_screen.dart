@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../block_service.dart';
 import 'chat_screen.dart';
 import 'public_profile_screen.dart';
+import 'home_screen.dart' show PostFromNotificationScreen;
 
 // Shows the current user's notifications (reactions, comments, messages, follows)
 class NotificationsScreen extends StatelessWidget {
@@ -73,7 +74,8 @@ class NotificationsScreen extends StatelessWidget {
   }
 
   // Tapping a row (1 Oct 2026): a message opens that chat, a follow opens
-  // the follower's profile. Comments/reactions don't navigate yet.
+  // the follower's profile, a comment/reaction opens that video
+  // (PostFromNotificationScreen in home_screen.dart).
   void _openNotification(BuildContext context, Map<String, dynamic> data) {
     final String type = data['type'] ?? '';
     final String fromId = (data['fromId'] as String?) ?? '';
@@ -87,6 +89,36 @@ class NotificationsScreen extends StatelessWidget {
             otherUserName: (data['fromName'] as String?) ?? 'User',
             otherUserPhoto: (data['fromPhoto'] as String?) ?? '',
           ),
+        ),
+      );
+    } else if (type == 'comment' || type == 'reaction') {
+      final String postId = (data['postId'] as String?) ?? '';
+      if (postId.isEmpty) return;
+      Navigator.push(
+        context,
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 380),
+          reverseTransitionDuration: const Duration(milliseconds: 260),
+          pageBuilder: (_, __, ___) => PostFromNotificationScreen(
+            postId: postId,
+            fromId: fromId,
+            fromName: (data['fromName'] as String?) ?? 'Someone',
+            fromPhoto: (data['fromPhoto'] as String?) ?? '',
+            type: type,
+            text: (data['text'] as String?) ?? '',
+          ),
+          // Grows up out of the tapped row's area with a fade.
+          transitionsBuilder: (_, animation, __, child) {
+            final curved =
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+            return FadeTransition(
+              opacity: curved,
+              child: ScaleTransition(
+                scale: Tween(begin: 0.92, end: 1.0).animate(curved),
+                child: child,
+              ),
+            );
+          },
         ),
       );
     } else if (type == 'follow') {

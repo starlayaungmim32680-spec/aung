@@ -14,7 +14,8 @@
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
 > message reactions (`chat_delivery_service.dart`); AGP 8.9.1 → 8.11.1;
 > chat message push (notification + "Delivered" with Fly closed) and
-> tappable in-app notifications._
+> tappable in-app notifications; comment/reaction notifications open the
+> video (`PostFromNotificationScreen`)._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -1092,8 +1093,22 @@ position)` — Android drops the video surface in the background and a
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list. Rows are
   tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
-  opens the follower's profile (`_openNotification`). Comment/reaction
-  rows don't navigate yet (would need a single-post viewer).
+  opens the follower's profile, a comment/reaction (they carry `postId`)
+  opens `PostFromNotificationScreen` (home_screen.dart, fade+scale route)
+  (`_openNotification`).
+- `PostFromNotificationScreen` (in `home_screen.dart`, **1 Oct 2026,
+  confirmed**) — reads `posts/{postId}` once (Future in a `late final`);
+  while loading shows the notifier's photo in a Fly-gradient ring + their
+  comment/reaction (not a bare spinner); deleted/hidden/not-ready post →
+  "This video is no longer available". Plays one `_VideoPostItem` with
+  new params: `openCommentsOnStart` + `highlightCommentFrom/Text`
+  (comment) or `burstEmojiOnStart` (reaction: `_spawnReactionBurst`, 9
+  flying emojis + light haptic), fired 700ms after mount. A glass
+  (blurred) banner "X commented: …" / "X reacted 😆 …" slides in and hides
+  after ~4s. `_CommentsSheet` got `highlightUserId/highlightText`: the
+  matching comment (newest from that user, same text if possible) is
+  wrapped in `_CommentSpotlight` — scrolls into view and a rotating
+  pink→purple→blue sweep-gradient border glows ~3.5s, then fades.
 - `notification_service.dart` — flutter_local_notifications wrapper;
   `registerAndSaveToken()` saves the device's `fcmToken` onto the user's
   Firestore doc.

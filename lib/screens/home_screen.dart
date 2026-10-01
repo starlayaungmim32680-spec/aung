@@ -1706,6 +1706,13 @@ class _VideoPostItem extends StatefulWidget {
   // longer eats into the video's height. Left null inside that fullscreen
   // screen itself, so tapping there behaves normally (play/pause).
   final VoidCallback? onTapToExpand;
+  // Opened from a notification (PostFromNotificationScreen, 1 Oct 2026):
+  // open the comments right away (spotlighting [highlightCommentFrom]'s
+  // comment), and/or burst [burstEmojiOnStart] over the video.
+  final bool openCommentsOnStart;
+  final String? highlightCommentFrom;
+  final String? highlightCommentText;
+  final String? burstEmojiOnStart;
 
   const _VideoPostItem({
     super.key,
@@ -1727,6 +1734,10 @@ class _VideoPostItem extends StatefulWidget {
     this.textOverlays = const [],
     this.effectsBaked = false,
     this.onTapToExpand,
+    this.openCommentsOnStart = false,
+    this.highlightCommentFrom,
+    this.highlightCommentText,
+    this.burstEmojiOnStart,
   });
 
   @override
@@ -1814,6 +1825,34 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
     _initializeVideo();
     _recordView();
+    if (widget.openCommentsOnStart || widget.burstEmojiOnStart != null) {
+      // A beat after the screen slides in, so it reads as a reveal.
+      Future.delayed(const Duration(milliseconds: 700), () {
+        if (!mounted) return;
+        final String? emoji = widget.burstEmojiOnStart;
+        if (emoji != null && emoji.isNotEmpty) _spawnReactionBurst(emoji);
+        if (widget.openCommentsOnStart) _openComments();
+      });
+    }
+  }
+
+  // A fountain of the same reaction (opening a "reacted to your video"
+  // notification) - several emojis at different sizes, drifts and delays.
+  void _spawnReactionBurst(String emoji) {
+    final Random rnd = Random();
+    final int base = DateTime.now().microsecondsSinceEpoch;
+    for (int i = 0; i < 9; i++) {
+      _flyingEmojis.add(_FlyingEmoji(
+        id: base + i,
+        emoji: emoji,
+        startX: -rnd.nextDouble() * 70,
+        horizontalDrift: (rnd.nextDouble() * 60) - 30,
+        size: 26 + rnd.nextDouble() * 24,
+        delayMs: i * 110,
+      ));
+    }
+    setState(() {});
+    HapticFeedback.lightImpact();
   }
 
   @override
@@ -2952,6 +2991,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
       builder: (context) => _CommentsSheet(
         postId: widget.postId,
         ownerId: widget.userId,
+        highlightUserId: widget.highlightCommentFrom,
+        highlightText: widget.highlightCommentText,
       ),
     );
   }
@@ -4294,8 +4335,17 @@ int _visibleCommentCount(List<QueryDocumentSnapshot> docs) {
 class _CommentsSheet extends StatefulWidget {
   final String postId;
   final String ownerId;
+  // Opened from a comment notification: that person's comment (matching
+  // [highlightText] when possible) gets a short glowing spotlight.
+  final String? highlightUserId;
+  final String? highlightText;
 
-  const _CommentsSheet({required this.postId, required this.ownerId});
+  const _CommentsSheet({
+    required this.postId,
+    required this.ownerId,
+    this.highlightUserId,
+    this.highlightText,
+  });
 
   @override
   State<_CommentsSheet> createState() => _CommentsSheetState();
@@ -4874,12 +4924,30 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   );
                 }
 
+                // The comment the notification was about (newest first, so
+                // the first match is the latest one from that person).
+                int spotlightIndex = -1;
+                final String? hlUser = widget.highlightUserId;
+                if (hlUser != null && hlUser.isNotEmpty) {
+                  final String hlText = (widget.highlightText ?? '').trim();
+                  spotlightIndex = comments.indexWhere((d) {
+                    final m = d.data() as Map<String, dynamic>;
+                    return m['userId'] == hlUser &&
+                        (hlText.isEmpty ||
+                            (m['text'] ?? '').toString().trim() == hlText);
+                  });
+                  if (spotlightIndex < 0) {
+                    spotlightIndex = comments.indexWhere((d) =>
+                        (d.data() as Map<String, dynamic>)['userId'] == hlUser);
+                  }
+                }
+
                 return ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   itemCount: comments.length,
                   itemBuilder: (context, index) {
                     final doc = comments[index];
-                    return _CommentTile(
+                    final Widget tile = _CommentTile(
                       // Keyed by doc id so each tile keeps its own state
                       // (open replies, reply stream) when comments are
                       // added, hidden or deleted above it.
@@ -4892,6 +4960,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                       onReply: _startReply,
                       onReact: _openReactionPicker,
                       onOptions: _showCommentOptions,
+                    );
+                    if (index != spotlightIndex) return tile;
+                    return _CommentSpotlight(
+                      key: ValueKey('spotlight_${doc.id}'),
+                      child: tile,
                     );
                   },
                 );
@@ -6652,6 +6725,431 @@ class _PopInLikeBadgeState extends State<_PopInLikeBadge>
           color: Colors.white,
           size: widget.diameter * 0.5,
         ),
+      ),
+    );
+  }
+}
+
+// A soft Fly-gradient glow that sweeps around a comment for a few seconds
+// and then fades away - used when a comment notification opens the sheet,
+// so your eye lands on the right comment. Also scrolls it into view.
+class _CommentSpotlight extends StatefulWidget {
+  final Widget child;
+
+  const _CommentSpotlight({super.key, required this.child});
+
+  @override
+  State<_CommentSpotlight> createState() => _CommentSpotlightState();
+}
+
+class _CommentSpotlightState extends State<_CommentSpotlight>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _sweep = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 450),
+        curve: Curves.easeOutCubic,
+        alignment: 0.25,
+      );
+    });
+    Future.delayed(const Duration(milliseconds: 3600), () {
+      if (mounted) setState(() => _visible = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sweep.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      child: Stack(
+        children: [
+          // The glow layer fades out on its own; the comment stays put.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: _visible ? 1 : 0,
+                duration: const Duration(milliseconds: 700),
+                onEnd: () {
+                  if (!_visible) _sweep.stop();
+                },
+                child: AnimatedBuilder(
+                  animation: _sweep,
+                  builder: (context, _) => Container(
+                    padding: const EdgeInsets.all(1.6),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      gradient: SweepGradient(
+                        transform: GradientRotation(_sweep.value * 2 * pi),
+                        colors: const [
+                          Color(0xFFFF4B6E),
+                          Color(0xFF9C4DFF),
+                          Color(0xFF3A8DFF),
+                          Color(0xFFFF4B6E),
+                        ],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color:
+                              const Color(0xFF9C4DFF).withValues(alpha: 0.35),
+                          blurRadius: 18,
+                        ),
+                      ],
+                    ),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1626),
+                        borderRadius: BorderRadius.circular(14.5),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          widget.child,
+        ],
+      ),
+    );
+  }
+}
+
+// Opens the video a comment/reaction notification is about (1 Oct 2026).
+// Fly's own touches on top of the usual "open the post":
+//  - while it loads, the person who did it greets you (their photo in a
+//    pulsing Fly ring + what they said) instead of a bare spinner;
+//  - a glass banner slides in saying who did what, then tucks away;
+//  - a reaction bursts that emoji over the video; a comment opens the
+//    comments with that comment spotlighted.
+class PostFromNotificationScreen extends StatefulWidget {
+  final String postId;
+  final String fromId;
+  final String fromName;
+  final String fromPhoto;
+  final String type; // 'comment' or 'reaction'
+  final String text; // the comment text, or the reaction emoji
+
+  const PostFromNotificationScreen({
+    super.key,
+    required this.postId,
+    required this.fromId,
+    required this.fromName,
+    required this.fromPhoto,
+    required this.type,
+    required this.text,
+  });
+
+  @override
+  State<PostFromNotificationScreen> createState() =>
+      _PostFromNotificationScreenState();
+}
+
+class _PostFromNotificationScreenState
+    extends State<PostFromNotificationScreen> {
+  late final Future<DocumentSnapshot> _postFuture =
+      FirebaseFirestore.instance.collection('posts').doc(widget.postId).get();
+  bool _bannerShown = false;
+  Timer? _bannerTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WakelockPlus.enable();
+  }
+
+  @override
+  void dispose() {
+    _bannerTimer?.cancel();
+    WakelockPlus.disable();
+    super.dispose();
+  }
+
+  void _showBannerOnce() {
+    if (_bannerTimer != null) return;
+    _bannerTimer = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted) return;
+      setState(() => _bannerShown = true);
+      _bannerTimer = Timer(const Duration(milliseconds: 4200), () {
+        if (mounted) setState(() => _bannerShown = false);
+      });
+    });
+  }
+
+  String get _actionText => widget.type == 'reaction'
+      ? 'reacted ${widget.text} to your video'
+      : 'commented: ${widget.text}';
+
+  Widget _avatar(double radius) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF), Color(0xFF3A8DFF)],
+        ),
+      ),
+      child: CircleAvatar(
+        radius: radius,
+        backgroundColor: Colors.grey[850],
+        backgroundImage: widget.fromPhoto.isNotEmpty
+            ? CachedNetworkImageProvider(widget.fromPhoto)
+            : null,
+        child: widget.fromPhoto.isEmpty
+            ? Text(
+                widget.fromName.isNotEmpty
+                    ? widget.fromName[0].toUpperCase()
+                    : '?',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: radius * 0.8,
+                ),
+              )
+            : null,
+      ),
+    );
+  }
+
+  Widget _backButton() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.4),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.arrow_back, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Loading: the person greets you instead of a plain spinner.
+  Widget _intro() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.85, end: 1.0),
+              duration: const Duration(milliseconds: 900),
+              curve: Curves.elasticOut,
+              builder: (context, s, child) =>
+                  Transform.scale(scale: s, child: child),
+              child: _avatar(42),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              widget.fromName,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Text(
+                widget.type == 'reaction'
+                    ? 'reacted ${widget.text} to your video'
+                    : '“${widget.text}”',
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 15),
+              ),
+            ),
+            const SizedBox(height: 26),
+            const SizedBox(
+              width: 120,
+              child: LinearProgressIndicator(
+                minHeight: 3,
+                color: Color(0xFF9C4DFF),
+                backgroundColor: Colors.white12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _unavailable() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.videocam_off_outlined, color: Colors.grey[600], size: 56),
+          const SizedBox(height: 14),
+          const Text(
+            'This video is no longer available',
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'It may have been deleted.',
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+          const SizedBox(height: 20),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Go back',
+                style: TextStyle(color: Color(0xFF9C4DFF))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Glass banner: who did what. Slides in, then tucks itself away.
+  Widget _banner() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(56, 8, 12, 0),
+        child: AnimatedSlide(
+          offset: _bannerShown ? Offset.zero : const Offset(0, -1.6),
+          duration: const Duration(milliseconds: 420),
+          curve: _bannerShown ? Curves.easeOutBack : Curves.easeIn,
+          child: AnimatedOpacity(
+            opacity: _bannerShown ? 1 : 0,
+            duration: const Duration(milliseconds: 300),
+            child: GestureDetector(
+              onTap: () => setState(() => _bannerShown = false),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(6, 6, 14, 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.15)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _avatar(14),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: RichText(
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            text: TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: widget.fromName,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: ' $_actionText',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: FutureBuilder<DocumentSnapshot>(
+        future: _postFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return Stack(children: [_intro(), _backButton()]);
+          }
+          final Map<String, dynamic>? post =
+              snapshot.data?.data() as Map<String, dynamic>?;
+          final String videoUrl = (post?['videoUrl'] as String?) ?? '';
+          if (snapshot.hasError ||
+              post == null ||
+              videoUrl.isEmpty ||
+              !isVideoVisibleTo(post, myId)) {
+            return Stack(children: [_unavailable(), _backButton()]);
+          }
+          _showBannerOnce();
+          final bool isReaction = widget.type == 'reaction';
+          return Stack(
+            children: [
+              _VideoPostItem(
+                key: ValueKey(widget.postId),
+                postId: widget.postId,
+                userId: post['userId'] ?? '',
+                videoUrl: videoUrl,
+                caption: post['caption'] ?? '',
+                userEmail: post['userEmail'] ?? 'Unknown user',
+                reactions:
+                    (post['reactions'] as Map<String, dynamic>?) ?? const {},
+                videoType: (post['videoType'] as String?) ?? 'short',
+                videoSpeed: ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+                filterType: (post['filterType'] as String?) ?? 'none',
+                textOverlays: ((post['textOverlays'] as List<dynamic>?)
+                        ?.map((m) =>
+                            TextOverlayData.fromMap(m as Map<String, dynamic>))
+                        .toList()) ??
+                    const [],
+                effectsBaked: post['effectsBaked'] as bool? ?? false,
+                onVideoEnd: () {},
+                openCommentsOnStart: !isReaction,
+                highlightCommentFrom: isReaction ? null : widget.fromId,
+                highlightCommentText: isReaction ? null : widget.text,
+                burstEmojiOnStart: isReaction ? widget.text : null,
+              ),
+              _backButton(),
+              _banner(),
+            ],
+          );
+        },
       ),
     );
   }
