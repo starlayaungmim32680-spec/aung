@@ -64,6 +64,25 @@ class ChatDeliveryService {
     );
   }
 
+  /// Marks the other person's unseen messages in [chatId] as delivered.
+  /// Used by the background push handler (main.dart) when Fly is closed -
+  /// there the signed-in user is restored from disk, so wait for it.
+  static Future<void> markChatDelivered(String chatId) async {
+    User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      try {
+        user = await FirebaseAuth.instance
+            .authStateChanges()
+            .firstWhere((u) => u != null)
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        return;
+      }
+    }
+    if (user == null) return;
+    await instance._markDelivered(chatId, user.uid);
+  }
+
   Future<void> _markDelivered(String chatId, String myId) async {
     final List<String> ids = chatId.split('_');
     if (ids.length != 2 || !ids.contains(myId)) return;

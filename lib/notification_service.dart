@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,6 +12,22 @@ class NotificationService {
       FlutterLocalNotificationsPlugin();
 
   static bool _initialized = false;
+  // The plugin itself is set up (in this isolate) - separate from
+  // _initialized, which also covers the permission prompts.
+  static bool _pluginReady = false;
+
+  // A chat the person asked to open by tapping a message notification:
+  // {'userId', 'name', 'photo'} of the other person. MainNavigationScreen
+  // listens to this and opens that chat, then sets it back to null.
+  static final ValueNotifier<Map<String, String>?> pendingChat =
+      ValueNotifier<Map<String, String>?>(null);
+
+  // One notification per conversation (like Messenger): a newer message
+  // from the same person replaces the older one instead of stacking.
+  static int chatNotificationId(String chatId) => chatId.hashCode & 0x7ffffff0;
+
+  static const AndroidInitializationSettings _androidInit =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
 
   // Fixed ID for the incoming-call notification so show()/cancel() always
   // target the same one.
@@ -24,14 +42,25 @@ class NotificationService {
   static Future<void> init() async {
     if (_initialized) return;
 
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-
     const InitializationSettings settings = InitializationSettings(
-      android: androidSettings,
+      android: _androidInit,
     );
 
-    await _plugin.initialize(settings);
+    await _plugin.initialize(
+      settings,
+      // Tapped while Fly is running (foreground or background).
+      onDidReceiveNotificationResponse: (response) =>
+          _openChatFromPayload(response.payload),
+    );
+    _pluginReady = true;
+
+    // Tapped while Fly was fully closed - the tap is what started the app.
+    try {
+      final launch = await _plugin.getNotificationAppLaunchDetails();
+      if (launch?.didNotificationLaunchApp == true) {
+        _openChatFromPayload(launch!.notificationResponse?.payload);
+      }
+    } catch (_) {}
 
     final AndroidFlutterLocalNotificationsPlugin? androidPlugin =
         _plugin.resolvePlatformSpecificImplementation();
@@ -48,30 +77,94 @@ class NotificationService {
     _initialized = true;
   }
 
-  // Shows a notification with the given title and body
+  static void _openChatFromPayload(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    try {
+      final Map<String, dynamic> data =
+          jsonDecode(payload) as Map<String, dynamic>;
+      final String userId = (data['userId'] as String?) ?? '';
+      if (userId.isEmpty) return;
+      pendingChat.value = {
+        'userId': userId,
+        'name': (data['name'] as String?) ?? 'User',
+        'photo': (data['photo'] as String?) ?? '',
+      };
+    } catch (_) {}
+  }
+
+  // Shows a chat message notification. With [chatId] it replaces that
+  // conversation's previous notification; with [senderId] a tap opens the
+  // chat. Works from the background push isolate too (see main.dart) -
+  // it sets the plugin up on its own there, without asking for permission.
   static Future<void> showMessageNotification({
     required String title,
     required String body,
+    String? chatId,
+    String? senderId,
+    String? senderPhoto,
   }) async {
-    const AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      'chat_messages',
-      'Chat Messages',
-      channelDescription: 'Notifications for new chat messages',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@drawable/ic_notification',
-    );
+    try {
+      if (!_pluginReady) {
+        await _plugin.initialize(
+          const InitializationSettings(android: _androidInit),
+        );
+        _pluginReady = true;
+      }
 
-    const NotificationDetails details =
-        NotificationDetails(android: androidDetails);
+      final AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'chat_messages',
+        'Chat Messages',
+        channelDescription: 'Notifications for new chat messages',
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.message,
+        icon: '@drawable/ic_notification',
+        styleInformation: BigTextStyleInformation(body),
+      );
 
-    await _plugin.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title,
-      body,
-      details,
-    );
+      final NotificationDetails details =
+          NotificationDetails(android: androidDetails);
+
+      await _plugin.show(
+        chatId != null && chatId.isNotEmpty
+            ? chatNotificationId(chatId)
+            : DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        title,
+        body,
+        details,
+        payload: senderId == null || senderId.isEmpty
+            ? null
+            : jsonEncode({
+                'userId': senderId,
+                'name': title,
+                'photo': senderPhoto ?? '',
+              }),
+      );
+    } catch (_) {
+      // A notification failing must never break anything else.
+    }
+  }
+
+  // Whether this conversation's notification is in the tray right now.
+  static Future<bool> isChatNotificationShowing(String chatId) async {
+    try {
+      final AndroidFlutterLocalNotificationsPlugin? android =
+          _plugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      final active = await android?.getActiveNotifications();
+      final int id = chatNotificationId(chatId);
+      return active?.any((n) => n.id == id) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Removes a conversation's notification (e.g. when that chat is opened).
+  static Future<void> cancelChatNotification(String chatId) async {
+    try {
+      await _plugin.cancel(chatNotificationId(chatId));
+    } catch (_) {}
   }
 
   // Shows a full-screen incoming-call notification. If the phone screen is

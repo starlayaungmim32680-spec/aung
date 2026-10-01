@@ -15,6 +15,7 @@ import 'video_call_screen.dart';
 import '../call_kit_service.dart';
 import 'call_push_service.dart';
 import '../block_service.dart';
+import '../notification_service.dart';
 import 'presence_badge.dart';
 import 'worker_auth.dart';
 
@@ -28,6 +29,11 @@ const String _bunnyChatCdnHostname = 'fly-images-aungdev756617.b-cdn.net';
 // `reactions: {<uid>: emoji}` - each person has at most one, and the
 // Firestore rules only let you change your own.
 const List<String> _kMessageReactions = ['👍', '❤️', '😆', '😮', '😢', '😡'];
+
+// The chat thread currently on screen (its chatId), or null. Message
+// alerts for that conversation are skipped while you're already looking
+// at it (main_navigation_screen.dart), like Messenger.
+String? currentOpenChatId;
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -458,6 +464,9 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   @override
   void initState() {
     super.initState();
+    currentOpenChatId = _chatId;
+    // Opening the chat clears its notification from the tray.
+    NotificationService.cancelChatNotification(_chatId);
     final chatDoc = FirebaseFirestore.instance.collection('chats').doc(_chatId);
     _messagesStream = chatDoc
         .collection('messages')
@@ -537,6 +546,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   @override
   void dispose() {
+    if (currentOpenChatId == _chatId) currentOpenChatId = null;
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
     _typingTimer?.cancel();
     _setActivity(null);
@@ -563,7 +573,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   }
 
   // Adds an in-app notification for the other person (new message, or a
-  // reaction to one of their messages).
+  // reaction to one of their messages) and pushes it to their phone, so it
+  // shows up - and turns "Delivered" - even when Fly is closed there.
   Future<void> _notifyOther(String text) async {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -575,6 +586,14 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             ? myData!['displayName']
             : 'Someone';
     final String myPhoto = (myData?['photoUrl'] as String?) ?? '';
+
+    unawaited(sendChatPush(
+      receiverId: widget.otherUserId,
+      chatId: _chatId,
+      senderName: myName,
+      senderPhoto: myPhoto,
+      text: text,
+    ));
 
     await FirebaseFirestore.instance
         .collection('users')

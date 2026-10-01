@@ -18,6 +18,12 @@
 //                         the callee's phone to stop ringing because the
 //                         caller hung up first (works even if Fly was
 //                         swiped away on that phone).
+//                         With `type: 'chat_message'` (Oct 2026) it wakes
+//                         the receiver's phone for a new chat message:
+//                         the app shows the notification and marks the
+//                         message "Delivered" even if Fly is fully closed.
+//                         The sender must be one of the two people in
+//                         `chatId` (checked against their verified uid).
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -106,7 +112,7 @@ export default {
     }
 
     if (path === '/call-push') {
-      return handleCallPush(body, env);
+      return handleCallPush(body, env, caller);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -687,14 +693,48 @@ async function sha256Hex(input) {
     .join('');
 }
 
-async function handleCallPush(body, env) {
+// Builds the FCM data payload for a chat message push, or returns a
+// Response if the request isn't allowed. FCM data must stay under 4 KB, so
+// text and names are trimmed.
+function buildChatPushData(body, caller) {
+  const { fcmToken, chatId, senderName, senderPhoto, text } = body;
+  if (!fcmToken || !chatId || !senderName) {
+    return new Response('fcmToken, chatId and senderName are required', {
+      status: 400,
+    });
+  }
+  // Only a verified user who is one of the two people in the chat may
+  // send this - nobody can push a fake message "from" someone else.
+  const ids = String(chatId).split('_');
+  if (!caller || !caller.uid || ids.length !== 2 || !ids.includes(caller.uid)) {
+    return new Response('Not allowed for this chat', { status: 403 });
+  }
+  return {
+    type: 'chat_message',
+    chatId: String(chatId),
+    senderId: caller.uid,
+    senderName: String(senderName).slice(0, 80),
+    senderPhoto: String(senderPhoto || '').slice(0, 500),
+    text: String(text || '').slice(0, 300),
+  };
+}
+
+async function handleCallPush(body, env, caller) {
   const { fcmToken, callerName, callerPhoto, roomName, callerId, isVideo } =
       body;
-  // 'incoming_call' (default, so older app builds keep working unchanged)
-  // or 'call_cancelled' (the caller hung up before the callee answered).
-  const type = body.type === 'call_cancelled' ? 'call_cancelled' : 'incoming_call';
+  // 'incoming_call' (default, so older app builds keep working unchanged),
+  // 'call_cancelled' (the caller hung up before the callee answered) or
+  // 'chat_message' (a new chat message - see buildChatPushData).
+  const type =
+    body.type === 'call_cancelled' || body.type === 'chat_message'
+      ? body.type
+      : 'incoming_call';
 
-  if (type === 'call_cancelled') {
+  let chatData = null;
+  if (type === 'chat_message') {
+    chatData = buildChatPushData(body, caller);
+    if (chatData instanceof Response) return chatData;
+  } else if (type === 'call_cancelled') {
     if (!fcmToken || !roomName) {
       return new Response('fcmToken and roomName are required', {
         status: 400,
@@ -709,7 +749,9 @@ async function handleCallPush(body, env) {
   // A cancel only needs the room name - the phone just stops ringing, so
   // there's nothing to show and no sound to play.
   const data =
-    type === 'call_cancelled'
+    type === 'chat_message'
+      ? chatData
+      : type === 'call_cancelled'
       ? {
           type,
           roomName: String(roomName),
@@ -742,9 +784,10 @@ async function handleCallPush(body, env) {
             token: fcmToken,
             data,
             android: {
-              // High priority for both types: a cancel that arrives late
+              // High priority for every type: a cancel that arrives late
               // (normal priority can be held back while the phone dozes)
-              // would leave the phone ringing for nothing.
+              // would leave the phone ringing for nothing, and a chat
+              // message should show up right away like Messenger's.
               priority: 'high',
             },
             apns: {

@@ -94,3 +94,45 @@ Future<void> sendCallCancelledPush({required String roomName}) async {
     // Best-effort, as noted above.
   }
 }
+
+// Wakes the other person's phone for a new chat message (1 Oct 2026), so
+// they get a notification and the message turns "Delivered" even when Fly
+// is fully closed there - see main.dart's background handler. The Worker
+// checks that I'm one of the two people in [chatId]. Best-effort: if it
+// fails, an open app still shows the message through its own Firestore
+// listener.
+Future<void> sendChatPush({
+  required String receiverId,
+  required String chatId,
+  required String senderName,
+  required String senderPhoto,
+  required String text,
+}) async {
+  try {
+    final receiverDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(receiverId)
+        .get();
+    final String? fcmToken = receiverDoc.data()?['fcmToken'] as String?;
+    if (fcmToken == null || fcmToken.isEmpty) return;
+
+    final Uri uri = Uri.parse('$kTokenServerUrl/call-push');
+    await http.post(
+      uri,
+      headers: {
+        ...await workerAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'type': 'chat_message',
+        'fcmToken': fcmToken,
+        'chatId': chatId,
+        'senderName': senderName,
+        'senderPhoto': senderPhoto,
+        'text': text,
+      }),
+    );
+  } catch (_) {
+    // Best-effort, as noted above.
+  }
+}

@@ -47,6 +47,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   StreamSubscription<QuerySnapshot>? _chatSubscription;
   bool _firstSnapshot = true;
+  // chatId -> lastMessageAt already alerted. A chat doc also changes when
+  // someone CALLS (lastCallAt), which used to re-alert the old message.
+  final Map<String, Timestamp> _alertedMessageAt = {};
 
   // Incoming call listener
   StreamSubscription<QuerySnapshot>? _callSubscription;
@@ -134,6 +137,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _maybeShowOnboardingOnce();
     _listenForNewMessages();
     _listenForIncomingCalls();
+    // Tapping a message notification opens that chat.
+    NotificationService.pendingChat.addListener(_openPendingChat);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingChat());
     CoinService.instance.awardDailyLogin();
     navigateToHomeSignal.addListener(_onNavigateToHomeSignal);
     // Call-reliability permissions (battery optimization, overlay,
@@ -247,34 +253,63 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         .listen((snapshot) async {
       if (_firstSnapshot) {
         _firstSnapshot = false;
+        for (final doc in snapshot.docs) {
+          final Timestamp? at = (doc.data()
+              as Map<String, dynamic>?)?['lastMessageAt'] as Timestamp?;
+          if (at != null) _alertedMessageAt[doc.id] = at;
+        }
         return;
       }
 
       for (final change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.modified) {
-          final data = change.doc.data() as Map<String, dynamic>?;
-          if (data == null) continue;
+        if (change.type == DocumentChangeType.removed) continue;
+        final data = change.doc.data() as Map<String, dynamic>?;
+        if (data == null) continue;
 
-          final String lastSenderId = data['lastSenderId'] ?? '';
-          final String lastMessage = data['lastMessage'] ?? '';
+        final String chatId = change.doc.id;
+        final String lastSenderId = data['lastSenderId'] ?? '';
+        final String lastMessage = data['lastMessage'] ?? '';
+        final Timestamp? at = data['lastMessageAt'] as Timestamp?;
 
-          if (lastSenderId.isNotEmpty && lastSenderId != myId) {
-            // Play the in-app notification sound
-            _playDing();
+        // Only a genuinely NEW message - not a call, not the same one again.
+        if (at == null || _alertedMessageAt[chatId] == at) continue;
+        _alertedMessageAt[chatId] = at;
+        if (lastSenderId.isEmpty || lastSenderId == myId) continue;
+        if (BlockService.instance.isHidden(lastSenderId)) continue;
+        // Already reading this conversation.
+        if (currentOpenChatId == chatId) continue;
 
-            final senderDoc = await FirebaseFirestore.instance
-                .collection('users')
-                .doc(lastSenderId)
-                .get();
-            final senderName =
-                (senderDoc.data()?['displayName'] as String?) ?? 'New message';
-
-            await NotificationService.showMessageNotification(
-              title: senderName,
-              body: lastMessage,
-            );
+        final bool inForeground =
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+        if (inForeground) {
+          // Play the in-app notification sound
+          _playDing();
+        } else {
+          // In the background the chat push (main.dart) shows it. Wait a
+          // moment and only step in if it didn't (no token, push failed),
+          // so the person never gets the same alert twice.
+          await Future.delayed(const Duration(seconds: 4));
+          if (await NotificationService.isChatNotificationShowing(chatId)) {
+            continue;
           }
         }
+
+        final senderDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(lastSenderId)
+            .get();
+        final senderName =
+            (senderDoc.data()?['displayName'] as String?) ?? 'New message';
+        final String senderPhoto =
+            (senderDoc.data()?['photoUrl'] as String?) ?? '';
+
+        await NotificationService.showMessageNotification(
+          title: senderName,
+          body: lastMessage,
+          chatId: chatId,
+          senderId: lastSenderId,
+          senderPhoto: senderPhoto,
+        );
       }
     });
   }
@@ -440,7 +475,32 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _callSubscription?.cancel();
     _dingPlayer.dispose();
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
+    NotificationService.pendingChat.removeListener(_openPendingChat);
     super.dispose();
+  }
+
+  // Opens the chat whose notification was tapped (see NotificationService).
+  void _openPendingChat() {
+    final Map<String, String>? chat = NotificationService.pendingChat.value;
+    if (chat == null || !mounted) return;
+    NotificationService.pendingChat.value = null;
+    final String userId = chat['userId'] ?? '';
+    if (userId.isEmpty || BlockService.instance.isHidden(userId)) return;
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId != null) {
+      final List<String> ids = [myId, userId]..sort();
+      // Already looking at it - nothing to do.
+      if (currentOpenChatId == '${ids[0]}_${ids[1]}') return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatThreadScreen(
+          otherUserId: userId,
+          otherUserName: chat['name'] ?? 'User',
+          otherUserPhoto: chat['photo'] ?? '',
+        ),
+      ),
+    );
   }
 
   // Shows Flyla's onboarding tour to a brand-new user exactly once (same

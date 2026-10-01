@@ -12,7 +12,9 @@
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
-> message reactions (`chat_delivery_service.dart`); AGP 8.9.1 → 8.11.1._
+> message reactions (`chat_delivery_service.dart`); AGP 8.9.1 → 8.11.1;
+> chat message push (notification + "Delivered" with Fly closed) and
+> tappable in-app notifications._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -430,7 +432,12 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       in `main.dart`. Body field `type` (Sep 2026): omitted/`'incoming_call'`
       = ring (needs `callerName`); `'call_cancelled'` = stop ringing (needs
       only `fcmToken` + `roomName`). Defaulting to incoming keeps old app
-      builds working.
+      builds working. `'chat_message'` (1 Oct 2026, confirmed) = new chat
+      message (needs `fcmToken`, `chatId`, `senderName`; optional
+      `senderPhoto`, `text`); the Worker rejects it (403) unless the
+      verified caller uid is one of the two ids in `chatId`, sets
+      `senderId` to that uid itself, and trims text (300) / name (80) to
+      stay under FCM's 4 KB data limit.
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
@@ -663,8 +670,31 @@ issue if this comes up again.
   `lastSenderId` is the other person and `lastMessageAt` is new, it
   fetches their messages with `seen == false` (two equality filters, no
   composite index) and sets `delivered: true`. Only messages actually on
-  this phone get marked. Limitation: if the receiver's app is fully
-  closed it stays "Sent" until they open Fly (no chat push yet).
+  this phone get marked. `ChatDeliveryService.markChatDelivered(chatId)`
+  (static, waits up to 5s for the restored auth user) is what the
+  background push handler uses when Fly is closed.
+- **Chat message push (1 Oct 2026, confirmed on two phones)** — like the
+  call push. Sender: `chat_screen.dart`'s `_notifyOther()` (new message
+  AND reactions) calls `sendChatPush()` (`call_push_service.dart`) →
+  Worker `/call-push` `type: 'chat_message'` → FCM data message →
+  receiver's `firebaseMessagingBackgroundHandler` (`main.dart`, runs only
+  while Fly isn't in the foreground, including fully closed) shows the
+  notification and marks the chat delivered. Notifications use one id
+  per conversation (`NotificationService.chatNotificationId(chatId)`),
+  so a newer message replaces the older one; payload
+  `{userId,name,photo}` → tap sets `NotificationService.pendingChat` (also
+  from `getNotificationAppLaunchDetails` on a cold start) →
+  `MainNavigationScreen._openPendingChat` opens `ChatThreadScreen`.
+  `MainNavigationScreen._listenForNewMessages` (the in-app alert) now:
+  alerts only for a NEW `lastMessageAt` (a call's `lastCallAt` update
+  used to re-alert the old message), also on brand-new chat docs, skips
+  blocked people and the chat on screen (`currentOpenChatId`, a
+  top-level var in `chat_screen.dart`), dings only in the foreground,
+  and in the background waits 4s and shows its own notification only if
+  the push's isn't in the tray (`isChatNotificationShowing`) - no double
+  alerts. Opening a chat cancels its notification. Story replies
+  (`story_screen.dart`) don't send a push yet. vivo phones may need
+  Settings → Battery → Fly → allow background activity.
 - `video_disk_cache.dart` — `VideoDiskCache` singleton wrapping
   `flutter_cache_manager` (7-day stale period, max 60 cached videos). Used by
   `home_screen.dart`'s `_initializeVideo()` to check for/save a previously-
@@ -1060,7 +1090,10 @@ position)` — Android drops the video surface in the background and a
 - `screens/search_screen.dart`, `screens/translation_service.dart` — search
   and caption translation.
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
-- `screens/notifications_screen.dart` — notifications list.
+- `screens/notifications_screen.dart` — notifications list. Rows are
+  tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
+  opens the follower's profile (`_openNotification`). Comment/reaction
+  rows don't navigate yet (would need a single-post viewer).
 - `notification_service.dart` — flutter_local_notifications wrapper;
   `registerAndSaveToken()` saves the device's `fcmToken` onto the user's
   Firestore doc.

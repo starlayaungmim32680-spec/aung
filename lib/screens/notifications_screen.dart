@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../block_service.dart';
+import 'chat_screen.dart';
+import 'public_profile_screen.dart';
 
 // Shows the current user's notifications (reactions, comments, messages, follows)
 class NotificationsScreen extends StatelessWidget {
@@ -67,6 +69,33 @@ class NotificationsScreen extends StatelessWidget {
         return const Color(0xFF24D17E);
       default:
         return Colors.grey;
+    }
+  }
+
+  // Tapping a row (1 Oct 2026): a message opens that chat, a follow opens
+  // the follower's profile. Comments/reactions don't navigate yet.
+  void _openNotification(BuildContext context, Map<String, dynamic> data) {
+    final String type = data['type'] ?? '';
+    final String fromId = (data['fromId'] as String?) ?? '';
+    if (fromId.isEmpty) return;
+    if (type == 'message') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatThreadScreen(
+            otherUserId: fromId,
+            otherUserName: (data['fromName'] as String?) ?? 'User',
+            otherUserPhoto: (data['fromPhoto'] as String?) ?? '',
+          ),
+        ),
+      );
+    } else if (type == 'follow') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PublicProfileScreen(userId: fromId),
+        ),
+      );
     }
   }
 
@@ -157,6 +186,7 @@ class NotificationsScreen extends StatelessWidget {
                           ? Colors.transparent
                           : Colors.white.withOpacity(0.04),
                       child: ListTile(
+                        onTap: () => _openNotification(context, data),
                         leading: Stack(
                           children: [
                             CircleAvatar(

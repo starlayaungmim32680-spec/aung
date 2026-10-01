@@ -6,6 +6,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'firebase_options.dart';
 import 'notification_service.dart';
 import 'call_kit_service.dart';
+import 'chat_delivery_service.dart';
 import 'network_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
@@ -30,6 +31,13 @@ import 'screens/home_screen.dart' show flyRouteObserver;
 // stops the native ringing screen. That's the only thing that can stop it
 // when Fly was swiped away, since no Firestore listener is running then.
 // No Firebase setup is needed for that - it's a purely local CallKit call.
+//
+// And 'chat_message' (1 Oct 2026, see call_push_service.dart's
+// sendChatPush): shows the message notification and marks the message
+// "Delivered" - so both work even when Fly is fully closed. When Fly is
+// open, the push still arrives but this handler doesn't run (Android only
+// calls it while Fly isn't in the foreground), and MainNavigationScreen's
+// own listener shows the in-app alert instead.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final String? type = message.data['type'] as String?;
@@ -38,6 +46,25 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await CallKitService.dismissIncomingCall(
       message.data['roomName'] as String? ?? '',
     );
+    return;
+  }
+  if (type == 'chat_message') {
+    WidgetsFlutterBinding.ensureInitialized();
+    final String chatId = message.data['chatId'] as String? ?? '';
+    await NotificationService.showMessageNotification(
+      title: message.data['senderName'] as String? ?? 'New message',
+      body: message.data['text'] as String? ?? '',
+      chatId: chatId,
+      senderId: message.data['senderId'] as String?,
+      senderPhoto: message.data['senderPhoto'] as String?,
+    );
+    if (chatId.isNotEmpty) {
+      try {
+        await Firebase.initializeApp(
+            options: DefaultFirebaseOptions.currentPlatform);
+        await ChatDeliveryService.markChatDelivered(chatId);
+      } catch (_) {}
+    }
     return;
   }
   if (type != 'incoming_call') return;
