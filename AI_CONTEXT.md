@@ -15,7 +15,7 @@
 > message reactions (`chat_delivery_service.dart`); AGP 8.9.1 → 8.11.1;
 > chat message push (notification + "Delivered" with Fly closed) and
 > tappable in-app notifications; comment/reaction notifications open the
-> video (`PostFromNotificationScreen`)._
+> video (`PostFromNotificationScreen`); story replies push too._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -694,7 +694,8 @@ issue if this comes up again.
   and in the background waits 4s and shows its own notification only if
   the push's isn't in the tray (`isChatNotificationShowing`) - no double
   alerts. Opening a chat cancels its notification. Story replies
-  (`story_screen.dart`) don't send a push yet. vivo phones may need
+  (`story_screen.dart`'s `_sendReply`) send the same push too (1 Oct 2026,
+  confirmed) and are created with `delivered: false`. vivo phones may need
   Settings → Battery → Fly → allow background activity.
 - `video_disk_cache.dart` — `VideoDiskCache` singleton wrapping
   `flutter_cache_manager` (7-day stale period, max 60 cached videos). Used by

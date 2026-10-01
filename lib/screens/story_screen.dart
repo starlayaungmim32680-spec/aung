@@ -21,6 +21,7 @@ import 'local_video_cache.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
+import 'call_push_service.dart' show sendChatPush;
 import 'media_utils.dart' show cloudinaryThumbUrl;
 import '../block_service.dart';
 
@@ -1486,6 +1487,7 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
         'storyId': storyId,
         'storyThumb': storyThumb,
         'seen': false,
+        'delivered': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
       final String preview = '↩ Story reply: $text';
@@ -1505,6 +1507,15 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
           (myData?['displayName'] as String?)?.trim().isNotEmpty == true
               ? myData!['displayName']
               : 'Someone';
+      // Wakes the owner's phone like a normal chat message (1 Oct 2026):
+      // notification + "Delivered" even if Fly is closed there.
+      unawaited(sendChatPush(
+        receiverId: ownerId,
+        chatId: chatId,
+        senderName: myName,
+        senderPhoto: (myData?['photoUrl'] as String?) ?? '',
+        text: preview,
+      ));
       await FirebaseFirestore.instance
           .collection('users')
           .doc(ownerId)
