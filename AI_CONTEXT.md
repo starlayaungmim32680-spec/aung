@@ -12,7 +12,7 @@
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
-> message reactions (`chat_delivery_service.dart`)._
+> message reactions (`chat_delivery_service.dart`); AGP 8.9.1 → 8.11.1._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -587,7 +587,20 @@ cupertino_icons.
 
 ### Build toolchain (bleeding-edge but working)
 
-AGP 8.9.1, Gradle 9.1.0, JDK 25, compileSdk 36.
+AGP 8.11.1 (upgraded from 8.9.1 on 1 Oct 2026, confirmed — only the
+`com.android.application` version in `android/settings.gradle.kts`
+changed; Gradle 9.1.0 already met AGP 8.11's minimum of 8.13), Gradle
+9.1.0, JDK 25, compileSdk 36.
+⚠️ **Don't run `flutter upgrade` casually.** Builds warn that 11 plugins
+still apply the Kotlin Gradle Plugin (camera_android_camerax,
+device_info_plus, flutter_callkit_incoming, flutter_compress,
+flutter_webrtc, livekit_client, package_info_plus, proximity_sensor,
+share_plus, video_trimmer_2, wakelock_plus) and that "future versions of
+Flutter will fail to build" with them. Upgrade Flutter only after those
+plugins ship Built-in Kotlin versions (or be ready to roll back).
+Other build warnings (`source value 8 is obsolete`, deprecated API notes,
+`restricted method in java.lang.System`) come from plugins/Gradle and are
+harmless.
 ⚠️ Never edit gradle/dart/XML files with Notepad or PowerShell here-strings
 (they inject a BOM / strip characters). Use VS Code only.
 `.gitignore` ignores `/build/` and (since Sep 2026) `/android/build/`. Git on
@@ -1290,9 +1303,6 @@ others only see it once encoded (Bunny webhook).
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already
    built — removed 27 Sep 2026.)
-7. **Upgrade AGP 8.9.1 → at least 8.11.1** (`android/settings.gradle`) —
-   `flutter build` warns support for 8.9.1 "will soon be dropped". Do it as
-   its own small step and test a build, not mixed with a feature.
 
 When one of these is done, remove it from this list in the same commit.
 
