@@ -16,12 +16,19 @@
 > chat message push (notification + "Delivered" with Fly closed) and
 > tappable in-app notifications; comment/reaction notifications open the
 > video (`PostFromNotificationScreen`); story replies push too._
+> _2 Oct 2026: §2 and §7 rewritten as the exact working loop Ko wants
+> every new chat to follow._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
 > and back-button behavior, which were built but missing from this file._
 
-> ℹ️ **This file is long (~1,100 lines).** Some web-fetch tools return only a
+> 🧭 **New chat with Ko? Read §2 (who Ko is, how he likes to work) and
+> §7 (the exact step-by-step loop every task follows) before anything
+> else.** Ko asked (2 Oct 2026) that every new chat works exactly the way
+> the long Sep–Oct 2026 sessions did - §7 is that recipe.
+
+> ℹ️ **This file is long (~1,400 lines).** Some web-fetch tools return only a
 > short summary or a stale cached copy of it. If what you got has no
 > "Bunny Stream" section or no To-do list near the end, you did **not** get
 > the real file — fetch it again (or clone the repo) before relying on it.
@@ -64,7 +71,22 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
 ## 2. Owner & working style (please follow)
 
 - The owner is **Ko** and communicates in **Burmese**. Please reply in Burmese.
-  Ko addresses the assistant as "ဆရာ" (teacher).
+  Ko addresses the assistant as "ဆရာ" (teacher); call him "Ko". Keep the tone
+  warm and encouraging (he signs off with 🥰 - a 🥰 back is fine), short
+  paragraphs, simple words, bold for the key point. He often types fast with
+  typos - read for meaning, don't correct him.
+- When Ko asks **"ဘယ်လို အလုပ်လုပ်တာလဲ" (how does it work?)** about a planned
+  feature, explain it BEFORE coding: what happens today, what will change,
+  a small arrow flow (`A sends → Worker → FCM → B's phone`), an everyday
+  analogy if it helps (post office / postman / address), edge cases, which
+  files change, and whether rules/Worker change. Then ask "လုပ်မလား Ko?".
+  If he already said "let's do it", explain briefly and deliver the code in
+  the same reply.
+- For UI, Ko's standing request is \*\*"like Facebook/TikTok, but not identical
+  - cooler and prettier than them"\*\* (ပိုမိုက် ပိုလန်း). Add a Fly touch:
+    Fly gradient (#FF4B6E → #9C4DFF → #3A8DFF), glass/blur banners, small
+    spring/scale animations, haptics, friendly empty/error states - and say
+    in the reply exactly what is "extra" compared to Facebook.
 - **Always provide a FULL file rewrite** (the entire file, top to bottom), never
   a diff or partial snippet.
 - **All code comments and strings must be in English** (only chat replies are in
@@ -1357,36 +1379,93 @@ When one of these is done, remove it from this list in the same commit.
 
 ---
 
-## 7. How to help (workflow)
+## 7. How to help (workflow) — the exact loop Ko expects
 
-1. Read this file to understand the project.
-2. When Ko asks to change something, **fetch the current file(s)** from the raw
-   GitHub URL(s) so you edit the real, up-to-date code — don't rely on this
-   file's descriptions for exact code content, only for orientation. The
-   Cloudflare Worker's copy is at `cloudflare/livekit_token_worker.js` and
-   the rules at `firestore.rules` — both are deployed by hand, so confirm
-   with Ko that the repo copy matches what's live before editing (§4).
-3. For anything nontrivial (layout/rendering bugs, navigation, native Android
-   code, anything touching video playback or calls), prefer a short read-only
-   investigation and a stated plan before editing, and keep changes as small
-   and isolated as possible — this is how Ko prefers to work and de-risks
-   bleeding-edge-toolchain surprises. When a mechanism doesn't work as
-   expected (e.g. a third-party package silently failing), don't assume the
-   next attempt is right either — ask Ko to actually test before declaring it
-   fixed; today's Bunny upload work needed three attempts before one worked.
-4. Reply in Burmese with a **full-file rewrite** (English comments/strings).
-5. If a new collection/field is added, update **`firestore.rules`** and tell
-   Ko to paste + Publish it in the Firebase Console. If the Worker changed,
-   give him the full file to paste + Deploy. **In both cases, then walk him
-   through committing and pushing that same file** (see the "Keep deployed
-   code and the repo in sync" rule at the top of this file) — a deploy isn't
-   finished until the repo copy matches.
-6. After changes, remind Ko to run `flutter pub get` (if a dependency
-   changed), then **`flutter analyze` before building** (catches type/import
-   errors immediately instead of burning a full APK build cycle on them),
-   then `flutter build apk --release` (or `flutter run` for a quicker debug
-   loop), and once tested, walk him through `git add <specific files>`,
-   `git status`, `git commit -m "..."`, `git push` one step at a time.
-7. Keep this file itself updated after a significant batch of new features —
-   Ko has asked for this to be kept current so future sessions don't have to
-   rediscover the same context from scratch.
+This is how every task ran in the Sep–Oct 2026 sessions, and Ko asked
+(2 Oct 2026) that new chats keep doing it the same way.
+
+**0. Start of a session.** Ko says "အလုပ်စလိုက်ရအောင် ဆရာ" (let's start).
+Pull/clone the repo (`git pull`) so you edit the real latest code, then
+offer a short **numbered menu** of next tasks (from the To-do list in §6 /
+what's left from last time) and let him pick by number. Remind him of any
+time-critical item (e.g. Bunny recharge) first.
+
+**1. Understand before editing.** Read the real files (not this file's
+summary). For bugs, ask for a screenshot or a short screen recording - Ko
+sends them readily (videos: extract frames with ffmpeg and look). Ask
+precise either/or questions ("app fully closed, or in the background?",
+"new APK on BOTH phones?"). Don't guess-and-rebuild repeatedly: if a fix
+didn't work, find the real cause first (e.g. 1 Oct 2026: a "chat spinner"
+was actually one phone's network blocking Firestore - §6).
+
+**2. Deployed-by-hand files.** Before editing `cloudflare/livekit_token_worker.js`
+or `firestore.rules`, ask Ko whether he changed it in the dashboard since
+the last commit. If he isn't sure: have him open Cloudflare → Edit code
+(or Firebase → Rules), `Ctrl+A`/`Ctrl+C`, paste over the repo file in VS
+Code, save, then `git diff --ignore-cr-at-eol --stat <file>` - no output
+means identical. (He may also just paste the live code into chat.)
+
+**3. Deliver code.** Full-file rewrites, sent as files (one file card per
+changed file), English comments, Burmese reply. In the reply:
+
+- what was wrong / what changed, in plain Burmese, with ✅/⚠️ markers;
+- a small table **"file → where it goes"** (`fly\lib\`, `fly\lib\screens\`,
+  `fly\cloudflare\`, `fly\android\`). Ko replaces files by dragging in
+  File Explorer → Replace, or with `Copy-Item ... -Force`. Never Notepad
+  for .dart/.gradle/.kts/.xml (BOM); VS Code paste is fine;
+- Worker change → click-by-click Deploy steps (VS Code `Ctrl+A/C` → Cloudflare
+  Edit code `Ctrl+A/V` → Deploy, don't touch Secrets); rules change →
+  Firebase Console → Firestore Database → Rules → paste → Publish.
+
+**4. Analyze first, one command at a time.** Give
+`flutter analyze <only the changed files>` alone and ask for the output.
+Ko asked "run both at once?" - the answer is no: analyze first, build only
+after you've read it. When reading his output: say clearly "error မရှိပါဘူး ✅"
+or point at the real error. Pre-existing, harmless noise to ignore:
+`withOpacity` deprecations, `unnecessary_cast`, `use_build_context_synchronously`,
+`_CommentBubbleIcon` unused, and the `test\widget_test.dart` "MyApp isn't a
+class" error (old template test, doesn't affect the APK). Mention which
+new infos came from your own code if any.
+
+**5. Build + test checklist.** Then `flutter build apk --release`, install
+on **both** test phones (A and B, vivo), and give a numbered A/B test
+script with the exact expected result for each step ("B: close Fly from
+Recents → A sends → B gets 🔔 …, A shows ●✓ Delivered"). Mention vivo
+quirks (Settings → Battery → Fly → allow background activity) when push
+or background work is involved.
+
+**6. Ko confirms ("ဟုတ် အဆင်ပြေတယ် ဆရာ 🥰").** In that SAME reply, send the
+updated **AI_CONTEXT.md as a full file** (his standing rule) plus commit
+steps:
+
+- First verify the files really landed in the project - Ko's browser
+  sometimes saves straight into the project folder and sometimes not into
+  Downloads at all. Use a unique-line check, e.g.
+  `Select-String -Path AI_CONTEXT.md -Pattern "<a phrase only the new version has>"`
+  (and the same for the Worker/rules). If missing, find it with
+  `Get-ChildItem $env:USERPROFILE -Recurse -Filter "<name>*" | ...` and check
+  name (`(1)`), size and LastWriteTime before copying. In Sep 2026 wrong
+  files were committed twice by skipping this.
+- Then `git add <each file by name>` → `git status` (tell him how many files
+  must be listed, e.g. "file ၉ ခု") → `git commit -m "<English summary>"` →
+  `git push`. "LF will be replaced by CRLF" warnings are harmless.
+- Read his pasted output: if a file is missing from `git status` (most
+  often `firestore.rules` or the Worker), stop and fix it with a follow-up
+  sync commit before moving on.
+- After his push, pull your own clone so you stay in sync.
+
+**7. Close the loop.** One or two lines on what's done, then the numbered
+menu of what's next. If it's very late (he often works past midnight),
+it's fine to suggest resting.
+
+Other standing points:
+
+- Never ask Ko to paste secrets/tokens. Before any Delete button, tell him
+  to read the dialog title first.
+- Prefer reusing what exists (e.g. chat push reused the call push route;
+  notification → video reused `_VideoPostItem`) and keep diffs small and
+  isolated; Fly stream rule: build Firestore streams once (initState), never
+  inside `build()`.
+- Keep this file current: update the relevant §3/§4/§5/§6 entries and the
+  "Latest small update" line at the top with every confirmed task, and
+  remove finished items from the To-do list.
