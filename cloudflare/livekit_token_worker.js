@@ -38,6 +38,18 @@
 //                         Bunny Storage zone (profile photos, story
 //                         images - not video, so Bunny Stream doesn't
 //                         apply). Also a raw-body route, not JSON.
+//  GET  /delete-account  - (Oct 2026) public web page where people can
+//                         ask for their Fly account to be deleted without
+//                         the app - Google Play requires this link (put it
+//                         in Play Console -> App content -> Data safety).
+//                         No sign-in: anyone can open it.
+//  POST /delete-request   - the form on that page posts here (no sign-in).
+//                         It ONLY stores the request in Firestore
+//                         `deletionRequests/{id}` (status 'pending'); it
+//                         never deletes anything itself. Ko checks the
+//                         email matches a real account, deletes it, then
+//                         marks the request done. Clients can't read or
+//                         write that collection (no rule = denied).
 //  POST /bunny-webhook    - called BY BUNNY (not the app) whenever a
 //                         video's encoding status changes. Marks the
 //                         matching post/story `videoReady: true` in
@@ -74,11 +86,27 @@ const FIREBASE_JWKS_URL =
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
+    // Public account-deletion page + its form (no Firebase sign-in - the
+    // person may not have the app any more). Routed before everything else.
+    if (request.method === 'GET' && url.pathname === '/delete-account') {
+      return new Response(DELETE_ACCOUNT_PAGE_HTML, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
+    if (request.method === 'POST' && url.pathname === '/delete-request') {
+      return handleDeleteRequest(request, env);
+    }
+
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 });
     }
-
-    const url = new URL(request.url);
 
     // Bunny's own webhook - authenticated by its URL token instead of a
     // user's Firebase token, so it's routed before that check.
@@ -474,6 +502,60 @@ async function handleBunnyWebhook(request, env, url) {
   } catch (err) {
     // 500 makes Bunny retry the webhook later.
     return new Response(`Webhook failed: ${err.message}`, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------
+// Account-deletion requests (public form on /delete-account)
+// ---------------------------------------------------------------------
+// Stores the request only - see the route notes at the top. Bots: a hidden
+// "website" field real people never fill, and a minimum time on the page;
+// either one quietly "succeeds" without storing anything.
+async function handleDeleteRequest(request, env) {
+  const ok = () =>
+    new Response(JSON.stringify({ ok: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  const lengthHeader = Number(request.headers.get('Content-Length') || '0');
+  if (lengthHeader > 4096) {
+    return new Response('Request too large', { status: 413 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return new Response('Invalid JSON body', { status: 400 });
+  }
+
+  if (body.website) return ok(); // honeypot filled = bot
+  if (typeof body.elapsedMs === 'number' && body.elapsedMs < 2500) return ok();
+
+  const email = String(body.email || '').trim().toLowerCase().slice(0, 200);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return new Response('A valid email is required', { status: 400 });
+  }
+
+  try {
+    const accessToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    await firestorePatch(
+      env,
+      accessToken,
+      `deletionRequests/${crypto.randomUUID()}`,
+      {
+        email,
+        username: String(body.username || '').trim().slice(0, 80),
+        reason: String(body.reason || '').trim().slice(0, 500),
+        status: 'pending',
+        createdAt: new Date(),
+      },
+    );
+    return ok();
+  } catch (err) {
+    return new Response(`Could not save the request: ${err.message}`, {
+      status: 500,
+    });
   }
 }
 
@@ -917,3 +999,215 @@ async function createLiveKitToken({ apiKey, apiSecret, room, identity }) {
 
   return `${toSign}.${base64urlFromBytes(signature)}`;
 }
+
+// The public account-deletion page (GET /delete-account). Plain HTML/CSS/JS,
+// English only (Fly is a global app); its form posts to /delete-request.
+// String.raw keeps the page's own regex backslashes intact.
+const DELETE_ACCOUNT_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delete your Fly account</title>
+<meta name="description" content="Request deletion of your Fly account and its data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --pink: #FF4B6E; --purple: #9C4DFF; --blue: #3A8DFF;
+    --bg: #07060b; --card: rgba(255,255,255,0.06); --line: rgba(255,255,255,0.12);
+    --text: #f4f2fa; --muted: #a8a3b8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh; color: var(--text); background: var(--bg);
+    font-family: Poppins, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6; overflow-x: hidden;
+  }
+  /* Drifting gradient glow behind everything */
+  .glow { position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(40% 35% at 20% 15%, rgba(255,75,110,.35), transparent 70%),
+      radial-gradient(40% 35% at 85% 25%, rgba(156,77,255,.35), transparent 70%),
+      radial-gradient(45% 40% at 50% 95%, rgba(58,141,255,.30), transparent 70%);
+    animation: drift 18s ease-in-out infinite alternate; filter: blur(10px); }
+  @keyframes drift { to { transform: translate(3%, -2%) rotate(6deg) scale(1.05); } }
+  .wrap { position: relative; z-index: 1; max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .logo { font-weight: 800; font-size: 28px; letter-spacing: 1px;
+    background: linear-gradient(90deg, var(--pink), var(--purple), var(--blue));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero { text-align: center; margin: 8px 0 22px; }
+  .bird { font-size: 64px; display: inline-block; transform-origin: 70% 80%;
+    animation: wave 2.4s ease-in-out infinite; filter: drop-shadow(0 8px 24px rgba(156,77,255,.5)); }
+  @keyframes wave { 0%,60%,100% { transform: rotate(0); } 10%,30% { transform: rotate(-14deg); } 20%,40% { transform: rotate(10deg); } }
+  h1 { font-size: 26px; margin: 8px 0 6px; }
+  .sub { color: var(--muted); margin: 0 auto; max-width: 480px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
+    margin-top: 16px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    animation: rise .6s cubic-bezier(.2,.9,.3,1.2) both; }
+  .card:nth-of-type(2) { animation-delay: .08s; } .card:nth-of-type(3) { animation-delay: .16s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px) scale(.98); } }
+  .card h2 { font-size: 17px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+  .badge { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; flex: none;
+    background: linear-gradient(135deg, var(--pink), var(--purple)); }
+  ol { margin: 0; padding-left: 20px; } ol li { margin: 4px 0; }
+  .path { display: inline-block; background: rgba(255,255,255,.08); border-radius: 8px; padding: 1px 8px; font-size: 14px; }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 6px; }
+  input, textarea { width: 100%; font: inherit; color: var(--text); background: rgba(0,0,0,.35);
+    border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; outline: none; transition: border-color .2s, box-shadow .2s; }
+  input:focus, textarea:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(156,77,255,.25); }
+  textarea { min-height: 84px; resize: vertical; }
+  .hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+  .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; font-size: 14px; color: var(--muted); }
+  .check input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--pink); flex: none; }
+  .btn { width: 100%; margin-top: 16px; border: 0; border-radius: 16px; padding: 14px; font: inherit; font-weight: 600;
+    color: #fff; cursor: pointer; background: linear-gradient(90deg, var(--pink), var(--purple), var(--blue));
+    background-size: 200% 100%; transition: transform .15s, background-position .6s, opacity .2s; }
+  .btn:hover { background-position: 100% 0; } .btn:active { transform: scale(.98); }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .err { color: #ff8fa3; font-size: 14px; margin-top: 10px; min-height: 1em; }
+  ul.list { margin: 0; padding-left: 0; list-style: none; } ul.list li { padding: 6px 0 6px 28px; position: relative; }
+  ul.list li::before { position: absolute; left: 0; }
+  ul.del li::before { content: "🗑️"; } ul.keep li::before { content: "⏳"; }
+  .two { display: grid; gap: 14px; } @media (min-width: 560px) { .two { grid-template-columns: 1fr 1fr; } }
+  .mini { font-size: 13px; color: var(--muted); }
+  .done { text-align: center; padding: 18px 6px 6px; display: none; }
+  .done .big { font-size: 56px; animation: pop .6s cubic-bezier(.2,.9,.3,1.4) both; }
+  @keyframes pop { from { transform: scale(.2); opacity: 0; } }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
+  canvas#confetti { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<canvas id="confetti"></canvas>
+<div class="wrap">
+  <header>
+    <div class="logo">Fly</div>
+  </header>
+
+  <section class="hero">
+    <div class="bird" aria-hidden="true">🐦</div>
+    <h1>Delete your Fly account</h1>
+    
+    <p class="sub">Sad to see you go! You can delete your account inside the app, or ask us here if you no longer have the app.</p>
+    
+  </section>
+
+  <div class="card">
+    <h2><span class="badge">1</span><span>Delete it in the app (instant)</span></h2>
+    <ol>
+      <li>Open <b>Fly</b> and go to your <span class="path">Profile</span>.</li>
+      <li>Tap the <span class="path">⋮</span> menu at the top right → <span class="path">Delete account</span>.</li>
+      <li>Type <b>DELETE</b>, enter your password, and confirm.</li>
+    </ol>
+    
+  </div>
+
+  <div class="card" id="formCard">
+    <h2><span class="badge">2</span><span>No app? Request deletion here</span></h2>
+    <form id="f" novalidate>
+      <label for="email"><span>Email you signed up with *</span></label>
+      <input id="email" name="email" type="email" autocomplete="email" maxlength="200" required>
+      <label for="username"><span>Your Fly name (optional)</span></label>
+      <input id="username" name="username" maxlength="80">
+      <label for="reason"><span>Anything you'd like to tell us? (optional)</span></label>
+      <textarea id="reason" name="reason" maxlength="500"></textarea>
+      <input class="hp" id="website" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <label class="check"><input id="ok" type="checkbox">
+        <span>I understand my account and its data will be permanently deleted and can't be recovered.</span>
+        
+      </label>
+      <button class="btn" id="go" type="submit"><span>Request deletion</span></button>
+      <div class="err" id="err" role="alert"></div>
+      <p class="mini">We check that the email matches a Fly account before deleting anything, so nobody can delete someone else's account.</p>
+      
+    </form>
+    <div class="done" id="done">
+      <div class="big">💜</div>
+      <h2 style="justify-content:center"><span>Request received</span></h2>
+      <p class="sub">We'll delete your account and data within <b>30 days</b>. Thanks for flying with us. 🐦</p>
+      
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="badge">3</span><span>What gets deleted</span></h2>
+    <div class="two">
+      <div>
+        <ul class="list del">
+          <li>Your account and login</li>
+          <li>Profile: name, photo, bio</li>
+          <li>Your videos, stories and sounds</li>
+          <li>Your comments, reactions and follows</li>
+          <li>Saved videos, notifications and coins</li>
+        </ul>
+        
+      </div>
+      <div>
+        <ul class="list keep">
+          <li>Messages you sent stay in the other person's chat history.</li>
+          <li>Backup copies are cleared within 90 days.</li>
+          <li>Records we must keep for safety or legal reasons (for example, reports of abuse) may be kept as long as required.</li>
+        </ul>
+        
+      </div>
+    </div>
+  </div>
+
+  <footer>Fly · <span>Account deletion</span></footer>
+</div>
+
+<script>
+(function () {
+  var loadedAt = Date.now();
+  var f = document.getElementById('f'), err = document.getElementById('err'), go = document.getElementById('go');
+  function msg(text) { err.textContent = text; }
+
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var email = document.getElementById('email').value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { msg('Please enter a valid email.'); return; }
+    if (!document.getElementById('ok').checked) { msg('Please tick the box to confirm.'); return; }
+    err.textContent = ''; go.disabled = true;
+    fetch(location.pathname.replace(/\/delete-account\/?$/, '') + '/delete-request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        username: document.getElementById('username').value.trim(),
+        reason: document.getElementById('reason').value.trim(),
+        website: document.getElementById('website').value,
+        elapsedMs: Date.now() - loadedAt
+      })
+    }).then(function (r) {
+      if (!r.ok) throw new Error('bad');
+      f.style.display = 'none';
+      document.getElementById('done').style.display = 'block';
+      confetti();
+    }).catch(function () {
+      go.disabled = false;
+      msg("Couldn't send right now. Please try again.");
+    });
+  });
+
+  function confetti() {
+    var c = document.getElementById('confetti'), x = c.getContext('2d');
+    var W = c.width = innerWidth, H = c.height = innerHeight;
+    var cols = ['#FF4B6E', '#9C4DFF', '#3A8DFF', '#ffd166', '#ffffff'], ps = [];
+    for (var i = 0; i < 140; i++) ps.push({ x: W / 2, y: H * 0.35, vx: (Math.random() - .5) * 12,
+      vy: Math.random() * -12 - 4, s: Math.random() * 6 + 4, r: Math.random() * 6, c: cols[i % cols.length] });
+    var t = 0;
+    (function frame() {
+      x.clearRect(0, 0, W, H);
+      ps.forEach(function (p) { p.vy += .35; p.x += p.vx; p.y += p.vy; p.r += .1;
+        x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.fillStyle = p.c; x.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); x.restore(); });
+      if (++t < 160) requestAnimationFrame(frame); else x.clearRect(0, 0, W, H);
+    })();
+  }
+})();
+</script>
+</body>
+</html>
+`;

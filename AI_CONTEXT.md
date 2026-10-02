@@ -18,6 +18,8 @@
 > video (`PostFromNotificationScreen`); story replies push too._
 > _2 Oct 2026: §2 and §7 rewritten as the exact working loop Ko wants
 > every new chat to follow._
+> _3 Oct 2026: public account-deletion page for Google Play (Worker
+> `GET /delete-account` + `POST /delete-request` → `deletionRequests`)._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -122,6 +124,10 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
   (confirmation dialogs before destructive actions, friendly error messages
   instead of raw error text, cute reactions instead of plain state changes).
   Default to this style for new UI unless told otherwise.
+- **Fly is a global (worldwide) app.** Every user-facing text - in the
+  app AND on web pages (e.g. `/delete-account`) - is **English only**. Don't
+  add Burmese text or language toggles to the product (Ko asked to remove a
+  Myanmar toggle on 3 Oct 2026). Burmese is only for chat replies to Ko.
 - Ko is also thinking about a possible logo redesign: a "FLY" wordmark
   stylized as a bird (tail feathers before the F, wings sprouting near the Y,
   a round head+beak+eye after it) — inspired by wordmark-as-object techniques
@@ -465,6 +471,23 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
       (length-checked, cleans up failed slots).
+    - `GET /delete-account` (3 Oct 2026, confirmed) — public, no sign-in,
+      English-only page required by Google Play ("delete your account
+      without the app"): how to delete in the app (Profile → ⋮ → Delete
+      account), a request form (email\*, Fly name, reason, "I understand"
+      checkbox), and what is deleted / what may remain. Fly gradient,
+      glass cards, waving 🐦, confetti on success. The HTML lives in the
+      Worker as `DELETE_ACCOUNT_PAGE_HTML` (a `String.raw` template, so
+      keep it free of backticks and `${`). Live URL:
+      `https://livekit-token-worker.chakaboycom.workers.dev/delete-account`
+      — this is the link for Play Console → App content → Data safety
+      (data deletion questions). The page promises deletion within 30
+      days and backups cleared within 90 days.
+    - `POST /delete-request` — the page's form, no sign-in. Only STORES a
+      request (`deletionRequests/{uuid}`, status `pending`) via the
+      service account; never deletes anything. Bot guards: hidden
+      `website` honeypot and a <2.5s-on-page check both "succeed"
+      silently without storing; body ≤4 KB; email validated.
     - `POST /bunny-webhook?token=...` — called by Bunny, not the app;
       authenticated by the `BUNNY_WEBHOOK_TOKEN` secret in the URL; sets
       `videoReady` (see "Video ready" flow above).
@@ -1240,6 +1263,13 @@ screen needs to be created from scratch — it may already exist there.)_
   write-only from the app; reviewed in the Console.
 - `videoStatus/{bunnyVideoGuid}` (Sep 2026): { ready, failed, status,
   updatedAt } — written only by the Worker's Bunny webhook.
+- `deletionRequests/{uuid}` (3 Oct 2026): { email (lower-cased),
+  username, reason, status ('pending' → Ko sets 'done'), createdAt } —
+  written only by the Worker's `/delete-request`; no rule exists, so apps
+  can't read or write it. Ko handles each one by hand in the Console:
+  find the email in Authentication, delete that account + its data
+  within 30 days, then mark the request `done`. (A small admin tool could
+  automate this later if requests grow.)
 - Gifting/live: `users/{uid}` also holds `coins`, `lastLoginRewardDate`,
   and daily reward counters; `users/{uid}/followRewards/{targetId}`,
   `users/{uid}/supporters/{senderId}`; `liveStreams/{hostUid}` with
@@ -1365,11 +1395,12 @@ others only see it once encoded (Bunny webhook).
    (Firebase ID token auth). Until then the leaked public secret still
    works. Tell Ko to read the dialog title before pressing Delete.
 3. **Sound strike system** (repeat copyright offenders lose sound uploads).
-4. **Google Play account-deletion web link** — Play requires a web page
-   where users can request deletion without the app; needed before
-   publishing.
-5. **Delete old tiny videos** (uploaded before the orientation guard) and
+4. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
+5. Before publishing: put the `/delete-account` link in Play Console's
+   Data safety form (done on the Worker side 3 Oct 2026), and add a
+   Privacy Policy page if Fly doesn't have one (Play requires one; not
+   confirmed yet whether it exists).
 6. Optional / later: AudD song recognition, direct MP3 upload, resumable
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already
