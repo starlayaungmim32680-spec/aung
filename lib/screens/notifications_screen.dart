@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../block_service.dart';
 import 'chat_screen.dart';
 import 'public_profile_screen.dart';
+import 'friend_requests_screen.dart';
 import 'home_screen.dart' show PostFromNotificationScreen;
 
 // Shows the current user's notifications (reactions, comments, messages,
@@ -85,9 +86,9 @@ class NotificationsScreen extends StatelessWidget {
     }
   }
 
-  // Tapping a row (1 Oct 2026): a message opens that chat, a follow or a
-  // friend request / accepted request (4 Oct 2026) opens that person's
-  // profile, where the Friend button shows Respond / Friends, a comment/reaction opens that video
+  // Tapping a row (1 Oct 2026): a message opens that chat, a follow or an
+  // accepted friend request opens that person's profile, a friend request
+  // opens Friend Requests (Confirm / Delete there, 4 Oct 2026), a comment/reaction opens that video
   // (PostFromNotificationScreen in home_screen.dart).
   void _openNotification(BuildContext context, Map<String, dynamic> data) {
     final String type = data['type'] ?? '';
@@ -134,9 +135,12 @@ class NotificationsScreen extends StatelessWidget {
           },
         ),
       );
-    } else if (type == 'follow' ||
-        type == 'friend_request' ||
-        type == 'friend_accept') {
+    } else if (type == 'friend_request') {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const FriendRequestsScreen()),
+      );
+    } else if (type == 'follow' || type == 'friend_accept') {
       Navigator.push(
         context,
         MaterialPageRoute(

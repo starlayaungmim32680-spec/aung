@@ -15,6 +15,8 @@ import 'video_call_screen.dart';
 import '../call_kit_service.dart';
 import 'call_push_service.dart';
 import '../block_service.dart';
+import '../friend_service.dart';
+import 'friend_requests_screen.dart';
 import '../notification_service.dart';
 import 'presence_badge.dart';
 import 'worker_auth.dart';
@@ -68,6 +70,8 @@ class _ChatScreenState extends State<ChatScreen> {
           .snapshots();
     }
     BlockService.instance.hidden.addListener(_onBlockedChanged);
+    // Friend requests badge in the AppBar (Friends step 2, 4 Oct 2026).
+    FriendService.instance.start();
   }
 
   void _onBlockedChanged() {
@@ -90,6 +94,7 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         title: const Text('Messages', style: TextStyle(color: Colors.white)),
+        actions: const [_FriendRequestsAction()],
       ),
       body: Column(
         children: [
@@ -315,6 +320,71 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// People icon at the top of Messages that opens Friend Requests, with a
+// red count badge that pops in (Friends step 2, 4 Oct 2026). Listens only
+// to FriendService.incoming, so a new request never rebuilds the list.
+class _FriendRequestsAction extends StatelessWidget {
+  const _FriendRequestsAction();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<Set<String>>(
+      valueListenable: FriendService.instance.incoming,
+      builder: (context, incoming, _) {
+        final int count =
+            incoming.where((id) => !BlockService.instance.isHidden(id)).length;
+        return IconButton(
+          tooltip: 'Friend requests',
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FriendRequestsScreen()),
+            );
+          },
+          icon: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.people_alt_rounded, color: Colors.white),
+              Positioned(
+                right: -8,
+                top: -6,
+                child: AnimatedScale(
+                  scale: count > 0 ? 1 : 0,
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.elasticOut,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    constraints:
+                        const BoxConstraints(minWidth: 18, minHeight: 18),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+                      ),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: Colors.black, width: 1.5),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      count > 99 ? '99+' : '$count',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

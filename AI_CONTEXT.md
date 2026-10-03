@@ -26,6 +26,10 @@
 > Respond (Confirm/Delete) → Friends ✓, `friend_service.dart`,
 > `users/{uid}/friendRequests` + `users/{uid}/friends`, new rules. Chat and
 > calls are NOT locked to friends yet (step 3) - see the To-do list._
+> _4 Oct 2026 (later): **Friends step 2** (confirmed) - Friend Requests
+> screen (`friend_requests_screen.dart`, Confirm/Delete on each row),
+> opened from a people icon with a count badge at the top of Messages; a
+> `friend_request` notification now opens that screen. No rules change._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -711,6 +715,21 @@ issue if this comes up again.
   told), `unfriend` (both docs). Send/accept drop a `friend_request` /
   `friend_accept` notification (best-effort, no push yet).
   `FriendStatus` enum: none / requested / incoming / friends.
+- `screens/friend_requests_screen.dart` **(4 Oct 2026, Friends step 2,
+  confirmed)** — everyone who sent me a request (`users/{me}/
+friendRequests` ordered by `createdAt` desc, stream built in initState),
+  each sender's `users/{uid}` read once (Future cached in a map, so rows
+  don't flicker). Facebook layout: avatar (gradient ring + sparkle when
+  online) / name / time ago, then **[Confirm]** (Fly gradient, spring +
+  haptic) **[Delete]**. A handled row hides at once (`_handled` set +
+  AnimatedSize) instead of waiting for Firestore; Confirm shows "You and
+  X are now friends 🎉". Blocked senders hidden. Friendly empty / error
+  state (`_EmptyState`). Opened from `chat_screen.dart`'s AppBar
+  (`_FriendRequestsAction`: people icon + gradient count badge that
+  elastic-pops in; a `ValueListenableBuilder` on `FriendService.incoming`
+  so the list itself never rebuilds; `ChatScreen.initState` now also calls
+  `FriendService.instance.start()`) and from a `friend_request`
+  notification.
 - `block_service.dart` **(30 Sep 2026, confirmed on two phones)** —
   app-wide two-way blocking, like Facebook/Messenger. `block(uid)` writes
   in ONE batch `users/{me}/blocked/{them}` + a mirror
@@ -1170,8 +1189,8 @@ position)` — Android drops the video surface in the background and a
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list. Rows are
   tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
-  or a `friend_request` / `friend_accept` (4 Oct 2026, pink group icon)
-  opens that person's profile, a comment/reaction (they carry `postId`)
+  or a `friend_accept` (4 Oct 2026, pink icon) opens that person's
+  profile, a `friend_request` opens `FriendRequestsScreen`, a comment/reaction (they carry `postId`)
   opens `PostFromNotificationScreen` (home_screen.dart, fade+scale route)
   (`_openNotification`).
 - `PostFromNotificationScreen` (in `home_screen.dart`, **1 Oct 2026,
@@ -1343,7 +1362,8 @@ filtering · on-device caption translation (ML Kit; no Burmese support) ·
 report a post or a user · two-way block (both people vanish for each
 other everywhere; no messages or calls - also enforced in Firestore rules),
 **Friends separate from Followers** (Add Friend / Requested / Respond /
-Friends on the profile, request + accepted notifications; 4 Oct 2026),
+Friends on the profile, request + accepted notifications, Friend Requests
+screen with a badge on Messages; 4 Oct 2026),
 unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + Sent/Delivered/Seen + message reactions, sorted
 by most recent message/call activity, with an "online now" strip · video/voice
 calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
@@ -1430,17 +1450,18 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 4 Oct 2026)
 
-0. **Friends (agreed 4 Oct 2026) - steps 2-4 left** (step 1, the friend
-   system, is done). Decisions Ko made: strict Facebook style - only
-   friends can chat/call (no "message requests" folder for now); a request
-   is one tap, no note; old chats with a non-friend stay readable but
-   show an "Add friend to keep chatting" banner instead of the input. 2) Friend Requests screen ("Requests (n)" badge at the top of
-   Messages; Confirm / Delete inline), maybe a push for new requests; 3) lock chat + calls to friends - UI (hide Message/call buttons for
+0. **Friends (agreed 4 Oct 2026) - steps 3-4 left** (step 1, the friend
+   system, and step 2, the Friend Requests screen, are done). Decisions
+   Ko made: strict Facebook style - only friends can chat/call (no
+   "message requests" folder for now); a request is one tap, no note; old
+   chats with a non-friend stay readable but show an "Add friend to keep
+   chatting" banner instead of the input. 3) lock chat + calls to friends - UI (hide Message/call buttons for
    non-friends, banner in old threads) AND rules (`messages` create and
    `calls` ringing require `users/{me}/friends/{other}`); consider the
    Worker's `/call-push` too; move `FriendService.start()` into
    `main_navigation_screen.dart` next to `BlockService.start()`; 4) = scale-proofing (a) below, built on friends.
-   Also: delete-account should remove the user's `friends` /
+   Still open: a push for new friend requests when Fly is closed (needs
+   the Worker); delete-account should remove the user's `friends` /
    `friendRequests` docs (both sides).
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    a) Messages screen: stop streaming the whole `users` collection - show
