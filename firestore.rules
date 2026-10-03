@@ -10,6 +10,9 @@ rules_version = '2';
 // lib/screens/video_upload_service.dart and the Worker's /bunny-webhook.
 // The Worker writes with a Firebase service account, which bypasses these
 // rules; the app can only READ videoStatus.
+//
+// Update (4 Oct 2026): Friends - users/{uid}/friendRequests/{fromId} and
+// users/{uid}/friends/{friendId}, see lib/friend_service.dart.
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -52,6 +55,19 @@ service cloud.firestore {
     }
 
     // The signed-in user owns this video post.
+    // True when either a or b has blocked the other (users/{x}/blocked).
+    function blockedBetween(a, b) {
+      return exists(/databases/$(database)/documents/users/$(a)/blocked/$(b))
+        || exists(/databases/$(database)/documents/users/$(b)/blocked/$(a));
+    }
+
+    // A pending friend request from `fromId` to `toId` exists (checked
+    // against the data BEFORE this write, so it still counts inside the
+    // accept batch that deletes it).
+    function friendRequestExists(toId, fromId) {
+      return exists(/databases/$(database)/documents/users/$(toId)/friendRequests/$(fromId));
+    }
+
     function isPostOwner(postId) {
       return signedIn()
         && get(/databases/$(database)/documents/posts/$(postId))
@@ -113,6 +129,33 @@ service cloud.firestore {
       match /blockedBy/{blockerId} {
         allow read: if isMe(uid);
         allow create, delete: if isMe(blockerId);
+        allow update: if false;
+      }
+
+      // users/{uid}/friendRequests/{fromId} - a pending request from
+      // fromId to uid (4 Oct 2026, friend_service.dart). Only the sender
+      // writes it, never to themselves or between blocked people. Both
+      // people can see it; either one can remove it (cancel / decline).
+      match /friendRequests/{fromId} {
+        allow read: if isMe(uid) || isMe(fromId);
+        allow create: if isMe(fromId) && fromId != uid
+          && !blockedBetween(uid, fromId);
+        allow delete: if isMe(uid) || isMe(fromId);
+        allow update: if false;
+      }
+
+      // users/{uid}/friends/{friendId} - written in pairs by the person
+      // ACCEPTING a request, and only while that request exists:
+      //   - my own list:   I'm uid and friendId asked me;
+      //   - their list:    I'm friendId and I'm the one uid asked.
+      // Either friend can remove both docs (unfriend, or block).
+      match /friends/{friendId} {
+        allow read: if signedIn();
+        allow create: if friendId != uid && (
+          (isMe(uid) && friendRequestExists(uid, friendId))
+          || (isMe(friendId) && friendRequestExists(friendId, uid))
+        );
+        allow delete: if isMe(uid) || isMe(friendId);
         allow update: if false;
       }
 
