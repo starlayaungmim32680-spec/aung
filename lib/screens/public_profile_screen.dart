@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -12,6 +13,7 @@ import 'gifting.dart';
 import 'profile_screen.dart' show SkyNoteBubble;
 import 'presence_badge.dart';
 import '../block_service.dart';
+import '../friend_service.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -228,11 +230,21 @@ class PublicProfileScreen extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 18),
 
-                                  // Follow + Message + Video call buttons
-                                  // (Facebook style, hidden on your own profile)
-                                  if (!isMe && myId != null)
+                                  // Add Friend + Follow (row 1), then
+                                  // Message + voice/video call (row 2).
+                                  // Facebook style, hidden on your own
+                                  // profile. Friends and Followers are
+                                  // separate (friend_service.dart).
+                                  if (!isMe && myId != null) ...[
                                     Row(
                                       children: [
+                                        Expanded(
+                                          child: _FriendButton(
+                                            otherUserId: userId,
+                                            otherUserName: displayName,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
                                         Expanded(
                                           child: _FollowButton(
                                             myId: myId,
@@ -241,7 +253,11 @@ class PublicProfileScreen extends StatelessWidget {
                                             otherUserPhoto: photoUrl,
                                           ),
                                         ),
-                                        const SizedBox(width: 8),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
                                         Expanded(
                                           child: ElevatedButton.icon(
                                             onPressed: () {
@@ -325,6 +341,7 @@ class PublicProfileScreen extends StatelessWidget {
                                         ),
                                       ],
                                     ),
+                                  ],
                                   const SizedBox(height: 20),
                                   const Divider(
                                       color: Colors.white12, height: 1),
@@ -834,6 +851,317 @@ void _showReportUserSheet(BuildContext context, String userIdToReport) {
       );
     },
   );
+}
+
+// Add Friend / Requested / Respond / Friends button (4 Oct 2026, see
+// friend_service.dart). Fly touch: the Fly gradient while it's an action
+// for you to take, a spring "pop" + haptic on tap, and a little sparkle on
+// "Requested". Every undo (cancel, decline, unfriend) goes through a sheet
+// so it's never one accidental tap.
+class _FriendButton extends StatefulWidget {
+  final String otherUserId;
+  final String otherUserName;
+
+  const _FriendButton({
+    required this.otherUserId,
+    required this.otherUserName,
+  });
+
+  @override
+  State<_FriendButton> createState() => _FriendButtonState();
+}
+
+class _FriendButtonState extends State<_FriendButton> {
+  // Built once (Fly stream rule) - my own request to this person.
+  late final Stream<bool> _sentStream;
+  bool _pressed = false;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    FriendService.instance.start();
+    _sentStream = FriendService.instance.watchSentRequest(widget.otherUserId);
+    FriendService.instance.friends.addListener(_onChanged);
+    FriendService.instance.incoming.addListener(_onChanged);
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    FriendService.instance.friends.removeListener(_onChanged);
+    FriendService.instance.incoming.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() action, String failText) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await action();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(failText)));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _onTap(FriendStatus status) {
+    final String other = widget.otherUserId;
+    final svc = FriendService.instance;
+    if (status == FriendStatus.none) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.lightImpact();
+    }
+    switch (status) {
+      case FriendStatus.none:
+        _run(() => svc.sendRequest(other),
+            "Couldn't send the friend request. Try again.");
+        break;
+      case FriendStatus.requested:
+        _showSheet([
+          _SheetAction(
+            icon: Icons.person_remove_alt_1,
+            label: 'Cancel request',
+            color: Colors.redAccent,
+            onTap: () => _run(() => svc.cancelRequest(other),
+                "Couldn't cancel the request. Try again."),
+          ),
+        ]);
+        break;
+      case FriendStatus.incoming:
+        _showSheet([
+          _SheetAction(
+            icon: Icons.how_to_reg,
+            label: 'Confirm',
+            color: const Color(0xFF3A8DFF),
+            onTap: () => _run(() => svc.accept(other),
+                "Couldn't confirm the request. Try again."),
+          ),
+          _SheetAction(
+            icon: Icons.close,
+            label: 'Delete request',
+            color: Colors.white70,
+            onTap: () => _run(() => svc.decline(other),
+                "Couldn't delete the request. Try again."),
+          ),
+        ], title: '${widget.otherUserName} sent you a friend request');
+        break;
+      case FriendStatus.friends:
+        _showSheet([
+          _SheetAction(
+            icon: Icons.person_off,
+            label: 'Unfriend',
+            color: Colors.redAccent,
+            onTap: _confirmUnfriend,
+          ),
+        ]);
+        break;
+    }
+  }
+
+  Future<void> _confirmUnfriend() async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: Text('Unfriend ${widget.otherUserName}?',
+            style: const TextStyle(color: Colors.white)),
+        content: const Text(
+          "You'll both be removed from each other's friends. You'll still "
+          'follow each other if you do now.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Unfriend',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _run(() => FriendService.instance.unfriend(widget.otherUserId),
+          "Couldn't unfriend. Try again.");
+    }
+  }
+
+  void _showSheet(List<_SheetAction> actions, {String? title}) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            if (title != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 6),
+            for (final a in actions)
+              ListTile(
+                leading: Icon(a.icon, color: a.color),
+                title: Text(a.label, style: TextStyle(color: a.color)),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  a.onTap();
+                },
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = FriendService.instance;
+    return StreamBuilder<bool>(
+      stream: _sentStream,
+      builder: (context, snap) {
+        final bool sent = snap.data ?? false;
+        final FriendStatus status = svc.isFriend(widget.otherUserId)
+            ? FriendStatus.friends
+            : svc.hasIncoming(widget.otherUserId)
+                ? FriendStatus.incoming
+                : sent
+                    ? FriendStatus.requested
+                    : FriendStatus.none;
+
+        final bool gradient =
+            status == FriendStatus.none || status == FriendStatus.incoming;
+        IconData icon = Icons.person_add_alt_1;
+        String label = 'Add Friend';
+        switch (status) {
+          case FriendStatus.none:
+            break;
+          case FriendStatus.requested:
+            icon = Icons.schedule_send;
+            label = 'Requested ✨';
+            break;
+          case FriendStatus.incoming:
+            icon = Icons.how_to_reg;
+            label = 'Respond';
+            break;
+          case FriendStatus.friends:
+            icon = Icons.people_alt;
+            label = 'Friends ✓';
+            break;
+        }
+
+        return GestureDetector(
+          onTapDown: (_) => setState(() => _pressed = true),
+          onTapCancel: () => setState(() => _pressed = false),
+          onTapUp: (_) => setState(() => _pressed = false),
+          onTap: _busy ? null : () => _onTap(status),
+          child: AnimatedScale(
+            scale: _pressed ? 0.93 : 1.0,
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOutBack,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOut,
+              height: 42,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: gradient ? null : const Color(0xFF3A3B3C),
+                gradient: gradient
+                    ? const LinearGradient(colors: [
+                        Color(0xFFFF4B6E),
+                        Color(0xFF9C4DFF),
+                        Color(0xFF3A8DFF),
+                      ])
+                    : null,
+              ),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                transitionBuilder: (child, anim) => ScaleTransition(
+                  scale: Tween(begin: 0.8, end: 1.0).animate(
+                      CurvedAnimation(parent: anim, curve: Curves.elasticOut)),
+                  child: FadeTransition(opacity: anim, child: child),
+                ),
+                child: Row(
+                  key: ValueKey(status),
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_busy)
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    else
+                      Icon(icon, size: 18, color: Colors.white),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SheetAction {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+  const _SheetAction({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
 }
 
 // Facebook-style Follow / Following toggle button

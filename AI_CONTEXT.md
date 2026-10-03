@@ -21,6 +21,11 @@
 > _3 Oct 2026: public account-deletion page for Google Play (Worker
 > `GET /delete-account` + `POST /delete-request` → `deletionRequests`);
 > Bunny recharged ($10); scale-proofing plan added to the To-do list._
+> _4 Oct 2026: **Friends, step 1 of 4** (confirmed on two phones) - Friends
+> are now separate from Followers, like Facebook: Add Friend → Requested →
+> Respond (Confirm/Delete) → Friends ✓, `friend_service.dart`,
+> `users/{uid}/friendRequests` + `users/{uid}/friends`, new rules. Chat and
+> calls are NOT locked to friends yet (step 3) - see the To-do list._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -692,10 +697,25 @@ issue if this comes up again.
   screen status banner in `main_navigation_screen.dart` (red=offline,
   amber=weak, via a `_TopBars` widget stacked above the existing minimized-
   call bar).
+- `friend_service.dart` **(4 Oct 2026, confirmed on two phones)** —
+  Friends, separate from Followers (Follow = see videos, one-sided;
+  Friends = both agreed, will be required to chat/call from step 3).
+  Singleton like `BlockService`: `start()` (safe to call many times - the
+  profile's `_FriendButton` calls it; not yet in main_navigation) listens
+  to `users/{me}/friends` and `users/{me}/friendRequests` and exposes
+  `friends` / `incoming` ValueNotifiers (`setEquals`-guarded) +
+  `isFriend()` / `hasIncoming()`. `watchSentRequest(other)` streams my own
+  request doc under the other person. Actions: `sendRequest` (auto-accepts
+  if they already asked me), `cancelRequest`, `accept` (one batch: both
+  `friends` docs + both request docs deleted), `decline` (they aren't
+  told), `unfriend` (both docs). Send/accept drop a `friend_request` /
+  `friend_accept` notification (best-effort, no push yet).
+  `FriendStatus` enum: none / requested / incoming / friends.
 - `block_service.dart` **(30 Sep 2026, confirmed on two phones)** —
   app-wide two-way blocking, like Facebook/Messenger. `block(uid)` writes
   in ONE batch `users/{me}/blocked/{them}` + a mirror
-  `users/{them}/blockedBy/{me}` (and removes my follow of them);
+  `users/{them}/blockedBy/{me}` (and removes my follow of them, plus -
+  since 4 Oct 2026 - the friendship and any friend request either way);
   `unblock(uid)` deletes both. `BlockService.instance.start()` (called in
   `main_navigation_screen.dart` initState, follows auth changes) listens to
   both lists and exposes `blockedByMe`, `blockedMe` and `hidden` (union)
@@ -1019,8 +1039,13 @@ position)` — Android drops the video surface in the background and a
   `profile_screen.dart`'s AppBar. Saves made before this build aren't in
   the list (only `posts/*/saves` had them) — re-save to show them.
 - `screens/public_profile_screen.dart` — another user's profile: photo
-  (with the sparkle-star online badge), name, Follow / Message buttons,
-  stats, video grid, and a 3-dot menu with **Block user**
+  (with the sparkle-star online badge), name, stats, buttons in two rows
+  (4 Oct 2026): **[Add Friend] [Follow]** then **[Message] [📞] [🎥]**.
+  `_FriendButton` (stateful, Fly gradient while it's an action for you -
+  Add Friend / Respond - grey for Requested ✨ / Friends ✓; spring press
+  scale + haptic + elastic AnimatedSwitcher; every undo - Cancel request,
+  Delete request, Unfriend (+ confirm dialog) - goes through a bottom
+  sheet), video grid, and a 3-dot menu with **Block user**
   (`_confirmBlockUser`, writes `users/{myId}/blocked/{blockedUserId}`).
 - `screens/story_screen.dart` — Stories. Facebook-style story cards bar,
   add-story flow (photo → Bunny Storage, video → Bunny Stream with a 15s
@@ -1145,7 +1170,8 @@ position)` — Android drops the video surface in the background and a
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list. Rows are
   tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
-  opens the follower's profile, a comment/reaction (they carry `postId`)
+  or a `friend_request` / `friend_accept` (4 Oct 2026, pink group icon)
+  opens that person's profile, a comment/reaction (they carry `postId`)
   opens `PostFromNotificationScreen` (home_screen.dart, fade+scale route)
   (`_openNotification`).
 - `PostFromNotificationScreen` (in `home_screen.dart`, **1 Oct 2026,
@@ -1219,6 +1245,14 @@ screen needs to be created from scratch — it may already exist there.)_
     savedAt } — private Saved list; rules: owner-only read/write.
   - `users/{uid}/blocked/{blockedUserId}`: { createdAt } — who this user has
     blocked (listed/unblocked in `blocked_users_screen.dart`).
+  - `users/{uid}/friendRequests/{fromId}`: { createdAt } (4 Oct 2026) — a
+    pending request from fromId to uid, written by the sender (not to
+    self, not between blocked people). Both can read; either can delete.
+  - `users/{uid}/friends/{friendId}`: { createdAt } (4 Oct 2026) — written
+    in pairs by whoever accepts, only while the request exists (rules
+    helper `friendRequestExists`, checked before the batch); either friend
+    can delete both. Readable by any signed-in user. See
+    `friend_service.dart`.
   - `users/{uid}/blockedBy/{blockerId}`: { createdAt } (30 Sep 2026) — mirror
     written by the blocker so the blocked person's app hides them too; see
     `block_service.dart`.
@@ -1308,6 +1342,8 @@ search/discover · Shorts shelf in the Home feed · content/keyword
 filtering · on-device caption translation (ML Kit; no Burmese support) ·
 report a post or a user · two-way block (both people vanish for each
 other everywhere; no messages or calls - also enforced in Firestore rules),
+**Friends separate from Followers** (Add Friend / Requested / Respond /
+Friends on the profile, request + accepted notifications; 4 Oct 2026),
 unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + Sent/Delivered/Seen + message reactions, sorted
 by most recent message/call activity, with an "online now" strip · video/voice
 calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
@@ -1392,13 +1428,27 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 1 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 4 Oct 2026)
 
+0. **Friends (agreed 4 Oct 2026) - steps 2-4 left** (step 1, the friend
+   system, is done). Decisions Ko made: strict Facebook style - only
+   friends can chat/call (no "message requests" folder for now); a request
+   is one tap, no note; old chats with a non-friend stay readable but
+   show an "Add friend to keep chatting" banner instead of the input. 2) Friend Requests screen ("Requests (n)" badge at the top of
+   Messages; Confirm / Delete inline), maybe a push for new requests; 3) lock chat + calls to friends - UI (hide Message/call buttons for
+   non-friends, banner in old threads) AND rules (`messages` create and
+   `calls` ringing require `users/{me}/friends/{other}`); consider the
+   Worker's `/call-push` too; move `FriendService.start()` into
+   `main_navigation_screen.dart` next to `BlockService.start()`; 4) = scale-proofing (a) below, built on friends.
+   Also: delete-account should remove the user's `friends` /
+   `friendRequests` docs (both sides).
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    a) Messages screen: stop streaming the whole `users` collection - show
-   only chats I'm in (Messenger style); Ko still has to pick (က) chats +
-   online-now from people I follow, or (ခ) the same plus a "Suggested"
-   list of followed people;
+   only chats I'm in (Messenger style), with last-message preview + time,
+   tap → the thread; "Online now" strip and a "Suggested" list (friends
+   with no chat yet, max ~20) both come from **friends** (decided 4 Oct
+   2026, replaces the old (က)/(ခ) follow-based choice). Unread-in-bold
+   needs a new chat-doc field - a separate later step;
    b) Search: stop downloading 200 users / 300 posts and filtering on the
    phone - real queries (e.g. a lower-cased name field + prefix search);
    c) separate Firebase projects for dev and prod;

@@ -14,6 +14,9 @@
 // when either has blocked the other - so it holds even for an old app
 // build or someone bypassing the UI.
 //
+// Blocking also ends a friendship and clears any pending friend request
+// either way (4 Oct 2026, see friend_service.dart).
+//
 // Start once after login (main_navigation_screen.dart); screens read
 // [hidden] (a ValueNotifier - listen to it, or use isHidden()).
 import 'dart:async';
@@ -102,7 +105,8 @@ class BlockService {
     }
   }
 
-  /// Blocks [other]: both docs in one batch, and I stop following them.
+  /// Blocks [other]: both docs in one batch, I stop following them, and
+  /// any friendship / friend request between us is removed.
   Future<void> block(String other) async {
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null || other.isEmpty || other == myId) return;
@@ -115,6 +119,11 @@ class BlockService {
     // My side of the follow link (the rules only let me remove my own).
     batch.delete(users.doc(myId).collection('following').doc(other));
     batch.delete(users.doc(other).collection('followers').doc(myId));
+    // Friends + pending requests, both ways (friend_service.dart).
+    batch.delete(users.doc(myId).collection('friends').doc(other));
+    batch.delete(users.doc(other).collection('friends').doc(myId));
+    batch.delete(users.doc(myId).collection('friendRequests').doc(other));
+    batch.delete(users.doc(other).collection('friendRequests').doc(myId));
     await batch.commit();
     _mirrorChecked.add(other);
   }

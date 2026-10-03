@@ -6,7 +6,8 @@ import 'chat_screen.dart';
 import 'public_profile_screen.dart';
 import 'home_screen.dart' show PostFromNotificationScreen;
 
-// Shows the current user's notifications (reactions, comments, messages, follows)
+// Shows the current user's notifications (reactions, comments, messages,
+// follows, friend requests / accepted requests)
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
 
@@ -38,6 +39,10 @@ class NotificationsScreen extends StatelessWidget {
         return 'sent you a message: $text';
       case 'follow':
         return 'started following you';
+      case 'friend_request':
+        return 'sent you a friend request';
+      case 'friend_accept':
+        return 'accepted your friend request 🎉';
       default:
         return 'did something';
     }
@@ -53,6 +58,10 @@ class NotificationsScreen extends StatelessWidget {
         return Icons.send;
       case 'follow':
         return Icons.person_add;
+      case 'friend_request':
+        return Icons.group_add;
+      case 'friend_accept':
+        return Icons.people_alt;
       default:
         return Icons.notifications;
     }
@@ -68,13 +77,17 @@ class NotificationsScreen extends StatelessWidget {
         return const Color(0xFF9C4DFF);
       case 'follow':
         return const Color(0xFF24D17E);
+      case 'friend_request':
+      case 'friend_accept':
+        return const Color(0xFFFF4B6E);
       default:
         return Colors.grey;
     }
   }
 
-  // Tapping a row (1 Oct 2026): a message opens that chat, a follow opens
-  // the follower's profile, a comment/reaction opens that video
+  // Tapping a row (1 Oct 2026): a message opens that chat, a follow or a
+  // friend request / accepted request (4 Oct 2026) opens that person's
+  // profile, where the Friend button shows Respond / Friends, a comment/reaction opens that video
   // (PostFromNotificationScreen in home_screen.dart).
   void _openNotification(BuildContext context, Map<String, dynamic> data) {
     final String type = data['type'] ?? '';
@@ -121,7 +134,9 @@ class NotificationsScreen extends StatelessWidget {
           },
         ),
       );
-    } else if (type == 'follow') {
+    } else if (type == 'follow' ||
+        type == 'friend_request' ||
+        type == 'friend_accept') {
       Navigator.push(
         context,
         MaterialPageRoute(
