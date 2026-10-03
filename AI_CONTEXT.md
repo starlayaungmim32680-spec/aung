@@ -19,7 +19,8 @@
 > _2 Oct 2026: §2 and §7 rewritten as the exact working loop Ko wants
 > every new chat to follow._
 > _3 Oct 2026: public account-deletion page for Google Play (Worker
-> `GET /delete-account` + `POST /delete-request` → `deletionRequests`)._
+> `GET /delete-account` + `POST /delete-request` → `deletionRequests`);
+> Bunny recharged ($10); scale-proofing plan added to the To-do list._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -422,9 +423,14 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
   account was on a **14-day free trial ($20 credit) ending around 3 Oct
   2026**, with $0.00 real balance — trial credit disappears when the trial
   ends, and a $0 balance can suspend Stream/Storage (all videos, photos,
-  stories). He needs to add billing info and recharge (~$10 lasts months at
-  current usage); paying from Myanmar may need a foreign card, PayPal or
-  crypto. Cloudflare Worker stays on its free plan either way — keeping calls
+  stories). **Done 3 Oct 2026:** the trial expired (trial usage was
+  $0.00), Ko filled in billing info (individual, his own name, a Malaysian
+  address - no company) and recharged **$10** by card (bank 3-D Secure
+  approval); confirmed working. When the balance runs low, recharge again
+  (Billing → Overview → Recharge Account); auto-recharge, if offered, avoids
+  a surprise lockout. Cost-saving to do: switch Stream delivery to the
+  **Volume** network if the library settings allow (Asia: ~$0.005/GB vs
+  ~$0.03/GB standard) and cap quality at 720p. Cloudflare Worker stays on its free plan either way — keeping calls
   and push working even if Bunny lapses was one reason not to move the
   Worker to Bunny Edge Scripting.
 - **LiveKit** (video/voice calls + live streaming) — Cloud project (NOT
@@ -1388,8 +1394,18 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 1 Oct 2026)
 
-1. **Recharge Bunny before the trial ends (~3 Oct 2026).** Balance is $0;
-   once the trial ends, uploads and playback can stop. Remind Ko early.
+1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
+   a) Messages screen: stop streaming the whole `users` collection - show
+   only chats I'm in (Messenger style); Ko still has to pick (က) chats +
+   online-now from people I follow, or (ခ) the same plus a "Suggested"
+   list of followed people;
+   b) Search: stop downloading 200 users / 300 posts and filtering on the
+   phone - real queries (e.g. a lower-cased name field + prefix search);
+   c) separate Firebase projects for dev and prod;
+   d) split the huge files (home_screen.dart ~6,700 lines) into feature
+   folders, a piece at a time;
+   e) move coins server-side (Worker) before coins are ever sold.
+   Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
 2. **Delete the `APP_SHARED_SECRET` Worker secret** in Cloudflare — only
    after _every_ test phone runs an APK built after commit `0fcaf1a`
    (Firebase ID token auth). Until then the leaked public secret still
@@ -1419,7 +1435,7 @@ This is how every task ran in the Sep–Oct 2026 sessions, and Ko asked
 Pull/clone the repo (`git pull`) so you edit the real latest code, then
 offer a short **numbered menu** of next tasks (from the To-do list in §6 /
 what's left from last time) and let him pick by number. Remind him of any
-time-critical item (e.g. Bunny recharge) first.
+time-critical item (e.g. a low Bunny balance) first.
 
 **1. Understand before editing.** Read the real files (not this file's
 summary). For bugs, ask for a screenshot or a short screen recording - Ko
