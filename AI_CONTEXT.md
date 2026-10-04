@@ -39,10 +39,18 @@
 > `areFriends(roomId)` on `chats` create/update, `messages` create and
 > calls going to 'ringing'. `FriendService.loaded` avoids flashing the
 > "not friends" UI before the list arrives._
-> _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
-> the nav-bar description, package list and feature list, and added Sky
-> Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
-> and back-button behavior, which were built but missing from this file._
+> \_4 Oct 2026 (Friends step 4 = scale-proofing (a), confirmed on two
+> phones): **Messages no longer streams the whole `users` collection.**
+> It lists only my chats (newest message/call first, last-message preview
+>
+> - time, tap → thread, avatar → profile), an "Online now" strip of online
+>   FRIENDS and a "Suggested" list of friends I haven't chatted with (Say hi
+>   👋). Profiles come from a per-uid live `_ProfileCache` (ValueNotifiers,
+>   no flicker). No rules change.\_
+>   _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
+>   the nav-bar description, package list and feature list, and added Sky
+>   Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
+>   and back-button behavior, which were built but missing from this file._
 
 > 🧭 **New chat with Ko? Read §2 (who Ko is, how he likes to work) and
 > §7 (the exact step-by-step loop every task follows) before anything
@@ -1131,31 +1139,46 @@ position)` — Android drops the video surface in the background and a
   shows such messages with a small story preview ("Replied to your
   story"). Owners get "See who reacted" + delete instead. No rules change
   (chat rules already allow it).
-- `screens/chat_screen.dart` — chat list (`ChatScreen`/`_ChatScreenState`,
-  actually lists **all other users**, not just existing conversations — it's
-  also how you start a brand-new chat) + `ChatThreadScreen` (text / image /
-  voice messages, typing/recording indicators, read receipts, video-call
-  button; each message's "Sent"/"Seen" row shows "Sending..." instead while
-  `metadata.hasPendingWrites` is true — see §3). **Friends only (4 Oct
-  2026):** `ChatThreadScreen` has `_isFriend` / `_friendsKnown` /
-  `_canTalk` (listens to `FriendService.friends/incoming/loaded`); not
-  friends → `_notFriendsBanner()` (Fly-gradient glass card with Add
-  Friend / Cancel request / Confirm, using `watchSentRequest` built in
-  initState) replaces the input, call buttons hidden, `_startVideoCall`
-  returns early; while the friends list is still loading an empty
-  64px box stands in so nothing flashes. The list:
-  - Shows the sparkle-star online badge per user (`presence_badge.dart`).
-  - Shows an **"online now"** horizontal strip above the main list (users
-    currently online; hidden while searching or when nobody is online).
-  - Is **sorted by most recent activity** — whoever you most recently
-    messaged (`chats/{chatId}.lastMessageAt`) or called
-    (`chats/{chatId}.lastCallAt`, written by `_startVideoCall()` alongside
-    the pre-existing `calls/{chatId}` doc) moves to the top. Users with no
-    chat/call history yet sort after, in a stable (not random) order.
-  - **Streams are built once** (`_usersStream`, `_chatsStream`, and in the
-    thread `_messagesStream`, `_activityStream`, all in `initState`) — never
-    inside `build()` (1 Oct 2026). The spinner only shows while there's no
-    data yet; an error shows "Couldn't load chats/messages" instead.
+- `screens/chat_screen.dart` — the Messages list (`ChatScreen`) +
+  `ChatThreadScreen` (text / image / voice messages, typing/recording
+  indicators, read receipts, call buttons; each message's "Sent"/"Seen"
+  row shows "Sending..." while `metadata.hasPendingWrites` — see §3).
+  **Friends only (4 Oct 2026):** `ChatThreadScreen` has `_isFriend` /
+  `_friendsKnown` / `_canTalk` (listens to `FriendService.friends/
+incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
+  glass card with Add Friend / Cancel request / Confirm, using
+  `watchSentRequest` built in initState) replaces the input, call buttons
+  hidden, `_startVideoCall` returns early; while the friends list is still
+  loading an empty 64px box stands in so nothing flashes.
+  **The Messages list (rewritten 4 Oct 2026, Friends step 4 /
+  scale-proofing a, confirmed):**
+  - ONE query: `chats` where `participants` array-contains me (built in
+    initState). `_entriesFrom()` turns docs into `_ChatEntry` (other uid,
+    `lastMessage`, `lastSenderId`, newest of `lastMessageAt` /
+    `lastCallAt`; a pending write counts as "now"), drops blocked people,
+    sorts newest first. **No more `users` collection stream.**
+  - `_ProfileCache`: one live `users/{uid}` listener per person, created
+    lazily when a row/avatar needs it (`of(uid)` → ValueNotifier), all
+    cancelled in dispose. Rows use `ValueListenableBuilder`, so a presence
+    heartbeat rebuilds only that row (no flicker).
+  - `_ChatRow`: `_ChatAvatar` (gradient ring + sparkle when online), name,
+    preview ("You: …" when mine, "📞 Call" when the newest thing was a
+    call) · `_chatTime()` ("now", "5m", "14:32", "Yesterday", "Mon",
+    "4/10"); tap → thread, avatar → profile; `_PressScale` spring.
+  - `_OnlineNowStrip`: my FRIENDS who are online (first
+    `_kOnlineCheckLimit` = 60 friends watched), hidden when nobody is
+    online or while searching; tap → thread.
+  - "Suggested" (`_SectionHeader` + `_SuggestedRow`): friends with no chat
+    yet (max `_kSuggestedLimit` = 20) with a gradient "Say hi 👋" chip →
+    thread.
+  - Search ("Search chats") filters chats + suggestions by name once that
+    profile has loaded. Empty / no-match / error states use
+    `_MessagesEmptyState`.
+  - AppBar: `_FriendRequestsAction` (people icon + request count badge).
+  - Known nit: `_ProfileCache.of()` has an unnecessary `as` cast
+    (analyzer `unnecessary_cast` warning at ~line 104) - harmless, remove
+    next time this file is edited.
+  - Not built yet: unread-in-bold (needs a new chat-doc field).
   - Photos and voice notes upload to Bunny Storage (see §3, 1 Oct 2026).
 - `ChatThreadScreen` status + reactions **(1 Oct 2026, confirmed)**:
   - Messages are created with `seen: false, delivered: false`; opening the
@@ -1391,9 +1414,11 @@ report a post or a user · two-way block (both people vanish for each
 other everywhere; no messages or calls - also enforced in Firestore rules),
 **Friends separate from Followers** (Add Friend / Requested / Respond /
 Friends on the profile, request + accepted notifications, Friend Requests
-screen with a badge on Messages; 4 Oct 2026),
-unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + Sent/Delivered/Seen + message reactions, sorted
-by most recent message/call activity, with an "online now" strip · video/voice
+screen with a badge on Messages, only friends can chat/call/reply to
+stories; 4 Oct 2026),
+unblock from Settings → Blocked accounts, the profile or the chat · chat (text/image/voice) + typing indicators + Sent/Delivered/Seen + message reactions; Messages
+lists only my chats (Messenger style: preview + time, newest first) with
+an "online now" strip of friends and "Suggested" friends · video/voice
 calls (LiveKit, via a Cloudflare Worker token server) + CallKit-style
 incoming-call UI/push + caller ring-back tone + working speaker toggle +
 shared drawing + Picture-in-Picture · online-presence system (sparkle-star
@@ -1478,26 +1503,21 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 4 Oct 2026)
 
-0. **Friends (agreed 4 Oct 2026) - step 4 left** (steps 1-3 done: friend
-   system, Friend Requests screen, chat/calls/story replies locked to
-   friends in UI + rules). Decisions Ko made: strict Facebook style - only
-   friends can chat/call (no "message requests" folder for now); a request
-   is one tap, no note; old chats with a non-friend stay readable with an
-   "Add friend to keep chatting" banner. 4) = scale-proofing (a) below, built on friends.
-   Still open: the Worker's `/call-push` and `/chat-push` don't check
-   friendship (the rules already block the call doc / message, so nothing
-   actually connects - a cleanup, not urgent); a push for new friend
-   requests when Fly is closed (needs the Worker); move
+0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
+   Friend Requests screen, chat/calls/story replies friends-only, new
+   Messages list). Decisions Ko made: strict Facebook style - only friends
+   can chat/call (no "message requests" folder for now); a request is one
+   tap, no note; old chats with a non-friend stay readable with an "Add
+   friend to keep chatting" banner. Still open: a push for new friend
+   requests when Fly is closed (needs the Worker); the Worker's
+   `/call-push` and `/chat-push` don't check friendship (the rules already
+   block the call doc / message - cleanup, not urgent); move
    `FriendService.start()` into `main_navigation_screen.dart` next to
    `BlockService.start()`; delete-account should remove the user's
-   `friends` / `friendRequests` docs (both sides).
+   `friends` / `friendRequests` docs (both sides); unread-in-bold on the
+   Messages list.
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
-   a) Messages screen: stop streaming the whole `users` collection - show
-   only chats I'm in (Messenger style), with last-message preview + time,
-   tap → the thread; "Online now" strip and a "Suggested" list (friends
-   with no chat yet, max ~20) both come from **friends** (decided 4 Oct
-   2026, replaces the old (က)/(ခ) follow-based choice). Unread-in-bold
-   needs a new chat-doc field - a separate later step;
+   (a, the Messages list, is done - 4 Oct 2026, see §4 chat_screen.dart.)
    b) Search: stop downloading 200 users / 300 posts and filtering on the
    phone - real queries (e.g. a lower-cased name field + prefix search);
    c) separate Firebase projects for dev and prod;

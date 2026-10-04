@@ -37,6 +37,21 @@ const List<String> _kMessageReactions = ['👍', '❤️', '😆', '😮', '😢
 // at it (main_navigation_screen.dart), like Messenger.
 String? currentOpenChatId;
 
+// Messages list (rewritten 4 Oct 2026 - Friends step 4 / scale-proofing a).
+//
+// Before: streamed the WHOLE `users` collection (every user in Fly, on
+// every heartbeat) and listed all of them. Now, like Messenger:
+//   - only chats I'm in (`chats` where participants array-contains me),
+//     newest activity (message or call) first, with a last-message
+//     preview + time; tap -> the thread, tap the avatar -> the profile;
+//   - "Online now" strip = my FRIENDS who are online (first 60 checked);
+//   - "Suggested" = friends I've never chatted with (max 20) with a
+//     "Say hi" button - so a brand-new account isn't staring at nothing;
+//   - search filters my chats + suggestions by name.
+// Profiles are read per person through _ProfileCache: one live listener
+// per uid, started only when that row/avatar is actually needed, each
+// exposed as a ValueNotifier so a presence heartbeat rebuilds just that
+// row (no list flicker). Blocked people (either way) never show.
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
@@ -44,51 +59,189 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+// How many friends are watched for the "Online now" strip, and how many
+// "Suggested" people are shown - keeps listeners bounded when someone has
+// hundreds of friends.
+const int _kOnlineCheckLimit = 60;
+const int _kSuggestedLimit = 20;
+
+// One chat in the list, already worked out from its `chats` doc.
+class _ChatEntry {
+  final String chatId;
+  final String otherId;
+  final String lastMessage;
+  final String lastSenderId;
+  final bool lastWasCall;
+  final DateTime at;
+
+  const _ChatEntry({
+    required this.chatId,
+    required this.otherId,
+    required this.lastMessage,
+    required this.lastSenderId,
+    required this.lastWasCall,
+    required this.at,
+  });
+}
+
+// Live user docs, one listener per uid, kept for the life of the Messages
+// screen. Each person is a ValueNotifier of their profile map (null until
+// it arrives), so widgets listen to exactly the people they show.
+class _ProfileCache {
+  final Map<String, ValueNotifier<Map<String, dynamic>?>> _notifiers = {};
+  final Map<String, StreamSubscription<DocumentSnapshot>> _subs = {};
+
+  ValueNotifier<Map<String, dynamic>?> of(String uid) {
+    final existing = _notifiers[uid];
+    if (existing != null) return existing;
+    final n = ValueNotifier<Map<String, dynamic>?>(null);
+    _notifiers[uid] = n;
+    _subs[uid] = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .listen(
+          (snap) => n.value = snap.data() as Map<String, dynamic>?,
+          onError: (_) {},
+        );
+    return n;
+  }
+
+  /// Display name if this person's profile has arrived, else null.
+  String? nameIfLoaded(String uid) {
+    final data = _notifiers[uid]?.value;
+    if (data == null) return null;
+    final String name = ((data['displayName'] as String?) ?? '').trim();
+    return name.isEmpty ? 'User' : name;
+  }
+
+  void dispose() {
+    for (final s in _subs.values) {
+      s.cancel();
+    }
+    for (final n in _notifiers.values) {
+      n.dispose();
+    }
+    _subs.clear();
+    _notifiers.clear();
+  }
+}
+
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
-  // Streams are built ONCE here, never inside build() (1 Oct 2026). Before,
-  // every rebuild (a block-list update, typing in search) threw away the
-  // listener and started a new one, which goes back to "waiting" - on a slow
-  // connection the list could spin forever and only showed when offline
-  // (where the cache answers instantly).
-  late final Stream<QuerySnapshot> _usersStream;
+  // Built ONCE here, never inside build() (Fly stream rule, 1 Oct 2026).
   Stream<QuerySnapshot>? _chatsStream;
+  final _ProfileCache _profiles = _ProfileCache();
+  late final String? _myId;
 
-  // Blocked accounts (either way - see block_service.dart) disappear from
-  // the list and the "online now" strip.
   @override
   void initState() {
     super.initState();
-    _usersStream = FirebaseFirestore.instance.collection('users').snapshots();
-    final String? myId = FirebaseAuth.instance.currentUser?.uid;
-    if (myId != null) {
+    _myId = FirebaseAuth.instance.currentUser?.uid;
+    if (_myId != null) {
       _chatsStream = FirebaseFirestore.instance
           .collection('chats')
-          .where('participants', arrayContains: myId)
+          .where('participants', arrayContains: _myId)
           .snapshots();
     }
-    BlockService.instance.hidden.addListener(_onBlockedChanged);
-    // Friend requests badge in the AppBar (Friends step 2, 4 Oct 2026).
+    BlockService.instance.hidden.addListener(_onListsChanged);
+    // Friend requests badge (step 2) + online strip / suggestions (step 4).
     FriendService.instance.start();
+    FriendService.instance.friends.addListener(_onListsChanged);
   }
 
-  void _onBlockedChanged() {
+  void _onListsChanged() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _searchController.dispose();
-    BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    BlockService.instance.hidden.removeListener(_onListsChanged);
+    FriendService.instance.friends.removeListener(_onListsChanged);
+    _profiles.dispose();
     super.dispose();
+  }
+
+  // Turns the `chats` docs into list entries, newest activity first.
+  List<_ChatEntry> _entriesFrom(List<QueryDocumentSnapshot> docs) {
+    final List<_ChatEntry> out = [];
+    for (final doc in docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final participants =
+          (data['participants'] as List?)?.cast<String>() ?? const <String>[];
+      final String otherId = participants.firstWhere(
+        (id) => id != _myId,
+        orElse: () => '',
+      );
+      if (otherId.isEmpty || BlockService.instance.isHidden(otherId)) {
+        continue;
+      }
+      final DateTime? msgAt = (data['lastMessageAt'] as Timestamp?)?.toDate();
+      final DateTime? callAt = (data['lastCallAt'] as Timestamp?)?.toDate();
+      final String lastMessage = (data['lastMessage'] as String?) ?? '';
+      DateTime? latest = msgAt;
+      bool wasCall = false;
+      if (callAt != null && (latest == null || callAt.isAfter(latest))) {
+        latest = callAt;
+        wasCall = true;
+      }
+      // A write still on its way to the server has no timestamp yet - it
+      // is, by definition, the newest thing.
+      latest ??= doc.metadata.hasPendingWrites ? DateTime.now() : null;
+      if (latest == null) continue;
+      out.add(_ChatEntry(
+        chatId: doc.id,
+        otherId: otherId,
+        lastMessage: lastMessage,
+        lastSenderId: (data['lastSenderId'] as String?) ?? '',
+        lastWasCall: wasCall || lastMessage.isEmpty,
+        at: latest,
+      ));
+    }
+    out.sort((a, b) {
+      final int c = b.at.compareTo(a.at);
+      return c != 0 ? c : a.chatId.compareTo(b.chatId);
+    });
+    return out;
+  }
+
+  // Search: match by name once that person's profile has loaded (rows
+  // that are still loading stay, so nothing jumps around mid-typing).
+  bool _matches(String uid) {
+    if (_searchQuery.isEmpty) return true;
+    final String? name = _profiles.nameIfLoaded(uid);
+    if (name == null) return true;
+    return name.toLowerCase().contains(_searchQuery);
+  }
+
+  void _openThread(String uid) {
+    HapticFeedback.selectionClick();
+    final data = _profiles.of(uid).value;
+    final String name = _profiles.nameIfLoaded(uid) ?? 'User';
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatThreadScreen(
+          otherUserId: uid,
+          otherUserName: name,
+          otherUserPhoto: (data?['photoUrl'] as String?) ?? '',
+        ),
+      ),
+    );
+  }
+
+  void _openProfile(String uid) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: uid)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final currentUser = FirebaseAuth.instance.currentUser;
-
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -104,12 +257,10 @@ class _ChatScreenState extends State<ChatScreen> {
               controller: _searchController,
               style: const TextStyle(color: Colors.white),
               onChanged: (value) {
-                setState(() {
-                  _searchQuery = value.trim().toLowerCase();
-                });
+                setState(() => _searchQuery = value.trim().toLowerCase());
               },
               decoration: InputDecoration(
-                hintText: 'Search users...',
+                hintText: 'Search chats',
                 hintStyle: const TextStyle(color: Colors.grey),
                 prefixIcon: const Icon(Icons.search, color: Colors.grey),
                 suffixIcon: _searchQuery.isNotEmpty
@@ -132,194 +283,121 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _usersStream,
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  if (snapshot.hasError) {
-                    return Center(
-                      child: Text(
-                        "Couldn't load chats. Check your connection.",
-                        style: TextStyle(color: Colors.grey[600], fontSize: 15),
-                      ),
-                    );
-                  }
-                  return const Center(
-                    child: CircularProgressIndicator(color: Colors.redAccent),
-                  );
-                }
-
-                var users = (snapshot.data?.docs ?? [])
-                    .where((doc) =>
-                        doc.id != currentUser?.uid &&
-                        !BlockService.instance.isHidden(doc.id))
-                    .toList();
-
-                if (_searchQuery.isNotEmpty) {
-                  users = users.where((doc) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    final name =
-                        (data['displayName'] ?? '').toString().toLowerCase();
-                    return name.contains(_searchQuery);
-                  }).toList();
-                }
-
-                if (users.isEmpty) {
-                  return Center(
-                    child: Text(
-                      _searchQuery.isNotEmpty
-                          ? 'No users found'
-                          : 'No other users yet',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 15),
-                    ),
-                  );
-                }
-
-                // Whoever you most recently messaged OR called should sit
-                // at the top of the list, like every other chat app - this
-                // reads the same `chats` docs that sending a message
-                // (lastMessageAt) and starting a call (lastCallAt, see
-                // _startVideoCall below) already write.
-                return StreamBuilder<QuerySnapshot>(
-                  stream: _chatsStream,
-                  builder: (context, chatSnap) {
-                    final Map<String, DateTime> lastActivity = {};
-                    for (final doc in chatSnap.data?.docs ?? []) {
-                      final data = doc.data() as Map<String, dynamic>;
-                      final participants =
-                          (data['participants'] as List?)?.cast<String>() ??
-                              const [];
-                      final String otherId = participants.firstWhere(
-                        (id) => id != currentUser?.uid,
-                        orElse: () => '',
-                      );
-                      if (otherId.isEmpty) continue;
-                      final DateTime? msgAt =
-                          (data['lastMessageAt'] as Timestamp?)?.toDate();
-                      final DateTime? callAt =
-                          (data['lastCallAt'] as Timestamp?)?.toDate();
-                      DateTime? latest = msgAt;
-                      if (callAt != null &&
-                          (latest == null || callAt.isAfter(latest))) {
-                        latest = callAt;
-                      }
-                      if (latest != null) lastActivity[otherId] = latest;
-                    }
-
-                    final sortedUsers = List.of(users)
-                      ..sort((a, b) {
-                        final DateTime? aTime = lastActivity[a.id];
-                        final DateTime? bTime = lastActivity[b.id];
-                        if (aTime != null && bTime != null) {
-                          return bTime.compareTo(aTime);
+            child: _chatsStream == null
+                ? const SizedBox.shrink()
+                : StreamBuilder<QuerySnapshot>(
+                    stream: _chatsStream,
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData) {
+                        if (snapshot.hasError) {
+                          return const _MessagesEmptyState(
+                            icon: Icons.wifi_off_rounded,
+                            title: "Couldn't load chats",
+                            subtitle: 'Check your connection and try again.',
+                          );
                         }
-                        if (aTime != null) return -1;
-                        if (bTime != null) return 1;
-                        // Neither has chatted/called yet - keep a stable,
-                        // deterministic order instead of an unstable sort
-                        // leaving them to flicker between rebuilds.
-                        return a.id.compareTo(b.id);
-                      });
-
-                    final onlineUsers = _searchQuery.isNotEmpty
-                        ? const <QueryDocumentSnapshot>[]
-                        : sortedUsers
-                            .where((doc) => isUserOnline(
-                                doc.data() as Map<String, dynamic>))
-                            .toList();
-
-                    return Column(
-                      children: [
-                        if (onlineUsers.isNotEmpty)
-                          _OnlineNowStrip(users: onlineUsers),
-                        Expanded(
-                          child: ListView.builder(
-                            itemCount: sortedUsers.length,
-                            itemBuilder: (context, index) {
-                              final userData = sortedUsers[index].data()
-                                  as Map<String, dynamic>;
-                              final String otherUserId = sortedUsers[index].id;
-                              final String displayName =
-                                  userData['displayName'] ?? 'User';
-                              final String photoUrl =
-                                  userData['photoUrl'] ?? '';
-                              final bool isOnline = isUserOnline(userData);
-
-                              return ListTile(
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => PublicProfileScreen(
-                                          userId: otherUserId),
-                                    ),
-                                  );
-                                },
-                                leading: Stack(
-                                  clipBehavior: Clip.none,
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(2),
-                                      decoration: const BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            Color(0xFFFF4B6E),
-                                            Color(0xFF9C4DFF)
-                                          ],
-                                        ),
-                                      ),
-                                      child: CircleAvatar(
-                                        radius: 24,
-                                        backgroundColor: Colors.grey[850],
-                                        backgroundImage: photoUrl.isNotEmpty
-                                            ? NetworkImage(photoUrl)
-                                            : null,
-                                        child: photoUrl.isEmpty
-                                            ? Text(
-                                                displayName.isNotEmpty
-                                                    ? displayName[0]
-                                                        .toUpperCase()
-                                                    : '?',
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 18,
-                                                ),
-                                              )
-                                            : null,
-                                      ),
-                                    ),
-                                    if (isOnline)
-                                      const Positioned(
-                                        right: -2,
-                                        bottom: -2,
-                                        child: SparkleStarBadge(),
-                                      ),
-                                  ],
-                                ),
-                                title: Text(
-                                  displayName,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                trailing: const Icon(Icons.chevron_right,
-                                    color: Colors.grey),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                );
-              },
-            ),
+                        return const Center(
+                          child: CircularProgressIndicator(
+                              color: Color(0xFFFF4B6E)),
+                        );
+                      }
+                      return _buildList(_entriesFrom(snapshot.data!.docs));
+                    },
+                  ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildList(List<_ChatEntry> allChats) {
+    final Set<String> chatted = allChats.map((c) => c.otherId).toSet();
+    final List<String> friends = FriendService.instance.friends.value
+        .where((id) => id != _myId && !BlockService.instance.isHidden(id))
+        .toList()
+      ..sort();
+
+    final List<_ChatEntry> chats =
+        allChats.where((c) => _matches(c.otherId)).toList();
+    final List<String> suggested = friends
+        .where((id) => !chatted.contains(id))
+        .take(_kSuggestedLimit)
+        .where(_matches)
+        .toList();
+    final List<String> onlineCandidates = _searchQuery.isNotEmpty
+        ? const <String>[]
+        : friends.take(_kOnlineCheckLimit).toList();
+
+    if (chats.isEmpty && suggested.isEmpty) {
+      if (_searchQuery.isNotEmpty) {
+        return const _MessagesEmptyState(
+          icon: Icons.search_off_rounded,
+          title: 'No matches',
+          subtitle: 'Try a different name.',
+        );
+      }
+      return Column(
+        children: [
+          if (onlineCandidates.isNotEmpty)
+            _OnlineNowStrip(
+              candidates: onlineCandidates,
+              profiles: _profiles,
+              onTap: _openThread,
+            ),
+          const Expanded(
+            child: _MessagesEmptyState(
+              icon: Icons.chat_bubble_outline_rounded,
+              title: 'No chats yet',
+              subtitle:
+                  'Add friends to start chatting 💬\nOnly friends can message and call each other.',
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Header (online strip) + chats + "Suggested" header + suggestions.
+    final int chatCount = chats.length;
+    final bool hasSuggested = suggested.isNotEmpty;
+    final int itemCount =
+        1 + chatCount + (hasSuggested ? 1 + suggested.length : 0);
+
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 24),
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index == 0) {
+          return onlineCandidates.isEmpty
+              ? const SizedBox.shrink()
+              : _OnlineNowStrip(
+                  candidates: onlineCandidates,
+                  profiles: _profiles,
+                  onTap: _openThread,
+                );
+        }
+        final int i = index - 1;
+        if (i < chatCount) {
+          final c = chats[i];
+          return _ChatRow(
+            key: ValueKey('chat_${c.chatId}'),
+            entry: c,
+            myId: _myId ?? '',
+            profile: _profiles.of(c.otherId),
+            onTap: () => _openThread(c.otherId),
+            onAvatarTap: () => _openProfile(c.otherId),
+          );
+        }
+        if (i == chatCount) {
+          return const _SectionHeader(title: 'Suggested');
+        }
+        final String uid = suggested[i - chatCount - 1];
+        return _SuggestedRow(
+          key: ValueKey('suggest_$uid'),
+          profile: _profiles.of(uid),
+          onSayHi: () => _openThread(uid),
+          onAvatarTap: () => _openProfile(uid),
+        );
+      },
     );
   }
 }
@@ -389,94 +467,424 @@ class _FriendRequestsAction extends StatelessWidget {
   }
 }
 
-// Horizontal strip of currently-online users, shown above the main Chat
-// list - Fly's own take on the "Active now" row other chat apps show,
-// using the sparkle-star badge instead of a plain green dot.
-class _OnlineNowStrip extends StatelessWidget {
-  final List<QueryDocumentSnapshot> users;
+// Short Messenger-style time: "now", "5m", "14:32" (today), "Yesterday",
+// "Mon" (this week), else "4/10".
+String _chatTime(DateTime at) {
+  final DateTime now = DateTime.now();
+  final Duration diff = now.difference(at);
+  if (diff.inMinutes < 1) return 'now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+  final DateTime today = DateTime(now.year, now.month, now.day);
+  final DateTime day = DateTime(at.year, at.month, at.day);
+  final int daysAgo = today.difference(day).inDays;
+  if (daysAgo == 0) {
+    final String h = at.hour.toString().padLeft(2, '0');
+    final String m = at.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+  if (daysAgo == 1) return 'Yesterday';
+  if (daysAgo < 7) {
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return names[at.weekday - 1];
+  }
+  return '${at.day}/${at.month}';
+}
 
-  const _OnlineNowStrip({required this.users});
+String _nameOf(Map<String, dynamic>? data) {
+  final String name = ((data?['displayName'] as String?) ?? '').trim();
+  return name.isEmpty ? 'User' : name;
+}
+
+// Avatar with the Fly gradient ring and the sparkle star when online.
+class _ChatAvatar extends StatelessWidget {
+  final Map<String, dynamic>? data;
+  final double radius;
+
+  const _ChatAvatar({required this.data, this.radius = 26});
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 92,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        itemCount: users.length,
-        itemBuilder: (context, index) {
-          final data = users[index].data() as Map<String, dynamic>;
-          final String userId = users[index].id;
-          final String displayName = data['displayName'] ?? 'User';
-          final String photoUrl = data['photoUrl'] ?? '';
+    final String photoUrl = (data?['photoUrl'] as String?) ?? '';
+    final String name = data == null ? '' : _nameOf(data);
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(2),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF), Color(0xFF3A8DFF)],
+            ),
+          ),
+          child: CircleAvatar(
+            radius: radius,
+            backgroundColor: Colors.grey[850],
+            backgroundImage:
+                photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+            child: photoUrl.isEmpty
+                ? Text(
+                    name.isNotEmpty ? name[0].toUpperCase() : '',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: radius * 0.7,
+                    ),
+                  )
+                : null,
+          ),
+        ),
+        if (isUserOnline(data))
+          const Positioned(
+            right: -2,
+            bottom: -2,
+            child: SparkleStarBadge(),
+          ),
+      ],
+    );
+  }
+}
 
-          return GestureDetector(
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => PublicProfileScreen(userId: userId),
+// Shrinks a touch while pressed - Fly's spring feel on list rows.
+class _PressScale extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTap;
+
+  const _PressScale({required this.child, required this.onTap});
+
+  @override
+  State<_PressScale> createState() => _PressScaleState();
+}
+
+class _PressScaleState extends State<_PressScale> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTap: widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? 0.97 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutBack,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+// One conversation: avatar, name, "You: ..." / last message / "📞 Call",
+// and the time. Listens only to this person's profile.
+class _ChatRow extends StatelessWidget {
+  final _ChatEntry entry;
+  final String myId;
+  final ValueNotifier<Map<String, dynamic>?> profile;
+  final VoidCallback onTap;
+  final VoidCallback onAvatarTap;
+
+  const _ChatRow({
+    super.key,
+    required this.entry,
+    required this.myId,
+    required this.profile,
+    required this.onTap,
+    required this.onAvatarTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool mine = entry.lastSenderId == myId;
+    final String preview = entry.lastWasCall
+        ? '📞 Call'
+        : (mine ? 'You: ${entry.lastMessage}' : entry.lastMessage);
+
+    return ValueListenableBuilder<Map<String, dynamic>?>(
+      valueListenable: profile,
+      builder: (context, data, _) {
+        return _PressScale(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: onAvatarTap,
+                  child: _ChatAvatar(data: data),
                 ),
-              );
-            },
-            child: Container(
-              width: 68,
-              margin: const EdgeInsets.only(right: 10),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Stack(
-                    clipBehavior: Clip.none,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          gradient: LinearGradient(
-                            colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
-                          ),
-                        ),
-                        child: CircleAvatar(
-                          radius: 26,
-                          backgroundColor: Colors.grey[850],
-                          backgroundImage: photoUrl.isNotEmpty
-                              ? NetworkImage(photoUrl)
-                              : null,
-                          child: photoUrl.isEmpty
-                              ? Text(
-                                  displayName.isNotEmpty
-                                      ? displayName[0].toUpperCase()
-                                      : '?',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 18,
-                                  ),
-                                )
-                              : null,
+                      Text(
+                        data == null ? ' ' : _nameOf(data),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
                         ),
                       ),
-                      const Positioned(
-                        right: -2,
-                        bottom: -2,
-                        child: SparkleStarBadge(),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              preview,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: Colors.grey[500], fontSize: 13),
+                            ),
+                          ),
+                          Text(
+                            '  ·  ${_chatTime(entry.at)}',
+                            style: TextStyle(
+                                color: Colors.grey[600], fontSize: 12),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    displayName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// A friend you haven't chatted with yet, with a gradient "Say hi" chip.
+class _SuggestedRow extends StatelessWidget {
+  final ValueNotifier<Map<String, dynamic>?> profile;
+  final VoidCallback onSayHi;
+  final VoidCallback onAvatarTap;
+
+  const _SuggestedRow({
+    super.key,
+    required this.profile,
+    required this.onSayHi,
+    required this.onAvatarTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<Map<String, dynamic>?>(
+      valueListenable: profile,
+      builder: (context, data, _) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Row(
+            children: [
+              GestureDetector(
+                onTap: onAvatarTap,
+                child: _ChatAvatar(data: data, radius: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      data == null ? ' ' : _nameOf(data),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Friends on Fly',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              _PressScale(
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  onSayHi();
+                },
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(18),
+                    gradient: const LinearGradient(colors: [
+                      Color(0xFFFF4B6E),
+                      Color(0xFF9C4DFF),
+                      Color(0xFF3A8DFF),
+                    ]),
                   ),
-                ],
+                  child: const Text(
+                    'Say hi 👋',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  const _SectionHeader({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: Colors.grey[400],
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+}
+
+// Friendly empty / error state for Messages: soft gradient bubble + icon.
+class _MessagesEmptyState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  const _MessagesEmptyState({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    const Color(0xFFFF4B6E).withValues(alpha: 0.25),
+                    const Color(0xFF9C4DFF).withValues(alpha: 0.25),
+                    const Color(0xFF3A8DFF).withValues(alpha: 0.25),
+                  ],
+                ),
+              ),
+              child: Icon(icon, color: Colors.white70, size: 44),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.bold,
               ),
             ),
-          );
-        },
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey[500], fontSize: 13),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+// "Online now" - my friends who are online right now, Fly's take on
+// Messenger's "Active now" row (sparkle star instead of a green dot).
+// Listens to just the candidates' profiles; hides itself when nobody is
+// online. Tapping someone opens the chat with them.
+class _OnlineNowStrip extends StatelessWidget {
+  final List<String> candidates;
+  final _ProfileCache profiles;
+  final void Function(String uid) onTap;
+
+  const _OnlineNowStrip({
+    required this.candidates,
+    required this.profiles,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final notifiers = {for (final id in candidates) id: profiles.of(id)};
+    return ListenableBuilder(
+      listenable: Listenable.merge(notifiers.values.toList()),
+      builder: (context, _) {
+        final online = notifiers.entries
+            .where((e) => isUserOnline(e.value.value))
+            .toList();
+        if (online.isEmpty) return const SizedBox.shrink();
+        return SizedBox(
+          height: 96,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            itemCount: online.length,
+            itemBuilder: (context, index) {
+              final String uid = online[index].key;
+              final data = online[index].value.value;
+              final String name = _nameOf(data);
+              return _PressScale(
+                onTap: () => onTap(uid),
+                child: Container(
+                  width: 68,
+                  margin: const EdgeInsets.only(right: 10),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _ChatAvatar(data: data),
+                      const SizedBox(height: 4),
+                      Text(
+                        name.split(' ').first,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
