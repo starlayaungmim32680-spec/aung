@@ -1499,6 +1499,8 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
         'lastMessage': preview,
         'lastMessageAt': FieldValue.serverTimestamp(),
         'lastSenderId': me.uid,
+        // Unread count for the Messages list (see chat_screen.dart).
+        'unread': {ownerId: FieldValue.increment(1)},
       }, SetOptions(merge: true));
 
       final myProfile = await FirebaseFirestore.instance

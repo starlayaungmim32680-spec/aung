@@ -17,6 +17,8 @@ rules_version = '2';
 // write the chat doc, or start a call (areFriends()).
 // Update (4 Oct 2026): users/{uid}/private/{docId} - owner-only (search
 // history).
+// Update (4 Oct 2026): chats/{id}.unread.<uid> - anyone in the room may
+// reset their OWN unread count to 0.
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -341,9 +343,21 @@ service cloud.firestore {
       allow list: if signedIn()
         && request.auth.uid in resource.data.participants;
       // Writing lastMessage / lastCallAt: friends only (4 Oct 2026).
-      allow create, update: if inRoom(chatId)
+      allow create: if inRoom(chatId)
         && request.auth.uid in request.resource.data.participants
         && areFriends(chatId);
+      // Update: friends as above, OR (anyone in the room, even after
+      // unfriending) just resetting MY OWN unread count to 0 - so an old
+      // chat doesn't stay bold forever (4 Oct 2026, chat_screen.dart).
+      allow update: if inRoom(chatId) && (
+        (request.auth.uid in request.resource.data.participants
+          && areFriends(chatId))
+        || (changedKeys().hasOnly(['unread'])
+          && request.resource.data.get('unread', {})
+               .diff(resource.data.get('unread', {}))
+               .affectedKeys().hasOnly([request.auth.uid])
+          && request.resource.data.unread[request.auth.uid] == 0)
+      );
       allow delete: if false;
 
       match /messages/{messageId} {

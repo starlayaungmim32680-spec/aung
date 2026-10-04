@@ -69,6 +69,12 @@
 > typing; it shows my recent accounts (photo + name) and words (🕐 / #),
 > saved with the account in ONE doc `users/{uid}/private/searchHistory`
 > (new owner-only `private` rule) + a phone copy. `search_history.dart`._
+> _4 Oct 2026 (late, confirmed on two phones): **unread chats** - the
+> sender adds `unread.<receiver>: increment(1)` to the chat doc (chat
+> send + story reply); opening / reading the thread sets my
+> `unread.<me>` back to 0; the Messages list shows bold name/preview,
+> a pink time and a Fly-gradient count pill (9+). New rule: anyone in
+> the room may reset only their OWN unread to 0, even after unfriending._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1248,7 +1254,16 @@ incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
   - Known nit: `_ProfileCache.of()` has an unnecessary `as` cast
     (analyzer `unnecessary_cast` warning at ~line 104) - harmless, remove
     next time this file is edited.
-  - Not built yet: unread-in-bold (needs a new chat-doc field).
+  - **Unread (4 Oct 2026, confirmed):** `_ChatEntry.unread` =
+    `chats/{id}.unread.<me>`; unread (and not mine) → `_ChatRow` bold
+    name + white bold preview + pink time + elastic gradient count pill
+    (`9+`). Increments: `_afterSend` merges `unread: {other:
+increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
+    `ChatThreadScreen._markChatRead()` (reads the chat doc, updates
+    `unread.<me>: 0` only if >0) - called in initState and after
+    `_markMessagesAsSeen` marks anything seen. Chats from before this
+    have no counts (never bold). Not built: a total-unread badge on the
+    bottom-nav Messages icon.
   - Photos and voice notes upload to Bunny Storage (see §3, 1 Oct 2026).
 - `ChatThreadScreen` status + reactions **(1 Oct 2026, confirmed)**:
   - Messages are created with `seen: false, delivered: false`; opening the
@@ -1460,7 +1475,9 @@ screen needs to be created from scratch — it may already exist there.)_
   the Sep 2026 fields and still work.
   - `stories/{id}/reactions/{uid}`: { uid, type, userName, userPhoto, createdAt }
 - `chats/{chatId}` (chatId = sorted `{uidA}_{uidB}`): { participants: [uidA,
-  uidB], lastMessage, lastMessageAt, lastSenderId, lastCallAt }, plus
+  uidB], lastMessage, lastMessageAt, lastSenderId, lastCallAt, unread:
+  {uid: count} (4 Oct 2026; rules: create = friends; update = friends,
+  OR only resetting my own `unread.<me>` to 0) }, plus
   `messages`/`activity` subcollections. A message: { senderId, type
   (text/image/audio), text/imageUrl/audioUrl, seen, delivered (1 Oct
   2026), reactions: {uid: emoji} (optional), createdAt, storyId/storyThumb
@@ -1622,8 +1639,9 @@ others only see it once encoded (Bunny webhook).
    block the call doc / message - cleanup, not urgent); move
    `FriendService.start()` into `main_navigation_screen.dart` next to
    `BlockService.start()`; delete-account should remove the user's
-   `friends` / `friendRequests` docs (both sides); unread-in-bold on the
-   Messages list.
+   `friends` / `friendRequests` docs (both sides) and
+   `private/searchHistory`. (Unread-in-bold is done, 4 Oct 2026; a total
+   unread badge on the bottom nav could come next.)
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)

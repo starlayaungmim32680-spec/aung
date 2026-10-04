@@ -73,6 +73,9 @@ class _ChatEntry {
   final String lastSenderId;
   final bool lastWasCall;
   final DateTime at;
+  // Messages from them I haven't read yet (chats/{id}.unread.<me>,
+  // 4 Oct 2026) - 0 for old chats without the field.
+  final int unread;
 
   const _ChatEntry({
     required this.chatId,
@@ -81,6 +84,7 @@ class _ChatEntry {
     required this.lastSenderId,
     required this.lastWasCall,
     required this.at,
+    this.unread = 0,
   });
 }
 
@@ -199,6 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
         lastSenderId: (data['lastSenderId'] as String?) ?? '',
         lastWasCall: wasCall || lastMessage.isEmpty,
         at: latest,
+        unread: ((data['unread'] as Map?)?[_myId] as num?)?.toInt() ?? 0,
       ));
     }
     out.sort((a, b) {
@@ -601,6 +606,8 @@ class _ChatRow extends StatelessWidget {
     final String preview = entry.lastWasCall
         ? '📞 Call'
         : (mine ? 'You: ${entry.lastMessage}' : entry.lastMessage);
+    // Messenger-style unread: bold white name + preview + a count pill.
+    final bool unread = entry.unread > 0 && !mine;
 
     return ValueListenableBuilder<Map<String, dynamic>?>(
       valueListenable: profile,
@@ -624,9 +631,10 @@ class _ChatRow extends StatelessWidget {
                         data == null ? ' ' : _nameOf(data),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
-                          fontWeight: FontWeight.w600,
+                          fontWeight:
+                              unread ? FontWeight.w800 : FontWeight.w600,
                           fontSize: 15,
                         ),
                       ),
@@ -639,17 +647,59 @@ class _ChatRow extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                  color: Colors.grey[500], fontSize: 13),
+                                color: unread ? Colors.white : Colors.grey[500],
+                                fontSize: 13,
+                                fontWeight: unread
+                                    ? FontWeight.w700
+                                    : FontWeight.normal,
+                              ),
                             ),
                           ),
                           Text(
                             '  ·  ${_chatTime(entry.at)}',
                             style: TextStyle(
-                                color: Colors.grey[600], fontSize: 12),
+                              color: unread
+                                  ? const Color(0xFFFF7A95)
+                                  : Colors.grey[600],
+                              fontSize: 12,
+                              fontWeight:
+                                  unread ? FontWeight.w700 : FontWeight.normal,
+                            ),
                           ),
                         ],
                       ),
                     ],
+                  ),
+                ),
+                // Fly gradient count pill that pops in (Messenger shows a
+                // plain blue dot).
+                AnimatedScale(
+                  scale: unread ? 1 : 0,
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.elasticOut,
+                  child: Container(
+                    margin: const EdgeInsets.only(left: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    constraints:
+                        const BoxConstraints(minWidth: 22, minHeight: 22),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(11),
+                      gradient: const LinearGradient(colors: [
+                        Color(0xFFFF4B6E),
+                        Color(0xFF9C4DFF),
+                        Color(0xFF3A8DFF),
+                      ]),
+                    ),
+                    child: Text(
+                      entry.unread > 9 ? '9+' : '${entry.unread}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -970,6 +1020,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     FriendService.instance.friends.addListener(_onBlockedChanged);
     FriendService.instance.incoming.addListener(_onBlockedChanged);
     FriendService.instance.loaded.addListener(_onBlockedChanged);
+    // Opening the chat = I've read it (Messages list stops being bold).
+    _markChatRead();
     _initRecorder();
     _messageController.addListener(() {
       final bool has = _messageController.text.trim().isNotEmpty;
@@ -1065,6 +1117,8 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       'lastMessage': previewText,
       'lastMessageAt': FieldValue.serverTimestamp(),
       'lastSenderId': myId,
+      // One more unread for them (Messages list bold + count, 4 Oct 2026).
+      'unread': {widget.otherUserId: FieldValue.increment(1)},
     }, SetOptions(merge: true));
 
     await _notifyOther(previewText);
@@ -1644,7 +1698,23 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
     if (hasUnseen) {
       await batch.commit();
+      _markChatRead();
     }
+  }
+
+  // Sets MY unread count for this chat back to 0 (chats/{id}.unread.<me>).
+  // The rules allow exactly this even after unfriending, so old threads
+  // don't stay bold forever. Skipped when it's already 0.
+  Future<void> _markChatRead() async {
+    final myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+    final ref = FirebaseFirestore.instance.collection('chats').doc(_chatId);
+    try {
+      final snap = await ref.get();
+      final num? count = (snap.data()?['unread'] as Map?)?[myId] as num?;
+      if (count == null || count == 0) return;
+      await ref.update({'unread.$myId': 0});
+    } catch (_) {}
   }
 
   // Replaces the message box when either side has blocked the other -
