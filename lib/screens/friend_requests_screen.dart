@@ -69,6 +69,16 @@ class _FriendRequestsScreenState extends State<FriendRequestsScreen> {
         () => FirebaseFirestore.instance.collection('users').doc(uid).get(),
       );
 
+  // Removes a request whose sender's account no longer exists (once).
+  final Set<String> _dropped = {};
+  void _dropStale(String uid) {
+    if (!_dropped.add(uid)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _handled.add(uid));
+      FriendService.instance.decline(uid).catchError((_) {});
+    });
+  }
+
   Future<void> _confirm(String uid, String name) async {
     setState(() => _handled.add(uid));
     try {
@@ -185,6 +195,14 @@ class _FriendRequestsScreenState extends State<FriendRequestsScreen> {
                           : FutureBuilder<DocumentSnapshot>(
                               future: _profileOf(uid),
                               builder: (context, profileSnap) {
+                                // The sender deleted their account: clear
+                                // the leftover request (I'm allowed to)
+                                // instead of showing a ghost "User" row.
+                                if (profileSnap.hasData &&
+                                    !profileSnap.data!.exists) {
+                                  _dropStale(uid);
+                                  return const SizedBox.shrink();
+                                }
                                 final data = profileSnap.data?.data()
                                     as Map<String, dynamic>?;
                                 final String rawName =

@@ -280,6 +280,10 @@ class ProfileScreen extends StatelessWidget {
         } catch (_) {}
       }
 
+      // Friends, requests, search history, saved list, notifications and
+      // blocks (4 Oct 2026) - see _deleteSocialData below.
+      await _deleteSocialData(firestore, uid);
+
       // A live stream left marked as live would keep showing up.
       try {
         await firestore.collection('liveStreams').doc(uid).delete();
@@ -302,6 +306,23 @@ class ProfileScreen extends StatelessWidget {
       }
 
       await firestore.collection('users').doc(uid).delete();
+
+      // Search (Cloudflare D1): with users/{uid} gone, the Worker's
+      // /search-sync-me removes my name and my posts from search. Must
+      // run BEFORE user.delete() - it needs my sign-in token.
+      try {
+        await http
+            .post(
+              Uri.parse('$kTokenServerUrl/search-sync-me'),
+              headers: {
+                ...await workerAuthHeaders(),
+                'Content-Type': 'application/json',
+              },
+              body: '{}',
+            )
+            .timeout(const Duration(seconds: 10));
+      } catch (_) {}
+
       await user.delete();
 
       if (context.mounted) {
@@ -1633,4 +1654,58 @@ String _fmtCount(int n) {
   if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
   if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
   return '$n';
+}
+
+// Account deletion, part 2 (4 Oct 2026): removes what the Firestore rules
+// let me remove about myself, each step best-effort so one failure never
+// blocks deleting the account:
+//   - friends, BOTH sides (users/{me}/friends/x and users/x/friends/{me});
+//   - friend requests sent TO me (requests I sent clean themselves up:
+//     the other person's Friend Requests screen drops ones whose sender
+//     no longer exists - friend_requests_screen.dart);
+//   - private/searchHistory, saved/, notifications/;
+//   - my blocks + their blockedBy mirrors.
+// (Deleting users/{me} itself does NOT delete its subcollections - that's
+// why each one is cleared here.)
+Future<void> _deleteSocialData(FirebaseFirestore firestore, String uid) async {
+  final me = firestore.collection('users').doc(uid);
+
+  Future<void> each(
+    String sub,
+    Future<void> Function(QueryDocumentSnapshot<Map<String, dynamic>> d) fn,
+  ) async {
+    try {
+      final snap = await me.collection(sub).get();
+      for (final d in snap.docs) {
+        try {
+          await fn(d);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  await each('friends', (d) async {
+    await firestore
+        .collection('users')
+        .doc(d.id)
+        .collection('friends')
+        .doc(uid)
+        .delete();
+    await d.reference.delete();
+  });
+  await each('friendRequests', (d) => d.reference.delete());
+  await each('blocked', (d) async {
+    await firestore
+        .collection('users')
+        .doc(d.id)
+        .collection('blockedBy')
+        .doc(uid)
+        .delete();
+    await d.reference.delete();
+  });
+  await each('saved', (d) => d.reference.delete());
+  await each('notifications', (d) => d.reference.delete());
+  try {
+    await me.collection('private').doc('searchHistory').delete();
+  } catch (_) {}
 }

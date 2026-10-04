@@ -78,6 +78,12 @@
 > _4 Oct 2026 (late, confirmed): **unread badge on the bottom-bar Chat
 > icon** - total of my `unread.<me>` across chats (blocked skipped), from
 > the chats listener that already runs; no extra reads._
+> _4 Oct 2026 (late, confirmed with a throw-away test account): **delete
+> account cleans up social data** - friends (both sides), incoming friend
+> requests, blocks + mirrors, saved, notifications, search history, and
+> (via the Worker's `/search-sync-me`, called before `user.delete()`) my
+> name + posts in D1 search. Requests I SENT are dropped by the
+> receiver's Friend Requests screen once my user doc is gone._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -560,8 +566,10 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       3+ chars = FTS phrase match anywhere in the text, 1-2 chars = name /
       tag prefix LIKE; punctuation stripped, so `#travel` → `travel`).
       `POST /search-sync-me` reads the caller's `users/{uid}` from
-      Firestore itself and upserts their name (deletes the row if the doc
-      is gone). `/bunny-webhook` upserts a post into search when its video
+      Firestore itself and upserts their name; if the doc is gone
+      (account deleted - profile_screen.dart calls it right before
+      `user.delete()`) it deletes the user row AND all their posts
+      (`owner_id`) from D1. `/bunny-webhook` upserts a post into search when its video
       becomes ready (best-effort, never fails the webhook).
       `GET /search-backfill?token=<SEARCH_ADMIN_TOKEN>&what=users|posts`
       (no Firebase sign-in; token must be letters/digits only - `#&+%`
@@ -815,7 +823,10 @@ false` posts; throws `SearchException` with a friendly message.
   friends snapshot - screens show nothing (not the "not friends" UI) until
   then. `start()` is called by the profile button, `ChatScreen`,
   `ChatThreadScreen` and the story viewer (`_StoryViewerPage`).
-- `screens/friend_requests_screen.dart` **(4 Oct 2026, Friends step 2,
+- `screens/friend_requests_screen.dart` (since 4 Oct 2026 late: a request
+  whose sender's `users/{uid}` no longer exists is hidden and declined
+  once via `_dropStale` - that's how requests a deleted account SENT get
+  cleaned up) **(4 Oct 2026, Friends step 2,
   confirmed)** — everyone who sent me a request (`users/{me}/
 friendRequests` ordered by `createdAt` desc, stream built in initState),
   each sender's `users/{uid}` read once (Future cached in a map, so rows
@@ -1604,7 +1615,13 @@ others only see it once encoded (Bunny webhook).
   off — some keyboards never unlocked it with `onChanged`), then re-enter
   the password (eye icon to show/hide it); "Forgot password?" there emails
   a reset link to the account's own address (so only the email owner can
-  finish; test accounts with made-up emails never receive it). Still left behind (no server-side
+  finish; test accounts with made-up emails never receive it). **Since
+  4 Oct 2026** `_deleteSocialData()` (top-level, end of
+  profile_screen.dart) also clears, best-effort: `friends` (both sides),
+  incoming `friendRequests`, `blocked` (+ the other person's `blockedBy`
+  mirror), `saved`, `notifications`, `private/searchHistory`; then after
+  deleting `users/{uid}` it calls the Worker's `/search-sync-me` so D1
+  drops my name + posts. Still left behind (no server-side
   cleanup on the Spark plan): Bunny video/image files, comments/reactions
   on other people's posts, other users' reposts of their videos, and other
   users' `following` entries pointing at them.
@@ -1649,10 +1666,12 @@ others only see it once encoded (Bunny webhook).
    `/call-push` and `/chat-push` don't check friendship (the rules already
    block the call doc / message - cleanup, not urgent); move
    `FriendService.start()` into `main_navigation_screen.dart` next to
-   `BlockService.start()`; delete-account should remove the user's
-   `friends` / `friendRequests` docs (both sides) and
-   `private/searchHistory`. (Unread-in-bold and the bottom-bar unread
-   badge are done, 4 Oct 2026.)
+   `BlockService.start()`. (Unread-in-bold, the bottom-bar unread badge
+   and delete-account cleanup of friends / requests / search history are
+   done, 4 Oct 2026.) Still left behind on delete (needs a server, e.g.
+   Cloud Functions now that we're on Blaze): Bunny files, comments /
+   reactions on others' posts, others' reposts, others' `following` /
+   `followers` / `blockedBy` entries, chat docs.
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)

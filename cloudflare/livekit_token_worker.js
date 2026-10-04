@@ -44,6 +44,8 @@
 //                         Worker reads the caller's users/{uid} doc from
 //                         Firestore ITSELF (never trusts the app) and
 //                         updates their name in D1 only if it changed.
+//                         If that doc no longer exists (account deleted),
+//                         it removes the user AND all their posts from D1.
 //                         Posts get indexed by /bunny-webhook when their
 //                         video becomes ready.
 //  GET  /search-backfill  - (4 Oct 2026) one-time copy of existing users /
@@ -1252,8 +1254,12 @@ async function handleSearchSyncMe(env, caller) {
     const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
     const fields = await firestoreGetFields(env, dbToken, `users/${caller.uid}`);
     if (fields === null) {
-      await env.SEARCH_DB.prepare('DELETE FROM users WHERE uid = ?1')
-        .bind(caller.uid).run();
+      // Account deleted (profile_screen.dart calls this right after
+      // removing users/{uid}): drop my name AND my posts from search.
+      await env.SEARCH_DB.batch([
+        env.SEARCH_DB.prepare('DELETE FROM users WHERE uid = ?1').bind(caller.uid),
+        env.SEARCH_DB.prepare('DELETE FROM posts WHERE owner_id = ?1').bind(caller.uid),
+      ]);
       return jsonResponse({ removed: true });
     }
     const result = await searchUserStatement(env, caller.uid, fields).run();
