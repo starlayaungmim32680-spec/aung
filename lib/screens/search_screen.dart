@@ -13,7 +13,9 @@ import 'presence_badge.dart';
 
 // Search screen. Before typing: my RECENT searches (accounts I opened +
 // words I searched, TikTok/Facebook style - search_history.dart; no video
-// grid any more, Ko asked 4 Oct 2026). Once I type: matching accounts +
+// grid any more, Ko asked 4 Oct 2026) and "Trending on Fly" (top words
+// different people searched in the last 7 days - SearchService.trending,
+// 4 Oct 2026). Once I type: matching accounts +
 // videos. Since 4 Oct
 // 2026 the matching runs on the server (search_service.dart -> Worker ->
 // Cloudflare D1): the phone only downloads the ~20 results, and finds
@@ -46,6 +48,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void initState() {
     super.initState();
     SearchHistory.instance.load();
+    SearchService.loadTrending();
   }
 
   // Runs a search from a recent item / the keyboard's search button.
@@ -61,6 +64,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _query = q;
     });
     SearchHistory.instance.addText(q);
+    SearchService.logSearch(q);
   }
 
   void _clear() {
@@ -125,7 +129,7 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
       ),
       body: _typed.isEmpty
-          ? _RecentSearches(onSearchText: _searchNow)
+          ? _SearchHome(onSearchText: _searchNow)
           : _query.isEmpty
               ? const SizedBox.shrink()
               // A new key per query = a fresh one-shot search (the Future
@@ -135,13 +139,14 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 }
 
-// Before typing: my recent searches, newest first - accounts with their
-// photo, typed words with a clock icon; ✕ removes one, "Clear all" (after
-// asking) removes everything. Rebuilds only when the list changes.
-class _RecentSearches extends StatelessWidget {
+// Before typing: my recent searches (newest first - accounts with their
+// photo, typed words with a clock icon; ✕ removes one, "Clear all" after
+// asking) and then "Trending on Fly". Each part rebuilds only when its own
+// list changes (two ValueListenableBuilders).
+class _SearchHome extends StatelessWidget {
   final void Function(String text) onSearchText;
 
-  const _RecentSearches({required this.onSearchText});
+  const _SearchHome({required this.onSearchText});
 
   Future<void> _confirmClear(BuildContext context) async {
     final bool? ok = await showDialog<bool>(
@@ -182,78 +187,185 @@ class _RecentSearches extends StatelessWidget {
             .where(
                 (e) => !e.isUser || !BlockService.instance.isHidden(e.userId))
             .toList();
-        if (visible.isEmpty) {
-          return const _SearchMessage(
-            icon: Icons.travel_explore_rounded,
-            title: 'Search Fly',
-            subtitle:
-                'Find friends by name, or videos by a word or #hashtag.\nYour recent searches will show up here.',
-          );
-        }
-        return ListView(
-          padding: const EdgeInsets.only(bottom: 24),
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Recent',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
+        return ValueListenableBuilder<List<String>>(
+          valueListenable: SearchService.trending,
+          builder: (context, trending, _) {
+            if (visible.isEmpty && trending.isEmpty) {
+              return const _SearchMessage(
+                icon: Icons.travel_explore_rounded,
+                title: 'Search Fly',
+                subtitle:
+                    'Find friends by name, or videos by a word or #hashtag.\nYour recent searches will show up here.',
+              );
+            }
+            return ListView(
+              padding: const EdgeInsets.only(bottom: 24),
+              children: [
+                if (visible.isNotEmpty) ...[
+                  _HomeHeader(
+                    title: 'Recent',
+                    action: TextButton(
+                      onPressed: () => _confirmClear(context),
+                      child: const Text('Clear all',
+                          style: TextStyle(color: Color(0xFFFF7A95))),
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => _confirmClear(context),
-                    child: const Text('Clear all',
-                        style: TextStyle(color: Color(0xFFFF7A95))),
-                  ),
+                  for (final item in visible)
+                    Dismissible(
+                      key: ValueKey(item.key),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        color: Colors.redAccent.withValues(alpha: 0.25),
+                        child: const Icon(Icons.delete_outline,
+                            color: Colors.white),
+                      ),
+                      onDismissed: (_) => SearchHistory.instance.remove(item),
+                      child: _RecentRow(
+                        item: item,
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          if (item.isUser) {
+                            // Opening them again moves them to the top.
+                            SearchHistory.instance
+                                .addUser(item.userId, item.name, item.photo);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    PublicProfileScreen(userId: item.userId),
+                              ),
+                            );
+                          } else {
+                            onSearchText(item.text);
+                          }
+                        },
+                        onRemove: () {
+                          HapticFeedback.lightImpact();
+                          SearchHistory.instance.remove(item);
+                        },
+                      ),
+                    ),
                 ],
-              ),
-            ),
-            for (final item in visible)
-              Dismissible(
-                key: ValueKey(item.key),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 20),
-                  color: Colors.redAccent.withValues(alpha: 0.25),
-                  child: const Icon(Icons.delete_outline, color: Colors.white),
-                ),
-                onDismissed: (_) => SearchHistory.instance.remove(item),
-                child: _RecentRow(
-                  item: item,
-                  onTap: () {
-                    HapticFeedback.selectionClick();
-                    if (item.isUser) {
-                      // Opening them again moves them to the top.
-                      SearchHistory.instance
-                          .addUser(item.userId, item.name, item.photo);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              PublicProfileScreen(userId: item.userId),
-                        ),
-                      );
-                    } else {
-                      onSearchText(item.text);
-                    }
-                  },
-                  onRemove: () {
-                    HapticFeedback.lightImpact();
-                    SearchHistory.instance.remove(item);
-                  },
-                ),
-              ),
-          ],
+                if (trending.isNotEmpty) ...[
+                  if (visible.isNotEmpty) const SizedBox(height: 8),
+                  const _HomeHeader(
+                    title: 'Trending on Fly',
+                    icon: Icons.local_fire_department_rounded,
+                  ),
+                  for (int i = 0; i < trending.length; i++)
+                    _TrendingRow(
+                      rank: i + 1,
+                      term: trending[i],
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        onSearchText(trending[i]);
+                      },
+                    ),
+                ],
+              ],
+            );
+          },
         );
       },
+    );
+  }
+}
+
+class _HomeHeader extends StatelessWidget {
+  final String title;
+  final IconData? icon;
+  final Widget? action;
+
+  const _HomeHeader({required this.title, this.icon, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16, 12, 8, action == null ? 8 : 4),
+      child: Row(
+        children: [
+          if (icon != null) ...[
+            ShaderMask(
+              shaderCallback: (rect) => const LinearGradient(colors: [
+                Color(0xFFFF4B6E),
+                Color(0xFF9C4DFF),
+              ]).createShader(rect),
+              child: Icon(icon, color: Colors.white, size: 20),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          if (action != null) action!,
+        ],
+      ),
+    );
+  }
+}
+
+// One trending word: its rank (top 3 in Fly pink), the word, and a small
+// "trending up" arrow. Tapping searches it.
+class _TrendingRow extends StatelessWidget {
+  final int rank;
+  final String term;
+  final VoidCallback onTap;
+
+  const _TrendingRow({
+    required this.rank,
+    required this.term,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bool top = rank <= 3;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              child: Text(
+                '$rank',
+                style: TextStyle(
+                  color: top ? const Color(0xFFFF4B6E) : Colors.grey[500],
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                term,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Icon(
+              Icons.trending_up_rounded,
+              size: 18,
+              color: top ? const Color(0xFFFF7A95) : Colors.grey[600],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -478,6 +590,7 @@ class _SearchResultsState extends State<_SearchResults> {
                     onTap: () {
                       // Opening a video keeps the words I searched for.
                       SearchHistory.instance.addText(widget.query);
+                      SearchService.logSearch(widget.query);
                       Navigator.push(
                         context,
                         MaterialPageRoute(

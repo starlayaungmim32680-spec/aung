@@ -84,6 +84,13 @@
 > (via the Worker's `/search-sync-me`, called before `user.delete()`) my
 > name + posts in D1 search. Requests I SENT are dropped by the
 > receiver's Friend Requests screen once my user doc is gone._
+> _5 Oct 2026 (confirmed on two phones): **Trending on Fly** - Search
+> shows the top 8 words different people searched in the last 7 days
+> under "Recent" (rank, top 3 in pink, tap = search). New Worker routes
+> `/search-log` (counts a word once per person per day, only if it finds
+> a video, max 30 per person per day) and `/search-trending` (cached 10
+> min); new D1 table `search_hits`. Words count only on a real search
+> (search button, recent/trending tap, opening a video), not typing._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -577,6 +584,20 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       link; run once 4 Oct 2026. Re-run it any time search looks out of
       sync. Known gap: deleted users/posts stay in D1 (harmless - the app
       drops IDs Firestore doesn't return); a cleanup can come later.
+    - **Trending on Fly (5 Oct 2026, confirmed)** — D1 table
+      `search_hits(day 'YYYY-MM-DD' UTC, term, uid)`, PRIMARY KEY (day,
+      term, uid) WITHOUT ROWID + index (uid, day). `POST /search-log {q}`
+      cleans the word like `/search`, lowercases it (2-40 chars) and runs
+      ONE `INSERT OR IGNORE ... SELECT ... WHERE` that only inserts if the
+      word matches at least one post (FTS phrase for 3+ chars, tag prefix
+      for 2) and the person logged < 30 words today; 2% of calls also
+      delete days older than 8. `POST /search-trending` → `{terms:[..]}`:
+      words searched by >= `TRENDING_MIN_PEOPLE` (2 for now, so two test
+      phones work - raise it as Fly grows) different people in the last
+      7 days, most people first, max 8; cached 10 minutes per Worker
+      instance (so a new trend can take ~10 min to show).
+      `/search-sync-me` on a deleted account also deletes their
+      `search_hits` rows.
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
@@ -788,6 +809,12 @@ issue if this comes up again.
 false` posts; throws `SearchException` with a friendly message.
   `SearchService.syncMe()` - once per app run from
   `MainNavigationScreen.initState` (after `BlockService.start()`).
+  Trending (5 Oct 2026): `SearchService.logSearch(q)` (fire-and-forget,
+  each word once per app run) → Worker `/search-log`;
+  `SearchService.loadTrending()` fills the `SearchService.trending`
+  ValueNotifier (max 8) from `/search-trending` at most every 10 min,
+  showing the phone's last copy first (SharedPreferences
+  `fly_trending_searches`).
 - `main.dart` — app entry, Firebase init (+ explicit Firestore offline-
   persistence settings, see §3), auth gate / auto-login (`_ensureUserDoc`
   creates the user's Firestore doc on first login),
@@ -1351,8 +1378,9 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
   change) and copied to SharedPreferences (`fly_search_history_<uid>`)
   so it shows instantly / offline. `load()` once per app run per account;
   `addText`, `addUser` (move to top, de-duplicated), `remove`, `clear`.
-- `screens/search_screen.dart` — Search. Empty box → `_RecentSearches`
-  (no video grid since 4 Oct 2026, Ko's request): "Recent" + "Clear all"
+- `screens/search_screen.dart` — Search. Empty box → `_SearchHome`
+  (no video grid since 4 Oct 2026, Ko's request; two ValueListenable-
+  Builders - history + trending): "Recent" + "Clear all"
   (confirm dialog), `_RecentRow` - account = gradient-ring photo + name +
   "Account" → profile; words = 🕐 (or # for hashtags) → searches again;
   ✕ or swipe left removes. History is saved on keyboard search/submit,
@@ -1363,7 +1391,12 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
   Future ONCE in initState (`SearchService.search`), showing Accounts
   (gradient ring + sparkle) and a Videos grid; `_SearchMessage` for
   no-results / errors with Try again. (4 Oct 2026; before, it streamed
-  200 users + 300 posts and filtered on the phone.)
+  200 users + 300 posts and filtered on the phone.) Below Recent:
+  "Trending on Fly" (🔥 gradient header, `_TrendingRow` = rank - top 3
+  pink - + word + trending-up arrow; tap → `_searchNow`). `_searchNow`
+  (keyboard search / recent / trending tap) and opening a video from
+  results call `SearchService.logSearch` (5 Oct 2026). Empty state only
+  when both Recent and Trending are empty.
 - `screens/translation_service.dart` — caption translation.
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list. Rows are
@@ -1675,8 +1708,8 @@ others only see it once encoded (Bunny webhook).
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
-   Recent searches (TikTok/Facebook style) are done too (4 Oct 2026).
-   Possible next for search: "Trending on Fly" suggestions from D1;
+   Recent searches (TikTok/Facebook style) are done too (4 Oct 2026),
+   and "Trending on Fly" from D1 (5 Oct 2026).
    c) separate Firebase projects for dev and prod;
    d) split the huge files (home_screen.dart ~6,700 lines) into feature
    folders, a piece at a time;

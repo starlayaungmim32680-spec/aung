@@ -15,11 +15,21 @@
 //   - posts: the Worker's Bunny webhook indexes a post when its video
 //     becomes ready;
 //   - old data: the one-time /search-backfill page (see the Worker).
+//
+// Trending on Fly (4 Oct 2026): logSearch() tells the Worker (/search-log)
+// when someone REALLY searches (presses search, taps a recent/trending
+// item, opens a video from results) - never on each typed letter. The
+// Worker counts each word once per person per day, only if it finds a
+// video. loadTrending() fills [trending] with the top words of the last 7
+// days that different people searched (/search-trending, cached 10 min on
+// the Worker and here; the phone's last copy shows instantly).
 import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'block_service.dart';
 import 'screens/video_call_screen.dart' show kTokenServerUrl;
 import 'screens/worker_auth.dart';
@@ -62,6 +72,83 @@ class SearchService {
     } catch (_) {
       // Try again next time the app starts.
       _syncedThisRun = false;
+    }
+  }
+
+  // Words already sent this app run (the Worker ignores repeats anyway -
+  // this just saves requests).
+  static final Set<String> _logged = <String>{};
+
+  /// Counts [query] towards Trending. Fire-and-forget, best-effort.
+  static Future<void> logSearch(String query) async {
+    final String q = query.trim().toLowerCase();
+    if (q.length < 2 || q.length > 60 || !_logged.add(q)) return;
+    try {
+      await http
+          .post(
+            Uri.parse('$kTokenServerUrl/search-log'),
+            headers: {
+              ...await workerAuthHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'q': q}),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      _logged.remove(q); // Try again next time it's searched.
+    }
+  }
+
+  static const String _trendingPrefsKey = 'fly_trending_searches';
+  static const Duration _trendingFresh = Duration(minutes: 10);
+  static DateTime? _trendingAt;
+
+  /// Top searched words on Fly (max 8). Listen with ValueListenableBuilder.
+  static final ValueNotifier<List<String>> trending =
+      ValueNotifier(const <String>[]);
+
+  /// Shows the phone's last copy at once, then refreshes from the Worker
+  /// (at most every 10 minutes). Call when Search opens.
+  static Future<void> loadTrending() async {
+    if (trending.value.isEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final saved = prefs.getStringList(_trendingPrefsKey);
+        if (saved != null && trending.value.isEmpty) {
+          trending.value = List.unmodifiable(saved);
+        }
+      } catch (_) {}
+    }
+    final DateTime now = DateTime.now();
+    if (_trendingAt != null && now.difference(_trendingAt!) < _trendingFresh) {
+      return;
+    }
+    _trendingAt = now;
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$kTokenServerUrl/search-trending'),
+            headers: {
+              ...await workerAuthHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          )
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) throw Exception('trending ${res.statusCode}');
+      final Map<String, dynamic> body = jsonDecode(res.body);
+      final List<String> terms = ((body['terms'] as List?) ?? const [])
+          .whereType<String>()
+          .where((t) => t.trim().isNotEmpty)
+          .take(8)
+          .toList();
+      if (!listEquals(terms, trending.value)) {
+        trending.value = List.unmodifiable(terms);
+      }
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_trendingPrefsKey, terms);
+    } catch (_) {
+      _trendingAt = null; // Offline - keep the old list, retry next time.
     }
   }
 

@@ -48,6 +48,17 @@
 //                         it removes the user AND all their posts from D1.
 //                         Posts get indexed by /bunny-webhook when their
 //                         video becomes ready.
+//  POST /search-log      - (4 Oct 2026) "Trending on Fly". Body {q}. The
+//                         app calls it when someone really searches (presses
+//                         search, taps a recent/trending item, opens a video
+//                         from results) - not on every typed letter. Counted
+//                         once per person per word per day, only if the word
+//                         matches at least one video, max 30 words per
+//                         person per day (table search_hits, kept 8 days).
+//  POST /search-trending - (4 Oct 2026) the top words of the last 7 days,
+//                         counted by DIFFERENT people: {terms: [..max 8]}.
+//                         Cached 10 minutes in the Worker so opening Search
+//                         rarely touches D1.
 //  GET  /search-backfill  - (4 Oct 2026) one-time copy of existing users /
 //                         posts into D1, a page at a time:
 //                         /search-backfill?token=SEARCH_ADMIN_TOKEN&what=users
@@ -188,6 +199,12 @@ export default {
     }
     if (path === '/search-sync-me') {
       return handleSearchSyncMe(env, caller);
+    }
+    if (path === '/search-log') {
+      return handleSearchLog(body, env, caller);
+    }
+    if (path === '/search-trending') {
+      return handleSearchTrending(env);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -1103,6 +1120,13 @@ async function ensureSearchSchema(env) {
          VALUES ('delete', old.rowid, old.caption, old.tags);
        INSERT INTO posts_fts(rowid, caption, tags)
          VALUES (new.rowid, new.caption, new.tags); END`,
+    // Trending (4 Oct 2026): one row = "this person searched this word on
+    // this day". The primary key makes repeats free (INSERT OR IGNORE) and
+    // lets "last 7 days" read only those days.
+    `CREATE TABLE IF NOT EXISTS search_hits (
+       day TEXT NOT NULL, term TEXT NOT NULL, uid TEXT NOT NULL,
+       PRIMARY KEY (day, term, uid)) WITHOUT ROWID`,
+    `CREATE INDEX IF NOT EXISTS search_hits_uid ON search_hits(uid, day)`,
   ];
   await env.SEARCH_DB.batch(statements.map((sql) => env.SEARCH_DB.prepare(sql)));
   searchSchemaReady = true;
@@ -1197,11 +1221,15 @@ function jsonResponse(obj, status = 200) {
   });
 }
 
+// Keep letters/numbers/spaces of any language; drop punctuation.
+function cleanSearchText(value) {
+  const raw = String(value || '').normalize('NFC').slice(0, 60);
+  return raw.replace(/[^\p{L}\p{N}\p{M}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
 async function handleSearch(body, env) {
   if (!env.SEARCH_DB) return jsonResponse({ error: 'search not set up' }, 503);
-  // Keep letters/numbers/spaces of any language; drop punctuation.
-  const raw = String(body.q || '').normalize('NFC').slice(0, 60);
-  const q = raw.replace(/[^\p{L}\p{N}\p{M}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const q = cleanSearchText(body.q);
   if (!q) return jsonResponse({ users: [], posts: [] });
 
   try {
@@ -1259,6 +1287,7 @@ async function handleSearchSyncMe(env, caller) {
       await env.SEARCH_DB.batch([
         env.SEARCH_DB.prepare('DELETE FROM users WHERE uid = ?1').bind(caller.uid),
         env.SEARCH_DB.prepare('DELETE FROM posts WHERE owner_id = ?1').bind(caller.uid),
+        env.SEARCH_DB.prepare('DELETE FROM search_hits WHERE uid = ?1').bind(caller.uid),
       ]);
       return jsonResponse({ removed: true });
     }
@@ -1266,6 +1295,85 @@ async function handleSearchSyncMe(env, caller) {
     return jsonResponse({ ok: true, changed: result.meta?.changes || 0 });
   } catch (err) {
     return jsonResponse({ error: `sync failed: ${err.message}` }, 500);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Trending on Fly (4 Oct 2026)
+// ---------------------------------------------------------------------
+// A word trends when DIFFERENT people search it - one person searching
+// 100 times still counts once. Raise TRENDING_MIN_PEOPLE as Fly grows
+// (2 so Ko can test with two phones).
+const TRENDING_MIN_PEOPLE = 2;
+const TRENDING_DAYS = 7;
+const TRENDING_MAX = 8;
+const SEARCH_LOGS_PER_PERSON_PER_DAY = 30;
+const TRENDING_CACHE_MS = 10 * 60 * 1000;
+
+let trendingCache = { at: 0, terms: null };
+
+// 'YYYY-MM-DD' (UTC) for [daysAgo] days before today.
+function utcDay(daysAgo = 0) {
+  return new Date(Date.now() - daysAgo * 86400000).toISOString().slice(0, 10);
+}
+
+async function handleSearchLog(body, env, caller) {
+  if (!env.SEARCH_DB) return jsonResponse({ skipped: 'search not set up' });
+  if (!caller || !isSafeUid(caller.uid)) {
+    return jsonResponse({ error: 'sign-in required' }, 401);
+  }
+  const term = cleanSearchText(body.q).toLowerCase().slice(0, 40);
+  if ([...term].length < 2) return jsonResponse({ logged: false });
+
+  try {
+    await ensureSearchSchema(env);
+    const db = env.SEARCH_DB;
+    const day = utcDay();
+    // ONE statement: counted only if the word finds at least one video and
+    // this person hasn't logged too many words today. A repeat is ignored.
+    const matchesVideo = [...term].length >= 3
+      ? 'EXISTS (SELECT 1 FROM posts_fts WHERE posts_fts MATCH ?5)'
+      : `EXISTS (SELECT 1 FROM posts WHERE (' ' || tags) LIKE ?5 ESCAPE '\\')`;
+    const matchArg = [...term].length >= 3
+      ? ftsPhrase(term)
+      : `% ${term.replace(/[\\%_]/g, '\\$&')}%`;
+    const result = await db.prepare(
+      `INSERT OR IGNORE INTO search_hits (day, term, uid)
+       SELECT ?1, ?2, ?3
+       WHERE (SELECT COUNT(*) FROM search_hits WHERE uid = ?3 AND day = ?1) < ?4
+         AND ${matchesVideo}`,
+    ).bind(day, term, caller.uid, SEARCH_LOGS_PER_PERSON_PER_DAY, matchArg).run();
+
+    // Now and then, forget days older than the trending window.
+    if (Math.random() < 0.02) {
+      await db.prepare('DELETE FROM search_hits WHERE day < ?1')
+        .bind(utcDay(TRENDING_DAYS + 1)).run();
+    }
+    return jsonResponse({ logged: (result.meta?.changes || 0) > 0 });
+  } catch (err) {
+    return jsonResponse({ error: `log failed: ${err.message}` }, 500);
+  }
+}
+
+async function handleSearchTrending(env) {
+  if (!env.SEARCH_DB) return jsonResponse({ terms: [] });
+  const now = Date.now();
+  if (trendingCache.terms && now - trendingCache.at < TRENDING_CACHE_MS) {
+    return jsonResponse({ terms: trendingCache.terms });
+  }
+  try {
+    await ensureSearchSchema(env);
+    const rows = await env.SEARCH_DB.prepare(
+      `SELECT term, COUNT(*) AS people, MAX(day) AS last_day
+       FROM search_hits WHERE day >= ?1
+       GROUP BY term HAVING people >= ?2
+       ORDER BY people DESC, last_day DESC LIMIT ?3`,
+    ).bind(utcDay(TRENDING_DAYS - 1), TRENDING_MIN_PEOPLE, TRENDING_MAX).all();
+    const terms = (rows.results || []).map((r) => r.term);
+    trendingCache = { at: now, terms };
+    return jsonResponse({ terms });
+  } catch (err) {
+    return jsonResponse({ error: `trending failed: ${err.message}` }, 500);
   }
 }
 
