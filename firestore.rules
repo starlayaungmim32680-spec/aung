@@ -15,6 +15,8 @@ rules_version = '2';
 // users/{uid}/friends/{friendId}, see lib/friend_service.dart.
 // Update (4 Oct 2026, Friends step 3): only friends can send messages,
 // write the chat doc, or start a call (areFriends()).
+// Update (4 Oct 2026): users/{uid}/private/{docId} - owner-only (search
+// history).
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -170,6 +172,13 @@ service cloud.firestore {
       // users/{uid}/saved/{postId} - my own saved-videos list (Sep 2026,
       // see saved_videos_screen.dart). Private: only I can see or change it.
       match /saved/{postId} {
+        allow read, write: if isMe(uid);
+      }
+
+      // users/{uid}/private/{docId} - my own private docs, e.g.
+      // private/searchHistory (4 Oct 2026, lib/search_history.dart).
+      // Only I can read or change them.
+      match /private/{docId} {
         allow read, write: if isMe(uid);
       }
 

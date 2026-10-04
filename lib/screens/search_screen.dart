@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart';
@@ -7,10 +8,13 @@ import 'media_utils.dart';
 import 'public_profile_screen.dart';
 import '../block_service.dart';
 import '../search_service.dart';
+import '../search_history.dart';
 import 'presence_badge.dart';
 
-// Search / Discover screen: shows a browsable grid of recent videos by
-// default, and matching accounts + videos once the user types. Since 4 Oct
+// Search screen. Before typing: my RECENT searches (accounts I opened +
+// words I searched, TikTok/Facebook style - search_history.dart; no video
+// grid any more, Ko asked 4 Oct 2026). Once I type: matching accounts +
+// videos. Since 4 Oct
 // 2026 the matching runs on the server (search_service.dart -> Worker ->
 // Cloudflare D1): the phone only downloads the ~20 results, and finds
 // text anywhere in a name / caption ("ung" -> "Aung", "#travel").
@@ -36,6 +40,27 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounce = Timer(const Duration(milliseconds: 350), () {
       if (mounted && text != _query) setState(() => _query = text);
     });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    SearchHistory.instance.load();
+  }
+
+  // Runs a search from a recent item / the keyboard's search button.
+  void _searchNow(String text) {
+    final String q = text.trim();
+    _debounce?.cancel();
+    if (_controller.text != text) {
+      _controller.text = text;
+      _controller.selection = TextSelection.collapsed(offset: text.length);
+    }
+    setState(() {
+      _typed = q;
+      _query = q;
+    });
+    SearchHistory.instance.addText(q);
   }
 
   void _clear() {
@@ -87,10 +112,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                   textInputAction: TextInputAction.search,
                   onChanged: _onChanged,
-                  onSubmitted: (v) {
-                    _debounce?.cancel();
-                    setState(() => _query = v.trim());
-                  },
+                  onSubmitted: _searchNow,
                 ),
               ),
               if (_typed.isNotEmpty)
@@ -103,7 +125,7 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
       ),
       body: _typed.isEmpty
-          ? const _DiscoverGrid()
+          ? _RecentSearches(onSearchText: _searchNow)
           : _query.isEmpty
               ? const SizedBox.shrink()
               // A new key per query = a fresh one-shot search (the Future
@@ -113,70 +135,206 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 }
 
-// Default view before typing anything: a grid of recent videos to browse
-class _DiscoverGrid extends StatelessWidget {
-  const _DiscoverGrid();
+// Before typing: my recent searches, newest first - accounts with their
+// photo, typed words with a clock icon; ✕ removes one, "Clear all" (after
+// asking) removes everything. Rebuilds only when the list changes.
+class _RecentSearches extends StatelessWidget {
+  final void Function(String text) onSearchText;
+
+  const _RecentSearches({required this.onSearchText});
+
+  Future<void> _confirmClear(BuildContext context) async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Clear all recent searches?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This removes your search history on every device.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear all',
+                style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      HapticFeedback.mediumImpact();
+      await SearchHistory.instance.clear();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('posts')
-          .orderBy('createdAt', descending: true)
-          .limit(60)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-            child: CircularProgressIndicator(color: Colors.redAccent),
+    return ValueListenableBuilder<List<SearchHistoryItem>>(
+      valueListenable: SearchHistory.instance.items,
+      builder: (context, items, _) {
+        final visible = items
+            .where(
+                (e) => !e.isUser || !BlockService.instance.isHidden(e.userId))
+            .toList();
+        if (visible.isEmpty) {
+          return const _SearchMessage(
+            icon: Icons.travel_explore_rounded,
+            title: 'Search Fly',
+            subtitle:
+                'Find friends by name, or videos by a word or #hashtag.\nYour recent searches will show up here.',
           );
         }
-
-        // Blocked accounts (either way) never show up in search/discover.
-        final docs = (snapshot.data?.docs ?? []).where((d) {
-          final data = d.data() as Map<String, dynamic>;
-          return !BlockService.instance.isHidden(data['userId'] as String?);
-        }).toList();
-        if (docs.isEmpty) {
-          return const Center(
-            child: Text('No videos yet', style: TextStyle(color: Colors.grey)),
-          );
-        }
-
-        return GridView.builder(
-          padding: const EdgeInsets.all(2),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 2,
-            mainAxisSpacing: 2,
-            childAspectRatio: 0.7,
-          ),
-          itemCount: docs.length,
-          itemBuilder: (context, index) {
-            final doc = docs[index];
-            final post = doc.data() as Map<String, dynamic>;
-            return GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => SingleVideoScreen(
-                    postId: doc.id,
-                    userId: post['userId'] ?? '',
-                    videoUrl: post['videoUrl'] ?? '',
-                    caption: post['caption'] ?? '',
-                    userEmail: post['userEmail'] ?? 'Unknown user',
-                    videoType: (post['videoType'] as String?) ?? 'short',
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 24),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Recent',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
+                  TextButton(
+                    onPressed: () => _confirmClear(context),
+                    child: const Text('Clear all',
+                        style: TextStyle(color: Color(0xFFFF7A95))),
+                  ),
+                ],
+              ),
+            ),
+            for (final item in visible)
+              Dismissible(
+                key: ValueKey(item.key),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  color: Colors.redAccent.withValues(alpha: 0.25),
+                  child: const Icon(Icons.delete_outline, color: Colors.white),
+                ),
+                onDismissed: (_) => SearchHistory.instance.remove(item),
+                child: _RecentRow(
+                  item: item,
+                  onTap: () {
+                    HapticFeedback.selectionClick();
+                    if (item.isUser) {
+                      // Opening them again moves them to the top.
+                      SearchHistory.instance
+                          .addUser(item.userId, item.name, item.photo);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              PublicProfileScreen(userId: item.userId),
+                        ),
+                      );
+                    } else {
+                      onSearchText(item.text);
+                    }
+                  },
+                  onRemove: () {
+                    HapticFeedback.lightImpact();
+                    SearchHistory.instance.remove(item);
+                  },
                 ),
               ),
-              child: _SearchVideoThumbnail(
-                videoUrl: post['videoUrl'] ?? '',
-                postId: doc.id,
-              ),
-            );
-          },
+          ],
         );
       },
+    );
+  }
+}
+
+class _RecentRow extends StatelessWidget {
+  final SearchHistoryItem item;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
+
+  const _RecentRow({
+    required this.item,
+    required this.onTap,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget leading;
+    if (item.isUser) {
+      final String name = item.name.trim().isEmpty ? 'User' : item.name.trim();
+      leading = Container(
+        padding: const EdgeInsets.all(2),
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(colors: [
+            Color(0xFFFF4B6E),
+            Color(0xFF9C4DFF),
+            Color(0xFF3A8DFF),
+          ]),
+        ),
+        child: CircleAvatar(
+          radius: 20,
+          backgroundColor: Colors.grey[850],
+          backgroundImage:
+              item.photo.isNotEmpty ? NetworkImage(item.photo) : null,
+          child: item.photo.isEmpty
+              ? Text(
+                  name[0].toUpperCase(),
+                  style: const TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold),
+                )
+              : null,
+        ),
+      );
+    } else {
+      leading = Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.08),
+        ),
+        child: Icon(
+          item.text.startsWith('#') ? Icons.tag_rounded : Icons.history_rounded,
+          color: Colors.white70,
+          size: 22,
+        ),
+      );
+    }
+
+    return ListTile(
+      onTap: onTap,
+      leading: leading,
+      title: Text(
+        item.isUser
+            ? (item.name.trim().isEmpty ? 'User' : item.name)
+            : item.text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style:
+            const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+      ),
+      subtitle: item.isUser
+          ? Text('Account',
+              style: TextStyle(color: Colors.grey[500], fontSize: 12))
+          : null,
+      trailing: IconButton(
+        tooltip: 'Remove',
+        icon: Icon(Icons.close_rounded, color: Colors.grey[500], size: 20),
+        onPressed: onRemove,
+      ),
     );
   }
 }
@@ -287,12 +445,16 @@ class _SearchResultsState extends State<_SearchResults> {
                   title: Text(name,
                       style: const TextStyle(
                           color: Colors.white, fontWeight: FontWeight.w600)),
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => PublicProfileScreen(userId: doc.id),
-                    ),
-                  ),
+                  onTap: () {
+                    // Facebook-style: the person goes into my recents.
+                    SearchHistory.instance.addUser(doc.id, name, photo);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => PublicProfileScreen(userId: doc.id),
+                      ),
+                    );
+                  },
                 );
               }),
             ],
@@ -313,19 +475,24 @@ class _SearchResultsState extends State<_SearchResults> {
                   final doc = results.posts[index];
                   final post = doc.data() ?? const <String, dynamic>{};
                   return GestureDetector(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => SingleVideoScreen(
-                          postId: doc.id,
-                          userId: post['userId'] ?? '',
-                          videoUrl: post['videoUrl'] ?? '',
-                          caption: post['caption'] ?? '',
-                          userEmail: post['userEmail'] ?? 'Unknown user',
-                          videoType: (post['videoType'] as String?) ?? 'short',
+                    onTap: () {
+                      // Opening a video keeps the words I searched for.
+                      SearchHistory.instance.addText(widget.query);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SingleVideoScreen(
+                            postId: doc.id,
+                            userId: post['userId'] ?? '',
+                            videoUrl: post['videoUrl'] ?? '',
+                            caption: post['caption'] ?? '',
+                            userEmail: post['userEmail'] ?? 'Unknown user',
+                            videoType:
+                                (post['videoType'] as String?) ?? 'short',
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
                     child: _SearchVideoThumbnail(
                       videoUrl: post['videoUrl'] ?? '',
                       postId: doc.id,

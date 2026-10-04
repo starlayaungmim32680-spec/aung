@@ -64,6 +64,11 @@
 > webhook indexes posts when ready; the app (`search_service.dart`) gets
 > ~20 IDs and reads only those docs from Firestore. "ung" finds "Aung",
 > `#tags` and caption words work. Backfill done: 7 users, 48 posts._
+> _4 Oct 2026 (night, confirmed on two phones): **Recent searches**,
+> TikTok/Facebook style - Search no longer shows a video grid before
+> typing; it shows my recent accounts (photo + name) and words (🕐 / #),
+> saved with the account in ONE doc `users/{uid}/private/searchHistory`
+> (new owner-only `private` rule) + a phone copy. `search_history.dart`._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1300,8 +1305,23 @@ incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
   `screens/sound_sync_sheet.dart` — a sound's page (videos using it, "Use
   this sound", report/remove), the browsable/searchable library (hides
   removed/over-reported sounds), and the "choose part of the song" sheet.
-- `screens/search_screen.dart` — Search/Discover. Empty box → discover
-  grid of the 60 newest posts. Typing is debounced 350 ms (`_typed` vs
+- `search_history.dart` **(4 Oct 2026, confirmed)** — recent searches.
+  `SearchHistory.instance.items` (ValueNotifier, newest first, max 20) of
+  `SearchHistoryItem` - `text` (words) or `user` (id/name/photo at the
+  time). Stored with the account in ONE doc
+  `users/{uid}/private/searchHistory {items, updatedAt}` (1 read when
+  Search opens, 1 write per change, nothing written if the order didn't
+  change) and copied to SharedPreferences (`fly_search_history_<uid>`)
+  so it shows instantly / offline. `load()` once per app run per account;
+  `addText`, `addUser` (move to top, de-duplicated), `remove`, `clear`.
+- `screens/search_screen.dart` — Search. Empty box → `_RecentSearches`
+  (no video grid since 4 Oct 2026, Ko's request): "Recent" + "Clear all"
+  (confirm dialog), `_RecentRow` - account = gradient-ring photo + name +
+  "Account" → profile; words = 🕐 (or # for hashtags) → searches again;
+  ✕ or swipe left removes. History is saved on keyboard search/submit,
+  opening an account from results (`addUser`) or opening a video
+  (`addText(query)`) - not on every keystroke. (The old discover grid of
+  the 60 newest posts is gone.) Typing is debounced 350 ms (`_typed` vs
   `_query`); `_SearchResults` is keyed by the query and creates its
   Future ONCE in initState (`SearchService.search`), showing Accounts
   (gradient ring + sparkle) and a Videos grid; `_SearchMessage` for
@@ -1394,6 +1414,10 @@ screen needs to be created from scratch — it may already exist there.)_
   - `users/{uid}/followers/{id}`, `users/{uid}/following/{id}`: { createdAt }
   - `users/{uid}/notifications/{id}`: { type, text, fromId, fromName, fromPhoto,
     postId?, seen, createdAt }
+  - `users/{uid}/private/searchHistory` (4 Oct 2026): { items: [ {type:
+    'text', q} | {type: 'user', id, name, photo} ] (max 20, newest
+    first), updatedAt } — rules: `private/{docId}` owner-only read/write.
+    See `search_history.dart`.
   - `users/{uid}/saved/{postId}` (Sep 2026): { postId, ownerId, videoUrl,
     savedAt } — private Saved list; rules: owner-only read/write.
   - `users/{uid}/blocked/{blockedUserId}`: { createdAt } — who this user has
@@ -1603,9 +1627,8 @@ others only see it once encoded (Bunny webhook).
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
-   Next for search (Ko asked 4 Oct 2026): no video grid before typing -
-   show the person's own recent searches (names / video words) instead,
-   TikTok/Facebook style;
+   Recent searches (TikTok/Facebook style) are done too (4 Oct 2026).
+   Possible next for search: "Trending on Fly" suggestions from D1;
    c) separate Firebase projects for dev and prod;
    d) split the huge files (home_screen.dart ~6,700 lines) into feature
    folders, a piece at a time;
