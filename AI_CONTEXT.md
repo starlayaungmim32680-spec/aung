@@ -30,6 +30,15 @@
 > screen (`friend_requests_screen.dart`, Confirm/Delete on each row),
 > opened from a people icon with a count badge at the top of Messages; a
 > `friend_request` notification now opens that screen. No rules change._
+> _4 Oct 2026 (Friends step 3, confirmed on two phones): **only friends
+> can message or call.** Profile shows a 🔒 "Become friends with X to
+> message and call" pill instead of Message/call; a chat thread with a
+> non-friend stays readable but swaps the input for an Add Friend /
+> Cancel request / Confirm banner and hides the call buttons; story
+> replies are friends-only (reactions still open to all). Rules:
+> `areFriends(roomId)` on `chats` create/update, `messages` create and
+> calls going to 'ringing'. `FriendService.loaded` avoids flashing the
+> "not friends" UI before the list arrives._
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -715,6 +724,10 @@ issue if this comes up again.
   told), `unfriend` (both docs). Send/accept drop a `friend_request` /
   `friend_accept` notification (best-effort, no push yet).
   `FriendStatus` enum: none / requested / incoming / friends.
+  `loaded` (ValueNotifier<bool>, Friends step 3) turns true on the first
+  friends snapshot - screens show nothing (not the "not friends" UI) until
+  then. `start()` is called by the profile button, `ChatScreen`,
+  `ChatThreadScreen` and the story viewer (`_StoryViewerPage`).
 - `screens/friend_requests_screen.dart` **(4 Oct 2026, Friends step 2,
   confirmed)** — everyone who sent me a request (`users/{me}/
 friendRequests` ordered by `createdAt` desc, stream built in initState),
@@ -752,7 +765,9 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   denies new `chats/*/messages` and any call doc going to 'ringing'
   between blocked people; `blockedBy` is readable only by its owner,
   creatable/deletable only by the blocker. Follow isn't restored on unblock
-  (same as Facebook).
+  (same as Facebook). Since 4 Oct 2026 the same three places also need
+  `areFriends(roomId)` (`exists users/{me}/friends/{other}`) - see
+  `friend_service.dart`.
 - `chat_delivery_service.dart` **(1 Oct 2026, confirmed on two phones)** —
   Messenger-style "Delivered". `ChatDeliveryService.instance.start()`
   (called next to `BlockService.instance.start()` in
@@ -1057,7 +1072,10 @@ position)` — Android drops the video surface in the background and a
   → confirm → unsave (deletes both docs). Opened from the bookmark icon in
   `profile_screen.dart`'s AppBar. Saves made before this build aren't in
   the list (only `posts/*/saves` had them) — re-save to show them.
-- `screens/public_profile_screen.dart` — another user's profile: photo
+- `screens/public_profile_screen.dart` — another user's profile (since
+  Friends step 3 the Message/call row sits in a `ListenableBuilder` on
+  `FriendService.friends`+`loaded`: non-friends see `_FriendsOnlyHint`, a
+  🔒 gradient pill, instead): photo
   (with the sparkle-star online badge), name, stats, buttons in two rows
   (4 Oct 2026): **[Add Friend] [Follow]** then **[Message] [📞] [🎥]**.
   `_FriendButton` (stateful, Fly gradient while it's an action for you -
@@ -1066,7 +1084,10 @@ position)` — Android drops the video surface in the background and a
   Delete request, Unfriend (+ confirm dialog) - goes through a bottom
   sheet), video grid, and a 3-dot menu with **Block user**
   (`_confirmBlockUser`, writes `users/{myId}/blocked/{blockedUserId}`).
-- `screens/story_screen.dart` — Stories. Facebook-style story cards bar,
+- `screens/story_screen.dart` — Stories (Friends step 3: `_replyBar()`
+  shows `_friendsOnlyReplyHint` instead of `_replyInputRow` when the
+  story's owner isn't my friend; quick reactions stay open to everyone).
+  Facebook-style story cards bar,
   add-story flow (photo → Bunny Storage, video → Bunny Stream with a 15s
   trim cap and the same speed/filter/text-overlay effects step as feed
   posts - see §3) → 14-hour expiry, full-screen viewer with segmented
@@ -1115,7 +1136,14 @@ position)` — Android drops the video surface in the background and a
   also how you start a brand-new chat) + `ChatThreadScreen` (text / image /
   voice messages, typing/recording indicators, read receipts, video-call
   button; each message's "Sent"/"Seen" row shows "Sending..." instead while
-  `metadata.hasPendingWrites` is true — see §3). The list:
+  `metadata.hasPendingWrites` is true — see §3). **Friends only (4 Oct
+  2026):** `ChatThreadScreen` has `_isFriend` / `_friendsKnown` /
+  `_canTalk` (listens to `FriendService.friends/incoming/loaded`); not
+  friends → `_notFriendsBanner()` (Fly-gradient glass card with Add
+  Friend / Cancel request / Confirm, using `watchSentRequest` built in
+  initState) replaces the input, call buttons hidden, `_startVideoCall`
+  returns early; while the friends list is still loading an empty
+  64px box stands in so nothing flashes. The list:
   - Shows the sparkle-star online badge per user (`presence_badge.dart`).
   - Shows an **"online now"** horizontal strip above the main list (users
     currently online; hidden while searching or when nobody is online).
@@ -1450,19 +1478,19 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 4 Oct 2026)
 
-0. **Friends (agreed 4 Oct 2026) - steps 3-4 left** (step 1, the friend
-   system, and step 2, the Friend Requests screen, are done). Decisions
-   Ko made: strict Facebook style - only friends can chat/call (no
-   "message requests" folder for now); a request is one tap, no note; old
-   chats with a non-friend stay readable but show an "Add friend to keep
-   chatting" banner instead of the input. 3) lock chat + calls to friends - UI (hide Message/call buttons for
-   non-friends, banner in old threads) AND rules (`messages` create and
-   `calls` ringing require `users/{me}/friends/{other}`); consider the
-   Worker's `/call-push` too; move `FriendService.start()` into
-   `main_navigation_screen.dart` next to `BlockService.start()`; 4) = scale-proofing (a) below, built on friends.
-   Still open: a push for new friend requests when Fly is closed (needs
-   the Worker); delete-account should remove the user's `friends` /
-   `friendRequests` docs (both sides).
+0. **Friends (agreed 4 Oct 2026) - step 4 left** (steps 1-3 done: friend
+   system, Friend Requests screen, chat/calls/story replies locked to
+   friends in UI + rules). Decisions Ko made: strict Facebook style - only
+   friends can chat/call (no "message requests" folder for now); a request
+   is one tap, no note; old chats with a non-friend stay readable with an
+   "Add friend to keep chatting" banner. 4) = scale-proofing (a) below, built on friends.
+   Still open: the Worker's `/call-push` and `/chat-push` don't check
+   friendship (the rules already block the call doc / message, so nothing
+   actually connects - a cleanup, not urgent); a push for new friend
+   requests when Fly is closed (needs the Worker); move
+   `FriendService.start()` into `main_navigation_screen.dart` next to
+   `BlockService.start()`; delete-account should remove the user's
+   `friends` / `friendRequests` docs (both sides).
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    a) Messages screen: stop streaming the whole `users` collection - show
    only chats I'm in (Messenger style), with last-message preview + time,

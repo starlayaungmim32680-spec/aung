@@ -524,6 +524,17 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   // Blocked either way (see block_service.dart): no sending, no calls.
   bool get _blocked => BlockService.instance.isHidden(widget.otherUserId);
+
+  // Friends only (Friends step 3, 4 Oct 2026, friend_service.dart): a
+  // non-friend can still READ an old conversation, but the message box is
+  // replaced by an "Add friend to keep chatting" banner and the call
+  // buttons are hidden. The Firestore rules refuse it too (areFriends()).
+  bool get _isFriend => FriendService.instance.isFriend(widget.otherUserId);
+  bool get _friendsKnown => FriendService.instance.loaded.value;
+  bool get _canTalk => !_blocked && _isFriend;
+  // My own pending request to them (for the banner's button), built once.
+  late final Stream<bool> _sentRequestStream;
+  bool _friendBusy = false;
   bool get _iBlockedThem =>
       BlockService.instance.blockedByMe.value.contains(widget.otherUserId);
 
@@ -545,6 +556,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     _activityStream =
         chatDoc.collection('activity').doc(widget.otherUserId).snapshots();
     BlockService.instance.hidden.addListener(_onBlockedChanged);
+    FriendService.instance.start();
+    _sentRequestStream =
+        FriendService.instance.watchSentRequest(widget.otherUserId);
+    FriendService.instance.friends.addListener(_onBlockedChanged);
+    FriendService.instance.incoming.addListener(_onBlockedChanged);
+    FriendService.instance.loaded.addListener(_onBlockedChanged);
     _initRecorder();
     _messageController.addListener(() {
       final bool has = _messageController.text.trim().isNotEmpty;
@@ -618,6 +635,9 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   void dispose() {
     if (currentOpenChatId == _chatId) currentOpenChatId = null;
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    FriendService.instance.friends.removeListener(_onBlockedChanged);
+    FriendService.instance.incoming.removeListener(_onBlockedChanged);
+    FriendService.instance.loaded.removeListener(_onBlockedChanged);
     _typingTimer?.cancel();
     _setActivity(null);
     _messageController.dispose();
@@ -1263,9 +1283,127 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     );
   }
 
+  // Replaces the message box when we aren't friends (Friends step 3): a
+  // friendly glass card with the same Add Friend / Requested / Respond
+  // states as the profile button, so you can fix it right here.
+  Widget _notFriendsBanner() {
+    final String name = widget.otherUserName.trim().isEmpty
+        ? 'them'
+        : widget.otherUserName.trim();
+    return StreamBuilder<bool>(
+      stream: _sentRequestStream,
+      builder: (context, snap) {
+        final bool sent = snap.data ?? false;
+        final bool incoming =
+            FriendService.instance.hasIncoming(widget.otherUserId);
+
+        final String text;
+        final String buttonLabel;
+        final bool gradient;
+        if (incoming) {
+          text = '$name sent you a friend request. Confirm it to chat.';
+          buttonLabel = 'Confirm';
+          gradient = true;
+        } else if (sent) {
+          text = "Friend request sent ✨ You can chat once $name accepts.";
+          buttonLabel = 'Cancel request';
+          gradient = false;
+        } else {
+          text = 'Add $name as a friend to keep chatting.';
+          buttonLabel = 'Add Friend';
+          gradient = true;
+        }
+
+        Future<void> onPressed() async {
+          if (_friendBusy) return;
+          HapticFeedback.mediumImpact();
+          setState(() => _friendBusy = true);
+          final svc = FriendService.instance;
+          try {
+            if (incoming) {
+              await svc.accept(widget.otherUserId);
+            } else if (sent) {
+              await svc.cancelRequest(widget.otherUserId);
+            } else {
+              await svc.sendRequest(widget.otherUserId);
+            }
+          } catch (_) {
+            _showError("Something went wrong. Please try again.");
+          }
+          if (mounted) setState(() => _friendBusy = false);
+        }
+
+        return Container(
+          width: double.infinity,
+          padding: EdgeInsets.fromLTRB(
+              20, 14, 20, 14 + MediaQuery.of(context).padding.bottom),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                const Color(0xFFFF4B6E).withValues(alpha: 0.12),
+                const Color(0xFF9C4DFF).withValues(alpha: 0.12),
+                const Color(0xFF3A8DFF).withValues(alpha: 0.12),
+              ],
+            ),
+            border: const Border(top: BorderSide(color: Colors.white12)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.people_alt_rounded,
+                  color: Colors.white70, size: 22),
+              const SizedBox(height: 6),
+              Text(
+                text,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              GestureDetector(
+                onTap: _friendBusy ? null : onPressed,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: gradient ? null : const Color(0xFF3A3B3C),
+                    gradient: gradient
+                        ? const LinearGradient(colors: [
+                            Color(0xFFFF4B6E),
+                            Color(0xFF9C4DFF),
+                            Color(0xFF3A8DFF),
+                          ])
+                        : null,
+                  ),
+                  child: _friendBusy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text(
+                          buttonLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _startVideoCall({required bool withCamera}) async {
     final myId = FirebaseAuth.instance.currentUser?.uid;
-    if (myId == null) return;
+    if (myId == null || !_canTalk) return;
 
     final myProfile =
         await FirebaseFirestore.instance.collection('users').doc(myId).get();
@@ -1399,7 +1537,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           ],
         ),
         actions: [
-          if (!_blocked) ...[
+          if (_canTalk) ...[
             IconButton(
               icon: const Icon(Icons.call, color: Colors.white),
               tooltip: 'Voice call',
@@ -1704,6 +1842,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             ),
           if (_blocked)
             _blockedBanner()
+          else if (!_friendsKnown)
+            // Friends list not loaded yet (usually a split second, from
+            // the cache) - don't flash the "not friends" banner.
+            SizedBox(height: 64 + MediaQuery.of(context).padding.bottom)
+          else if (!_isFriend)
+            _notFriendsBanner()
           else
             Padding(
               padding: EdgeInsets.only(

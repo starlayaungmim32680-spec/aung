@@ -19,9 +19,14 @@
 // (block_service.dart). The rules refuse a new request between two people
 // when either has blocked the other.
 //
+// Since step 3 (4 Oct 2026) only FRIENDS can message or call each other -
+// in the UI (chat_screen.dart, public_profile_screen.dart, story replies)
+// and in the Firestore rules (areFriends()).
+//
 // Start it with FriendService.instance.start() - safe to call many times
-// (the profile button does it). Screens read [friends] / [incoming]
-// (ValueNotifiers - listen to them, or use isFriend()/hasIncoming()).
+// (the profile button, Messages, chat threads and the story viewer do).
+// Screens read [friends] / [incoming] / [loaded] (ValueNotifiers - listen
+// to them, or use isFriend()/hasIncoming()).
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -52,6 +57,11 @@ class FriendService {
   /// uids of people who sent ME a friend request.
   final ValueNotifier<Set<String>> incoming = ValueNotifier(<String>{});
 
+  /// True once my friends list has arrived at least once (from the cache
+  /// or the server) - until then an empty [friends] set means "not known
+  /// yet", not "no friends", so screens shouldn't show "not friends" UI.
+  final ValueNotifier<bool> loaded = ValueNotifier(false);
+
   StreamSubscription<User?>? _authSub;
   StreamSubscription<QuerySnapshot>? _friendsSub;
   StreamSubscription<QuerySnapshot>? _incomingSub;
@@ -79,13 +89,17 @@ class FriendService {
     _incomingSub?.cancel();
     _setIfChanged(friends, <String>{});
     _setIfChanged(incoming, <String>{});
+    loaded.value = false;
     if (user == null) return;
 
     _friendsSub = _users.doc(user.uid).collection('friends').snapshots().listen(
-          (snap) => _setIfChanged(friends, snap.docs.map((d) => d.id).toSet()),
-          // Fails harmlessly until the new Firestore rules are published.
-          onError: (_) {},
-        );
+      (snap) {
+        _setIfChanged(friends, snap.docs.map((d) => d.id).toSet());
+        loaded.value = true;
+      },
+      // Fails harmlessly until the new Firestore rules are published.
+      onError: (_) {},
+    );
     _incomingSub =
         _users.doc(user.uid).collection('friendRequests').snapshots().listen(
               (snap) =>

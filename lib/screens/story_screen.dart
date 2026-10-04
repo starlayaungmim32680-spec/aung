@@ -24,6 +24,7 @@ import 'worker_auth.dart';
 import 'call_push_service.dart' show sendChatPush;
 import 'media_utils.dart' show cloudinaryThumbUrl;
 import '../block_service.dart';
+import '../friend_service.dart';
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -1107,6 +1108,8 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
   @override
   void initState() {
     super.initState();
+    // Story replies are friends only (Friends step 3).
+    FriendService.instance.start();
     _progress = AnimationController(vsync: this)
       ..addStatusListener((status) {
         if (status == AnimationStatus.completed && widget.isActive) _next();
@@ -1694,6 +1697,7 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
 
   Widget _replyBar() {
     final String ownerName = (_current['userName'] as String?) ?? '';
+    final String ownerId = (_current['userId'] as String?) ?? '';
     final bool typing = _replyFocus.hasFocus;
     final double keyboard = MediaQuery.of(context).viewInsets.bottom;
 
@@ -1716,60 +1720,113 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
                 }).toList(),
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.35),
-                      borderRadius: BorderRadius.circular(26),
-                      border: Border.all(
-                        color:
-                            typing ? const Color(0xFFFF4B6E) : Colors.white54,
-                        width: 1.2,
-                      ),
-                    ),
-                    child: TextField(
-                      controller: _replyController,
-                      focusNode: _replyFocus,
-                      style: const TextStyle(color: Colors.white),
-                      cursorColor: const Color(0xFFFF4B6E),
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _sendReply(),
-                      decoration: InputDecoration(
-                        border: InputBorder.none,
-                        hintText: ownerName.isEmpty
-                            ? 'Send message...'
-                            : 'Send message to $ownerName...',
-                        hintStyle: const TextStyle(color: Colors.white70),
-                      ),
-                    ),
-                  ),
+          // Replies go into chat, so they're friends only (Friends step 3,
+          // 4 Oct 2026); everyone can still react above.
+          ListenableBuilder(
+            listenable: Listenable.merge([
+              FriendService.instance.friends,
+              FriendService.instance.loaded,
+            ]),
+            builder: (context, _) {
+              if (FriendService.instance.loaded.value &&
+                  !FriendService.instance.isFriend(ownerId)) {
+                return _friendsOnlyReplyHint(ownerName);
+              }
+              return _replyInputRow(ownerName, typing);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Pill shown instead of the reply box when you aren't friends with the
+  // story's owner.
+  Widget _friendsOnlyReplyHint(String ownerName) {
+    final String who = ownerName.trim().isEmpty ? 'them' : ownerName.trim();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      child: Container(
+        height: 44,
+        width: double.infinity,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.35),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: Colors.white24, width: 1.2),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.lock_outline_rounded,
+                color: Colors.white70, size: 16),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                'Become friends with $who to reply',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _replyInputRow(String ownerName, bool typing) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.35),
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(
+                  color: typing ? const Color(0xFFFF4B6E) : Colors.white54,
+                  width: 1.2,
                 ),
-                const SizedBox(width: 8),
-                _PressableScale(
-                  onTap: _sendingReply ? () {} : _sendReply,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(colors: _kFlyStoryGradient),
-                    ),
-                    child: _sendingReply
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2),
-                          )
-                        : const Icon(Icons.send_rounded,
-                            color: Colors.white, size: 20),
-                  ),
+              ),
+              child: TextField(
+                controller: _replyController,
+                focusNode: _replyFocus,
+                style: const TextStyle(color: Colors.white),
+                cursorColor: const Color(0xFFFF4B6E),
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _sendReply(),
+                decoration: InputDecoration(
+                  border: InputBorder.none,
+                  hintText: ownerName.isEmpty
+                      ? 'Send message...'
+                      : 'Send message to $ownerName...',
+                  hintStyle: const TextStyle(color: Colors.white70),
                 ),
-              ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _PressableScale(
+            onTap: _sendingReply ? () {} : _sendReply,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(colors: _kFlyStoryGradient),
+              ),
+              child: _sendingReply
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send_rounded,
+                      color: Colors.white, size: 20),
             ),
           ),
         ],

@@ -256,90 +256,116 @@ class PublicProfileScreen extends StatelessWidget {
                                       ],
                                     ),
                                     const SizedBox(height: 8),
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: ElevatedButton.icon(
-                                            onPressed: () {
-                                              Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                  builder: (context) =>
-                                                      ChatThreadScreen(
-                                                    otherUserId: userId,
-                                                    otherUserName: displayName,
-                                                    otherUserPhoto: photoUrl,
+                                    // Message + calls: friends only (Friends step 3, 4 Oct 2026).
+                                    ListenableBuilder(
+                                      listenable: Listenable.merge([
+                                        FriendService.instance.friends,
+                                        FriendService.instance.loaded,
+                                      ]),
+                                      builder: (context, _) {
+                                        if (!FriendService
+                                            .instance.loaded.value) {
+                                          return const SizedBox(height: 42);
+                                        }
+                                        if (!FriendService.instance
+                                            .isFriend(userId)) {
+                                          return _FriendsOnlyHint(
+                                              name: displayName);
+                                        }
+                                        return Row(
+                                          children: [
+                                            Expanded(
+                                              child: ElevatedButton.icon(
+                                                onPressed: () {
+                                                  Navigator.push(
+                                                    context,
+                                                    MaterialPageRoute(
+                                                      builder: (context) =>
+                                                          ChatThreadScreen(
+                                                        otherUserId: userId,
+                                                        otherUserName:
+                                                            displayName,
+                                                        otherUserPhoto:
+                                                            photoUrl,
+                                                      ),
+                                                    ),
+                                                  );
+                                                },
+                                                icon: const Icon(Icons.message,
+                                                    size: 18,
+                                                    color: Colors.white),
+                                                label: const Text('Message',
+                                                    style: TextStyle(
+                                                        color: Colors.white,
+                                                        fontWeight:
+                                                            FontWeight.bold)),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor:
+                                                      const Color(0xFF3A3B3C),
+                                                  foregroundColor: Colors.white,
+                                                  elevation: 0,
+                                                  padding: const EdgeInsets
+                                                      .symmetric(vertical: 10),
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            8),
                                                   ),
                                                 ),
-                                              );
-                                            },
-                                            icon: const Icon(Icons.message,
-                                                size: 18, color: Colors.white),
-                                            label: const Text('Message',
-                                                style: TextStyle(
-                                                    color: Colors.white,
-                                                    fontWeight:
-                                                        FontWeight.bold)),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor:
-                                                  const Color(0xFF3A3B3C),
-                                              foregroundColor: Colors.white,
-                                              elevation: 0,
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 10),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
                                               ),
                                             ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        GestureDetector(
-                                          onTap: () => _startVideoCall(
-                                            context,
-                                            myId,
-                                            userId,
-                                            displayName,
-                                            photoUrl,
-                                            withCamera: false,
-                                          ),
-                                          child: Container(
-                                            width: 42,
-                                            height: 42,
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF3A3B3C),
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
+                                            const SizedBox(width: 8),
+                                            GestureDetector(
+                                              onTap: () => _startVideoCall(
+                                                context,
+                                                myId,
+                                                userId,
+                                                displayName,
+                                                photoUrl,
+                                                withCamera: false,
+                                              ),
+                                              child: Container(
+                                                width: 42,
+                                                height: 42,
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      const Color(0xFF3A3B3C),
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                child: const Icon(Icons.call,
+                                                    color: Colors.white,
+                                                    size: 20),
+                                              ),
                                             ),
-                                            child: const Icon(Icons.call,
-                                                color: Colors.white, size: 20),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        GestureDetector(
-                                          onTap: () => _startVideoCall(
-                                            context,
-                                            myId,
-                                            userId,
-                                            displayName,
-                                            photoUrl,
-                                            withCamera: true,
-                                          ),
-                                          child: Container(
-                                            width: 42,
-                                            height: 42,
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF3A3B3C),
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
+                                            const SizedBox(width: 8),
+                                            GestureDetector(
+                                              onTap: () => _startVideoCall(
+                                                context,
+                                                myId,
+                                                userId,
+                                                displayName,
+                                                photoUrl,
+                                                withCamera: true,
+                                              ),
+                                              child: Container(
+                                                width: 42,
+                                                height: 42,
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      const Color(0xFF3A3B3C),
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                child: const Icon(
+                                                    Icons.videocam,
+                                                    color: Colors.white,
+                                                    size: 20),
+                                              ),
                                             ),
-                                            child: const Icon(Icons.videocam,
-                                                color: Colors.white, size: 20),
-                                          ),
-                                        ),
-                                      ],
+                                          ],
+                                        );
+                                      },
                                     ),
                                   ],
                                   const SizedBox(height: 20),
@@ -1162,6 +1188,48 @@ class _SheetAction {
     required this.color,
     required this.onTap,
   });
+}
+
+// Shown instead of Message / call buttons when you aren't friends yet
+// (Friends step 3): a soft Fly-gradient pill, not a dead greyed button.
+class _FriendsOnlyHint extends StatelessWidget {
+  final String name;
+  const _FriendsOnlyHint({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 42,
+      width: double.infinity,
+      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+        gradient: LinearGradient(colors: [
+          const Color(0xFFFF4B6E).withValues(alpha: 0.10),
+          const Color(0xFF9C4DFF).withValues(alpha: 0.10),
+          const Color(0xFF3A8DFF).withValues(alpha: 0.10),
+        ]),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.lock_outline_rounded,
+              color: Colors.white60, size: 16),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'Become friends with $name to message and call',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // Facebook-style Follow / Following toggle button
