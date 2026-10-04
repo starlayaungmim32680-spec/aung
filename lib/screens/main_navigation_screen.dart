@@ -77,6 +77,13 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // staying stuck "online" forever.
   Timer? _presenceHeartbeatTimer;
 
+  // Total unread chat messages for the badge on the bottom-bar Chat icon
+  // (4 Oct 2026): the sum of chats/{id}.unread.<me>, from the chats
+  // listener that's already running (_listenForNewMessages) - no extra
+  // reads. A ValueNotifier so only the badge rebuilds, never the screen.
+  final ValueNotifier<int> _unreadTotal = ValueNotifier<int>(0);
+  List<QueryDocumentSnapshot> _lastChatDocs = const [];
+
   final List<Widget> _screens = const [
     HomeScreen(),
     ChatScreen(),
@@ -120,6 +127,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // Who's blocked (either way) - read by the feed, stories, chat,
     // search and profiles to hide those accounts everywhere.
     BlockService.instance.start();
+    // Blocked people's chats don't count towards the unread badge.
+    BlockService.instance.hidden.addListener(_recomputeUnread);
     // Keep my name findable in search (Cloudflare D1, see
     // search_service.dart). Once per app run, best-effort.
     SearchService.syncMe();
@@ -252,6 +261,25 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
 
   // Watches all chats and shows a notification + sound when a new
   // message arrives from someone else
+  // Adds up my unread counts across chats (skipping blocked people).
+  void _recomputeUnread() {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    if (myId == null) return;
+    int total = 0;
+    for (final doc in _lastChatDocs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+      final List participants = (data['participants'] as List?) ?? const [];
+      final String other = participants
+          .map((e) => e.toString())
+          .firstWhere((id) => id != myId, orElse: () => '');
+      if (other.isEmpty || BlockService.instance.isHidden(other)) continue;
+      final num? n = (data['unread'] as Map?)?[myId] as num?;
+      if (n != null && n > 0) total += n.toInt();
+    }
+    if (_unreadTotal.value != total) _unreadTotal.value = total;
+  }
+
   void _listenForNewMessages() {
     final myId = FirebaseAuth.instance.currentUser?.uid;
     if (myId == null) return;
@@ -261,6 +289,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         .where('participants', arrayContains: myId)
         .snapshots()
         .listen((snapshot) async {
+      _lastChatDocs = snapshot.docs;
+      _recomputeUnread();
       if (_firstSnapshot) {
         _firstSnapshot = false;
         for (final doc in snapshot.docs) {
@@ -482,6 +512,8 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _rotationController.dispose();
     _swipePageController.dispose();
     _chatSubscription?.cancel();
+    BlockService.instance.hidden.removeListener(_recomputeUnread);
+    _unreadTotal.dispose();
     _callSubscription?.cancel();
     _dingPlayer.dispose();
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
@@ -747,6 +779,45 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                       : const [Shadow(color: Colors.black54, blurRadius: 6)],
                 ),
               ),
+              // Unread messages badge on the Chat tab (Fly gradient, pops
+              // in/out, "99+" cap) - its own ValueListenableBuilder so a
+              // new message never rebuilds the whole bottom bar.
+              if (item['label'] == 'Chat')
+                Positioned(
+                  right: -10 * scale,
+                  top: -8 * scale,
+                  child: ValueListenableBuilder<int>(
+                    valueListenable: _unreadTotal,
+                    builder: (context, count, _) => AnimatedScale(
+                      scale: count > 0 ? 1 : 0,
+                      duration: const Duration(milliseconds: 280),
+                      curve: Curves.elasticOut,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 5 * scale, vertical: 1.5 * scale),
+                        constraints: BoxConstraints(
+                            minWidth: 18 * scale, minHeight: 18 * scale),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10 * scale),
+                          gradient: const LinearGradient(colors: [
+                            Color(0xFFFF4B6E),
+                            Color(0xFF9C4DFF),
+                          ]),
+                          border: Border.all(color: Colors.black, width: 1.5),
+                        ),
+                        child: Text(
+                          count > 99 ? '99+' : '$count',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10 * scale,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               if (isActive)
                 AnimatedBuilder(
                   animation: _rotationController,

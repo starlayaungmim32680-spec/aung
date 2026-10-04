@@ -75,6 +75,9 @@
 > `unread.<me>` back to 0; the Messages list shows bold name/preview,
 > a pink time and a Fly-gradient count pill (9+). New rule: anyone in
 > the room may reset only their OWN unread to 0, even after unfriending._
+> _4 Oct 2026 (late, confirmed): **unread badge on the bottom-bar Chat
+> icon** - total of my `unread.<me>` across chats (blocked skipped), from
+> the chats listener that already runs; no extra reads._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -919,7 +922,15 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   sets a `hasSeenOnboarding` flag on the user's Firestore doc (same pattern as
   the pre-existing `sawSwipeHint` flag) — chained so it always finishes before
   the swipe hint gets its turn.
-- `screens/main_navigation_screen.dart` — the shell.
+- `screens/main_navigation_screen.dart` — the shell. **Unread badge (4 Oct 2026,
+  confirmed):** `_unreadTotal` (ValueNotifier<int>) = sum of
+  `chats/{id}.unread.<me>` over `_lastChatDocs` (kept by the existing
+  `_listenForNewMessages` chats listener; `_recomputeUnread` also runs
+  when `BlockService.hidden` changes, blocked people skipped). The Chat
+  item in `_buildMenuItem` has a Positioned `ValueListenableBuilder`
+  gradient pill (elastic pop, "99+") so only the badge rebuilds. Known
+  nit: its builder parameter is named `count` (analyzer info
+  avoid_types_as_parameter_names) - rename next time.
   - Tabs (checked 27 Sep 2026): **Home, Chat, Upload, Profile, Live**.
     Home and Chat are swipeable via a `PageView` (both stay mounted
     simultaneously — needed so the swipe feels responsive), with a one-time
@@ -1262,8 +1273,8 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
     `ChatThreadScreen._markChatRead()` (reads the chat doc, updates
     `unread.<me>: 0` only if >0) - called in initState and after
     `_markMessagesAsSeen` marks anything seen. Chats from before this
-    have no counts (never bold). Not built: a total-unread badge on the
-    bottom-nav Messages icon.
+    have no counts (never bold). The bottom-bar Chat icon shows the
+    total (see main_navigation_screen.dart's `_unreadTotal`).
   - Photos and voice notes upload to Bunny Storage (see §3, 1 Oct 2026).
 - `ChatThreadScreen` status + reactions **(1 Oct 2026, confirmed)**:
   - Messages are created with `seen: false, delivered: false`; opening the
@@ -1640,8 +1651,8 @@ others only see it once encoded (Bunny webhook).
    `FriendService.start()` into `main_navigation_screen.dart` next to
    `BlockService.start()`; delete-account should remove the user's
    `friends` / `friendRequests` docs (both sides) and
-   `private/searchHistory`. (Unread-in-bold is done, 4 Oct 2026; a total
-   unread badge on the bottom nav could come next.)
+   `private/searchHistory`. (Unread-in-bold and the bottom-bar unread
+   badge are done, 4 Oct 2026.)
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
