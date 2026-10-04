@@ -38,9 +38,23 @@ import 'screens/home_screen.dart' show flyRouteObserver;
 // open, the push still arrives but this handler doesn't run (Android only
 // calls it while Fly isn't in the foreground), and MainNavigationScreen's
 // own listener shows the in-app alert instead.
+//
+// And 'friend_request' / 'friend_accept' (4 Oct 2026, the Worker's
+// /friend-push): shows a friend notification; tapping it opens Friend
+// Requests or the new friend's profile (NotificationService.pendingFriend).
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final String? type = message.data['type'] as String?;
+  if (type == 'friend_request' || type == 'friend_accept') {
+    WidgetsFlutterBinding.ensureInitialized();
+    await NotificationService.showFriendNotification(
+      kind: message.data['type'] as String? ?? '',
+      senderId: message.data['senderId'] as String? ?? '',
+      senderName: message.data['senderName'] as String? ?? 'Someone',
+      senderPhoto: message.data['senderPhoto'] as String? ?? '',
+    );
+    return;
+  }
   if (type == 'call_cancelled') {
     WidgetsFlutterBinding.ensureInitialized();
     await CallKitService.dismissIncomingCall(

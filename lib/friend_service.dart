@@ -15,6 +15,11 @@
 //                                       still exists. Either friend can
 //                                       remove both (unfriend).
 //
+// Send/accept also push a phone notification through the Worker's
+// /friend-push (4 Oct 2026, call_push_service.dart's sendFriendPush), so
+// it shows up even when Fly is closed; tapping it opens Friend Requests
+// (a request) or their profile (accepted).
+//
 // Blocking someone also removes the friendship and any pending request
 // (block_service.dart). The rules refuse a new request between two people
 // when either has blocked the other.
@@ -31,6 +36,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'screens/call_push_service.dart' show sendFriendPush;
 
 /// Where I stand with another person.
 enum FriendStatus {
@@ -142,6 +148,9 @@ class FriendService {
       'createdAt': FieldValue.serverTimestamp(),
     });
     _notify(other, 'friend_request');
+    // Phone notification even when Fly is closed there (Worker checks the
+    // request really exists first).
+    unawaited(sendFriendPush(receiverId: other, type: 'friend_request'));
   }
 
   /// Takes back my pending request to [other].
@@ -164,6 +173,7 @@ class FriendService {
     batch.delete(_users.doc(other).collection('friendRequests').doc(myId));
     await batch.commit();
     _notify(other, 'friend_accept');
+    unawaited(sendFriendPush(receiverId: other, type: 'friend_accept'));
   }
 
   /// Declines [other]'s request (they aren't told).

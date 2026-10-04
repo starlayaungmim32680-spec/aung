@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../block_service.dart';
+import '../friend_service.dart';
 import 'chat_screen.dart';
 import 'public_profile_screen.dart';
 import 'friend_requests_screen.dart';
@@ -198,12 +200,23 @@ class NotificationsScreen extends StatelessWidget {
                   _markAllSeen(myId, allDocs);
                 }
 
-                // Nothing from blocked accounts (either way).
+                // Nothing from blocked accounts (either way). Friend
+                // requests / accepts show only the NEWEST one per person
+                // (4 Oct 2026) - like Facebook, not a stack of repeats
+                // every time someone re-sends after a cancel.
+                final Set<String> seenFriendKeys = {};
                 final docs = allDocs.where((d) {
                   final data = d.data() as Map<String, dynamic>;
-                  return !BlockService.instance
-                      .isHidden(data['fromId'] as String?);
+                  final String? fromId = data['fromId'] as String?;
+                  if (BlockService.instance.isHidden(fromId)) return false;
+                  final String type = (data['type'] as String?) ?? '';
+                  if (type == 'friend_request' || type == 'friend_accept') {
+                    // Newest first, so the first one kept wins.
+                    return seenFriendKeys.add('$type|$fromId');
+                  }
+                  return true;
                 }).toList();
+                FriendService.instance.start();
 
                 if (docs.isEmpty) {
                   return Center(
@@ -297,6 +310,14 @@ class NotificationsScreen extends StatelessWidget {
                             ],
                           ),
                         ),
+                        // Facebook-style: answer a friend request right
+                        // here, without opening anything (4 Oct 2026).
+                        subtitle: type == 'friend_request'
+                            ? _InlineFriendActions(
+                                fromId: (data['fromId'] as String?) ?? '',
+                                fromName: fromName,
+                              )
+                            : null,
                         trailing: Text(
                           _timeAgo(data['createdAt'] as Timestamp?),
                           style:
@@ -308,6 +329,211 @@ class NotificationsScreen extends StatelessWidget {
                 );
               },
             ),
+    );
+  }
+}
+
+// Confirm / Delete right inside a friend-request notification (4 Oct
+// 2026). Only while the request is still waiting for me; once answered
+// (here, in Friend Requests, on the profile or from the phone
+// notification) it turns into a small "Friends ✓" / "Request removed"
+// line. Listens to FriendService so every place stays in sync.
+class _InlineFriendActions extends StatefulWidget {
+  final String fromId;
+  final String fromName;
+
+  const _InlineFriendActions({required this.fromId, required this.fromName});
+
+  @override
+  State<_InlineFriendActions> createState() => _InlineFriendActionsState();
+}
+
+class _InlineFriendActionsState extends State<_InlineFriendActions> {
+  bool _busy = false;
+  // Set after I delete here, so the row says so instead of just going
+  // quiet.
+  bool _deleted = false;
+
+  Future<void> _confirm() async {
+    if (_busy) return;
+    HapticFeedback.mediumImpact();
+    setState(() => _busy = true);
+    try {
+      await FriendService.instance.accept(widget.fromId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF2A2340),
+          content: Text('You and ${widget.fromName} are now friends 🎉'),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Couldn't confirm the request. Try again.")));
+      }
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _delete() async {
+    if (_busy) return;
+    HapticFeedback.lightImpact();
+    setState(() => _busy = true);
+    try {
+      await FriendService.instance.decline(widget.fromId);
+      _deleted = true;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Couldn't delete the request. Try again.")));
+      }
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final svc = FriendService.instance;
+    return ListenableBuilder(
+      listenable: Listenable.merge([svc.incoming, svc.friends]),
+      builder: (context, _) {
+        final Widget child;
+        if (svc.isFriend(widget.fromId)) {
+          child = const _StatusLine(
+              key: ValueKey('friends'), text: 'Friends ✓', fly: true);
+        } else if (svc.hasIncoming(widget.fromId) && !_deleted) {
+          child = Padding(
+            key: const ValueKey('buttons'),
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _SmallButton(
+                    label: 'Confirm',
+                    gradient: true,
+                    busy: _busy,
+                    onTap: _confirm,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _SmallButton(
+                    label: 'Delete',
+                    gradient: false,
+                    busy: false,
+                    onTap: _delete,
+                  ),
+                ),
+              ],
+            ),
+          );
+        } else if (_deleted) {
+          child = const _StatusLine(
+              key: ValueKey('deleted'), text: 'Request removed', fly: false);
+        } else {
+          // Answered some other time (or cancelled by them) - nothing to
+          // do here any more.
+          child = const SizedBox.shrink(key: ValueKey('none'));
+        }
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topLeft,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StatusLine extends StatelessWidget {
+  final String text;
+  final bool fly;
+  const _StatusLine({super.key, required this.text, required this.fly});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: fly ? const Color(0xFFFF7A95) : Colors.grey[500],
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+// Compact Confirm / Delete with a spring press.
+class _SmallButton extends StatefulWidget {
+  final String label;
+  final bool gradient;
+  final bool busy;
+  final VoidCallback onTap;
+
+  const _SmallButton({
+    required this.label,
+    required this.gradient,
+    required this.busy,
+    required this.onTap,
+  });
+
+  @override
+  State<_SmallButton> createState() => _SmallButtonState();
+}
+
+class _SmallButtonState extends State<_SmallButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTap: widget.busy ? null : widget.onTap,
+      child: AnimatedScale(
+        scale: _pressed ? 0.94 : 1.0,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutBack,
+        child: Container(
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            color: widget.gradient ? null : const Color(0xFF3A3B3C),
+            gradient: widget.gradient
+                ? const LinearGradient(colors: [
+                    Color(0xFFFF4B6E),
+                    Color(0xFF9C4DFF),
+                    Color(0xFF3A8DFF),
+                  ])
+                : null,
+          ),
+          child: widget.busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : Text(
+                  widget.label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+        ),
+      ),
     );
   }
 }

@@ -24,6 +24,14 @@
 //                         message "Delivered" even if Fly is fully closed.
 //                         The sender must be one of the two people in
 //                         `chatId` (checked against their verified uid).
+//  POST /friend-push     - (4 Oct 2026) wakes someone's phone for a new
+//                         friend request (`type: 'friend_request'`) or an
+//                         accepted one (`type: 'friend_accept'`). The app
+//                         only sends `receiverId`; the Worker checks in
+//                         Firestore that the request / friendship really
+//                         exists for the verified caller, looks up the
+//                         receiver's fcmToken and the caller's name/photo
+//                         itself - so nobody can spam fake friend pushes.
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -141,6 +149,9 @@ export default {
 
     if (path === '/call-push') {
       return handleCallPush(body, env, caller);
+    }
+    if (path === '/friend-push') {
+      return handleFriendPush(body, env, caller);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -890,6 +901,111 @@ async function handleCallPush(body, env, caller) {
     });
   } catch (err) {
     return new Response(`Push failed: ${err.message}`, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------
+// Friend request pushes (4 Oct 2026, see lib/friend_service.dart)
+// ---------------------------------------------------------------------
+
+// Reads documents/{path} with the service account. Returns the plain
+// `fields` object (Firestore REST format), or null if it doesn't exist.
+async function firestoreGetFields(env, accessToken, path) {
+  const response = await fetch(`${firestoreBase(env)}/${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Firestore read failed: ${await response.text()}`);
+  }
+  const doc = await response.json();
+  return doc.fields || {};
+}
+
+function stringField(fields, name) {
+  const v = fields && fields[name];
+  return v && typeof v.stringValue === 'string' ? v.stringValue : '';
+}
+
+// A Firebase uid: letters/digits only, no '/' (it goes into a path).
+function isSafeUid(id) {
+  return typeof id === 'string' && /^[A-Za-z0-9]{1,128}$/.test(id);
+}
+
+async function handleFriendPush(body, env, caller) {
+  const type = body.type;
+  const receiverId = body.receiverId;
+  if (type !== 'friend_request' && type !== 'friend_accept') {
+    return new Response('Unknown type', { status: 400 });
+  }
+  if (!caller || !isSafeUid(caller.uid) || !isSafeUid(receiverId) ||
+      receiverId === caller.uid) {
+    return new Response('Bad receiver', { status: 400 });
+  }
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+
+    // Only push for something that really happened, done by this caller:
+    //  - a request: users/{receiver}/friendRequests/{caller} exists;
+    //  - an accept: users/{caller}/friends/{receiver} exists.
+    const proofPath = type === 'friend_request'
+      ? `users/${receiverId}/friendRequests/${caller.uid}`
+      : `users/${caller.uid}/friends/${receiverId}`;
+    const proof = await firestoreGetFields(env, dbToken, proofPath);
+    if (proof === null) {
+      return new Response('Nothing to notify about', { status: 403 });
+    }
+
+    const receiver = await firestoreGetFields(env, dbToken, `users/${receiverId}`);
+    const fcmToken = stringField(receiver, 'fcmToken');
+    if (!fcmToken) {
+      // No device registered - nothing to do, not an error.
+      return new Response('{"skipped":"no fcmToken"}', {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const sender = await firestoreGetFields(env, dbToken, `users/${caller.uid}`);
+    const senderName =
+      (stringField(sender, 'displayName').trim() || 'Someone').slice(0, 80);
+    const senderPhoto = stringField(sender, 'photoUrl').slice(0, 500);
+
+    const fcmAccessToken = await getGoogleAccessToken(env);
+    const fcmResponse = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/messages:send`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fcmAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: {
+            token: fcmToken,
+            data: {
+              type,
+              senderId: caller.uid,
+              senderName,
+              senderPhoto,
+            },
+            android: { priority: 'high' },
+            apns: {
+              headers: { 'apns-priority': '10' },
+              payload: { aps: { 'content-available': 1, sound: 'default' } },
+            },
+          },
+        }),
+      },
+    );
+    const resultText = await fcmResponse.text();
+    if (!fcmResponse.ok) {
+      return new Response(`FCM send failed: ${resultText}`, { status: 502 });
+    }
+    return new Response(resultText, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    return new Response(`Friend push failed: ${err.message}`, { status: 500 });
   }
 }
 

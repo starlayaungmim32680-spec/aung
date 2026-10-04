@@ -20,6 +20,9 @@ import 'profile_screen.dart';
 import 'live_screen.dart';
 import 'gifting.dart';
 import 'onboarding_screen.dart';
+import 'friend_requests_screen.dart';
+import '../friend_service.dart';
+import 'public_profile_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -140,6 +143,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // Tapping a message notification opens that chat.
     NotificationService.pendingChat.addListener(_openPendingChat);
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingChat());
+    // Tapping a friend notification opens Friend Requests / the profile.
+    NotificationService.pendingFriend.addListener(_onPendingFriend);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onPendingFriend());
     CoinService.instance.awardDailyLogin();
     navigateToHomeSignal.addListener(_onNavigateToHomeSignal);
     // Call-reliability permissions (battery optimization, overlay,
@@ -476,7 +482,58 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _dingPlayer.dispose();
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
     NotificationService.pendingChat.removeListener(_openPendingChat);
+    NotificationService.pendingFriend.removeListener(_onPendingFriend);
     super.dispose();
+  }
+
+  void _onPendingFriend() => _openPendingFriend();
+
+  // Opens what a tapped friend notification points at (4 Oct 2026): a new
+  // request -> Friend Requests; an accepted one -> the new friend's
+  // profile. If its Confirm / Delete BUTTON was pressed, that is done
+  // right away instead (then Confirm shows their profile).
+  Future<void> _openPendingFriend() async {
+    final Map<String, String>? info = NotificationService.pendingFriend.value;
+    if (info == null || !mounted) return;
+    NotificationService.pendingFriend.value = null;
+    final String userId = info['userId'] ?? '';
+    if (userId.isEmpty || BlockService.instance.isHidden(userId)) return;
+    final String action = info['action'] ?? '';
+    final String name = info['name'] ?? 'Someone';
+    if (action == 'confirm' || action == 'delete') {
+      final messenger = ScaffoldMessenger.of(context);
+      try {
+        if (action == 'confirm') {
+          await FriendService.instance.accept(userId);
+        } else {
+          await FriendService.instance.decline(userId);
+        }
+        messenger.showSnackBar(SnackBar(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF2A2340),
+          content: Text(action == 'confirm'
+              ? 'You and $name are now friends 🎉'
+              : 'Friend request deleted'),
+        ));
+      } catch (_) {
+        // Already answered / cancelled by them - the rules refuse it.
+        messenger.showSnackBar(const SnackBar(
+            content: Text('This friend request is no longer available.')));
+        return;
+      }
+      if (action == 'delete' || !mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: userId)),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => info['kind'] == 'friend_request'
+            ? const FriendRequestsScreen()
+            : PublicProfileScreen(userId: userId),
+      ),
+    );
   }
 
   // Opens the chat whose notification was tapped (see NotificationService).

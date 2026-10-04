@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -20,6 +21,14 @@ class NotificationService {
   // {'userId', 'name', 'photo'} of the other person. MainNavigationScreen
   // listens to this and opens that chat, then sets it back to null.
   static final ValueNotifier<Map<String, String>?> pendingChat =
+      ValueNotifier<Map<String, String>?>(null);
+
+  // A friend notification the person tapped (4 Oct 2026):
+  // {'kind': 'friend_request' | 'friend_accept', 'userId': <sender>,
+  //  'name': <sender name>, 'action': '' | 'confirm' | 'delete'}.
+  // MainNavigationScreen opens Friend Requests / that profile, then sets
+  // it back to null.
+  static final ValueNotifier<Map<String, String>?> pendingFriend =
       ValueNotifier<Map<String, String>?>(null);
 
   // One notification per conversation (like Messenger): a newer message
@@ -50,7 +59,7 @@ class NotificationService {
       settings,
       // Tapped while Fly is running (foreground or background).
       onDidReceiveNotificationResponse: (response) =>
-          _openChatFromPayload(response.payload),
+          _openChatFromPayload(response.payload, response.actionId),
     );
     _pluginReady = true;
 
@@ -58,7 +67,8 @@ class NotificationService {
     try {
       final launch = await _plugin.getNotificationAppLaunchDetails();
       if (launch?.didNotificationLaunchApp == true) {
-        _openChatFromPayload(launch!.notificationResponse?.payload);
+        _openChatFromPayload(launch!.notificationResponse?.payload,
+            launch.notificationResponse?.actionId);
       }
     } catch (_) {}
 
@@ -77,13 +87,26 @@ class NotificationService {
     _initialized = true;
   }
 
-  static void _openChatFromPayload(String? payload) {
+  // [actionId] is set when a notification BUTTON was tapped (the friend
+  // request's Confirm / Delete), null for a tap on the notification
+  // itself.
+  static void _openChatFromPayload(String? payload, [String? actionId]) {
     if (payload == null || payload.isEmpty) return;
     try {
       final Map<String, dynamic> data =
           jsonDecode(payload) as Map<String, dynamic>;
       final String userId = (data['userId'] as String?) ?? '';
       if (userId.isEmpty) return;
+      final String kind = (data['kind'] as String?) ?? '';
+      if (kind == 'friend_request' || kind == 'friend_accept') {
+        pendingFriend.value = {
+          'kind': kind,
+          'userId': userId,
+          'name': (data['name'] as String?) ?? 'Someone',
+          'action': actionId ?? '',
+        };
+        return;
+      }
       pendingChat.value = {
         'userId': userId,
         'name': (data['name'] as String?) ?? 'User',
@@ -140,6 +163,87 @@ class NotificationService {
                 'name': title,
                 'photo': senderPhoto ?? '',
               }),
+      );
+    } catch (_) {
+      // A notification failing must never break anything else.
+    }
+  }
+
+  // Friend request / accepted-request notification (4 Oct 2026), shown by
+  // the background push handler in main.dart. One per person, so a
+  // request followed by an accept replaces instead of stacking. Tapping
+  // it opens Friend Requests or the person's profile (pendingFriend).
+  //
+  // Like Facebook: the sender's profile photo as the big icon, and for a
+  // request two buttons - Confirm / Delete. Pressing one opens Fly, which
+  // does it right away (MainNavigationScreen._openPendingFriend).
+  static Future<void> showFriendNotification({
+    required String kind,
+    required String senderId,
+    required String senderName,
+    String senderPhoto = '',
+  }) async {
+    try {
+      if (!_pluginReady) {
+        await _plugin.initialize(
+          const InitializationSettings(android: _androidInit),
+        );
+        _pluginReady = true;
+      }
+      final bool isRequest = kind == 'friend_request';
+      final String body = isRequest
+          ? '$senderName sent you a friend request'
+          : '$senderName accepted your friend request 🎉';
+
+      // Profile photo as the large icon - best-effort, a short timeout so
+      // a slow network never holds the notification back.
+      AndroidBitmap<Object>? largeIcon;
+      if (senderPhoto.startsWith('http')) {
+        try {
+          final res = await http
+              .get(Uri.parse(senderPhoto))
+              .timeout(const Duration(seconds: 4));
+          if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+            largeIcon = ByteArrayAndroidBitmap(res.bodyBytes);
+          }
+        } catch (_) {}
+      }
+
+      final AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'friend_requests',
+        'Friend Requests',
+        channelDescription: 'New and accepted friend requests',
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.social,
+        icon: '@drawable/ic_notification',
+        largeIcon: largeIcon,
+        actions: isRequest
+            ? const <AndroidNotificationAction>[
+                AndroidNotificationAction(
+                  'confirm',
+                  'Confirm',
+                  showsUserInterface: true,
+                  cancelNotification: true,
+                ),
+                AndroidNotificationAction(
+                  'delete',
+                  'Delete',
+                  showsUserInterface: true,
+                  cancelNotification: true,
+                ),
+              ]
+            : null,
+      );
+
+      await _plugin.show(
+        ('friend_$senderId').hashCode & 0x7ffffff0 | 0x1,
+        isRequest ? 'New friend request' : 'You have a new friend',
+        body,
+        NotificationDetails(android: androidDetails),
+        payload:
+            jsonEncode({'kind': kind, 'userId': senderId, 'name': senderName}),
       );
     } catch (_) {
       // A notification failing must never break anything else.

@@ -39,18 +39,28 @@
 > `areFriends(roomId)` on `chats` create/update, `messages` create and
 > calls going to 'ringing'. `FriendService.loaded` avoids flashing the
 > "not friends" UI before the list arrives._
-> \_4 Oct 2026 (Friends step 4 = scale-proofing (a), confirmed on two
+> _4 Oct 2026 (Friends step 4 = scale-proofing (a), confirmed on two
 > phones): **Messages no longer streams the whole `users` collection.**
 > It lists only my chats (newest message/call first, last-message preview
+> and time, tap → thread, avatar → profile), an "Online now" strip of
+> online FRIENDS and a "Suggested" list of friends I haven't chatted with
+> (Say hi 👋). Profiles come from a per-uid live `_ProfileCache`
+> (ValueNotifiers, no flicker). No rules change._
+> _4 Oct 2026 (afternoon, confirmed on two phones): **friend request
+> phone notifications, Facebook style.** New Worker route
+> `POST /friend-push` (deployed) - the Worker checks the request /
+> friendship really exists, finds the receiver's fcmToken and the
+> sender's name/photo itself. The phone notification shows the sender's
+> photo and, for a request, CONFIRM / DELETE buttons; tapping opens
+> Friend Requests / the profile. In-app 🔔 Notifications rows for a
+> request have inline Confirm / Delete, and repeats per person collapse
+> to the newest. Lesson: a push "not showing" was Phone B still on the
+> old APK - always install on BOTH phones._
 >
-> - time, tap → thread, avatar → profile), an "Online now" strip of online
->   FRIENDS and a "Suggested" list of friends I haven't chatted with (Say hi
->   👋). Profiles come from a per-uid live `_ProfileCache` (ValueNotifiers,
->   no flicker). No rules change.\_
->   _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
->   the nav-bar description, package list and feature list, and added Sky
->   Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
->   and back-button behavior, which were built but missing from this file._
+> _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
+> the nav-bar description, package list and feature list, and added Sky
+> Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
+> and back-button behavior, which were built but missing from this file._
 
 > 🧭 **New chat with Ko? Read §2 (who Ko is, how he likes to work) and
 > §7 (the exact step-by-step loop every task follows) before anything
@@ -499,6 +509,18 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       verified caller uid is one of the two ids in `chatId`, sets
       `senderId` to that uid itself, and trims text (300) / name (80) to
       stay under FCM's 4 KB data limit.
+    - `POST /friend-push` **(4 Oct 2026, confirmed)** — body
+      `{type: 'friend_request' | 'friend_accept', receiverId}` only.
+      `handleFriendPush` reads Firestore with the service account
+      (`firestoreGetFields`, DATASTORE_SCOPE): 403 unless
+      `users/{receiver}/friendRequests/{caller}` (request) or
+      `users/{caller}/friends/{receiver}` (accept) exists for the
+      VERIFIED caller; takes the receiver's `fcmToken` and the caller's
+      `displayName`/`photoUrl` from their user docs (never from the app);
+      sends FCM data `{type, senderId, senderName, senderPhoto}`, high
+      priority. Returns 200 with `{"skipped":"no fcmToken"}` when the
+      receiver has no token. uids are checked with `isSafeUid` (letters/
+      digits only - they go into a Firestore path).
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
@@ -730,7 +752,9 @@ issue if this comes up again.
   if they already asked me), `cancelRequest`, `accept` (one batch: both
   `friends` docs + both request docs deleted), `decline` (they aren't
   told), `unfriend` (both docs). Send/accept drop a `friend_request` /
-  `friend_accept` notification (best-effort, no push yet).
+  `friend_accept` in-app notification AND (4 Oct 2026) call
+  `sendFriendPush` (`call_push_service.dart` → Worker `/friend-push`,
+  unawaited, best-effort) for the phone notification.
   `FriendStatus` enum: none / requested / incoming / friends.
   `loaded` (ValueNotifier<bool>, Friends step 3) turns true on the first
   friends snapshot - screens show nothing (not the "not friends" UI) until
@@ -1241,7 +1265,11 @@ incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
 - `screens/notifications_screen.dart` — notifications list. Rows are
   tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
   or a `friend_accept` (4 Oct 2026, pink icon) opens that person's
-  profile, a `friend_request` opens `FriendRequestsScreen`, a comment/reaction (they carry `postId`)
+  profile, a `friend_request` opens `FriendRequestsScreen`. Since 4 Oct
+  2026 a still-pending `friend_request` row has inline Confirm / Delete
+  (`_InlineFriendActions`, listens to `FriendService.incoming/friends`;
+  answered → "Friends ✓" / "Request removed"), and friend request /
+  accept rows show only the newest per person. A comment/reaction (they carry `postId`)
   opens `PostFromNotificationScreen` (home_screen.dart, fade+scale route)
   (`_openNotification`).
 - `PostFromNotificationScreen` (in `home_screen.dart`, **1 Oct 2026,
@@ -1257,9 +1285,17 @@ incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
   matching comment (newest from that user, same text if possible) is
   wrapped in `_CommentSpotlight` — scrolls into view and a rotating
   pink→purple→blue sweep-gradient border glows ~3.5s, then fades.
-- `notification_service.dart` — flutter_local_notifications wrapper;
+- `notification_service.dart` — flutter*local_notifications wrapper;
   `registerAndSaveToken()` saves the device's `fcmToken` onto the user's
-  Firestore doc.
+  Firestore doc. **Friend notifications (4 Oct 2026, confirmed):**
+  `showFriendNotification(kind, senderId, senderName, senderPhoto)` -
+  channel `friend_requests`, one per person (id from `friend*<uid>`),
+sender photo downloaded (4s timeout) as `largeIcon`, and for a request
+two `AndroidNotificationAction`s `confirm`/`delete`
+(`showsUserInterface: true`). Called from main.dart's background
+handler for FCM `type` `friend_request`/`friend_accept`. Taps (and
+button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action});`MainNavigationScreen.\_openPendingFriend`opens Friend Requests / the profile, or for a button runs`FriendService.accept/decline` first (snackbar; "no longer available"
+  if it was already answered - the rules refuse it).
 
 ### Native Android (`android/app/src/main/`)
 
@@ -1412,7 +1448,8 @@ search/discover · Shorts shelf in the Home feed · content/keyword
 filtering · on-device caption translation (ML Kit; no Burmese support) ·
 report a post or a user · two-way block (both people vanish for each
 other everywhere; no messages or calls - also enforced in Firestore rules),
-**Friends separate from Followers** (Add Friend / Requested / Respond /
+**Friends separate from Followers** (Facebook-style friend request phone
+notifications with photo + Confirm/Delete; Add Friend / Requested / Respond /
 Friends on the profile, request + accepted notifications, Friend Requests
 screen with a badge on Messages, only friends can chat/call/reply to
 stories; 4 Oct 2026),
@@ -1508,8 +1545,8 @@ others only see it once encoded (Bunny webhook).
    Messages list). Decisions Ko made: strict Facebook style - only friends
    can chat/call (no "message requests" folder for now); a request is one
    tap, no note; old chats with a non-friend stay readable with an "Add
-   friend to keep chatting" banner. Still open: a push for new friend
-   requests when Fly is closed (needs the Worker); the Worker's
+   friend to keep chatting" banner. Friend request / accept phone
+   notifications are done too (Worker `/friend-push`). Still open: the Worker's
    `/call-push` and `/chat-push` don't check friendship (the rules already
    block the call doc / message - cleanup, not urgent); move
    `FriendService.start()` into `main_navigation_screen.dart` next to

@@ -136,3 +136,29 @@ Future<void> sendChatPush({
     // Best-effort, as noted above.
   }
 }
+
+// Wakes [receiverId]'s phone for a friend request I just sent
+// (type 'friend_request') or one of theirs I just accepted
+// ('friend_accept') - 4 Oct 2026, see friend_service.dart. Only the
+// receiver's uid is sent: the Worker's /friend-push checks the request /
+// friendship really exists, finds their fcmToken and my name/photo
+// itself. Best-effort: the in-app notification and the Messages badge
+// work without it.
+Future<void> sendFriendPush({
+  required String receiverId,
+  required String type,
+}) async {
+  try {
+    final Uri uri = Uri.parse('$kTokenServerUrl/friend-push');
+    await http.post(
+      uri,
+      headers: {
+        ...await workerAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'type': type, 'receiverId': receiverId}),
+    );
+  } catch (_) {
+    // Best-effort, as noted above.
+  }
+}
