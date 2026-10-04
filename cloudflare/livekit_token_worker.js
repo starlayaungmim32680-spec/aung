@@ -32,6 +32,26 @@
 //                         exists for the verified caller, looks up the
 //                         receiver's fcmToken and the caller's name/photo
 //                         itself - so nobody can spam fake friend pushes.
+//  POST /search          - (4 Oct 2026) Fly's search. Body {q}. Looks the
+//                         words up in Cloudflare D1 (database `fly-search`,
+//                         binding SEARCH_DB, SQLite FTS5) and returns only
+//                         IDs: {users: [uid], posts: [postId]} (max 20
+//                         each). The app then reads those docs from
+//                         Firestore, which stays the source of truth - so a
+//                         deleted/blocked/not-ready item that is still in
+//                         D1 simply never shows.
+//  POST /search-sync-me   - (4 Oct 2026) the app calls this on start; the
+//                         Worker reads the caller's users/{uid} doc from
+//                         Firestore ITSELF (never trusts the app) and
+//                         updates their name in D1 only if it changed.
+//                         Posts get indexed by /bunny-webhook when their
+//                         video becomes ready.
+//  GET  /search-backfill  - (4 Oct 2026) one-time copy of existing users /
+//                         posts into D1, a page at a time:
+//                         /search-backfill?token=SEARCH_ADMIN_TOKEN&what=users
+//                         (then what=posts). Shows a "Next page" link until
+//                         done. Also creates the tables the first time.
+//                         No Firebase sign-in - protected by the token.
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -77,6 +97,10 @@
 //   BUNNY_STORAGE_PASSWORD  - that zone's password/API key, from its
 //                             "FTP & API Access" page. Separate from
 //                             BUNNY_API_KEY (that one's for Stream/video).
+// one for search (4 Oct 2026):
+//   SEARCH_ADMIN_TOKEN      - any long random string, only for
+//                             /search-backfill?token=...
+// plus a D1 binding (Settings -> Bindings): SEARCH_DB -> fly-search.
 // and one for the Bunny webhook:
 //   BUNNY_WEBHOOK_TOKEN     - any long random string; the same value goes
 //                             at the end of the Webhook URL set in Bunny
@@ -110,6 +134,10 @@ export default {
     }
     if (request.method === 'POST' && url.pathname === '/delete-request') {
       return handleDeleteRequest(request, env);
+    }
+    // One-time search backfill, opened by Ko in a browser (token-protected).
+    if (request.method === 'GET' && url.pathname === '/search-backfill') {
+      return handleSearchBackfill(env, url);
     }
 
     if (request.method !== 'POST') {
@@ -152,6 +180,12 @@ export default {
     }
     if (path === '/friend-push') {
       return handleFriendPush(body, env, caller);
+    }
+    if (path === '/search') {
+      return handleSearch(body, env);
+    }
+    if (path === '/search-sync-me') {
+      return handleSearchSyncMe(env, caller);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -506,6 +540,17 @@ async function handleBunnyWebhook(request, env, url) {
           videoReady: ready,
           videoFailed: failed,
         });
+        // A post whose video just became playable goes into search
+        // (best-effort - search must never make Bunny retry the webhook).
+        if (collection === 'posts' && ready && env.SEARCH_DB) {
+          try {
+            const doc = await firestoreGetByName(accessToken, name);
+            if (doc) {
+              await ensureSearchSchema(env);
+              await searchUpsertPost(env, docIdFromName(name), doc.fields || {});
+            }
+          } catch (_) {}
+        }
       }
     }
 
@@ -1006,6 +1051,289 @@ async function handleFriendPush(body, env, caller) {
     });
   } catch (err) {
     return new Response(`Friend push failed: ${err.message}`, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------
+// Search (4 Oct 2026): Cloudflare D1 + SQLite FTS5
+// ---------------------------------------------------------------------
+// Plain tables hold one row per user / post; FTS5 "external content"
+// indexes mirror them through triggers, so every upsert is ONE statement
+// (the free plan allows 50 D1 queries per request). The trigram tokenizer
+// finds text anywhere in a word ("ung" -> "Aung") for queries of 3+
+// characters; 1-2 characters use a plain prefix match instead.
+let searchSchemaReady = false;
+
+async function ensureSearchSchema(env) {
+  if (searchSchemaReady) return;
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS users (
+       uid TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+       updated_at INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE INDEX IF NOT EXISTS users_name ON users(name COLLATE NOCASE)`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
+       name, content='users', content_rowid='rowid', tokenize='trigram')`,
+    `CREATE TRIGGER IF NOT EXISTS users_ai AFTER INSERT ON users BEGIN
+       INSERT INTO users_fts(rowid, name) VALUES (new.rowid, new.name); END`,
+    `CREATE TRIGGER IF NOT EXISTS users_ad AFTER DELETE ON users BEGIN
+       INSERT INTO users_fts(users_fts, rowid, name)
+         VALUES ('delete', old.rowid, old.name); END`,
+    `CREATE TRIGGER IF NOT EXISTS users_au AFTER UPDATE ON users BEGIN
+       INSERT INTO users_fts(users_fts, rowid, name)
+         VALUES ('delete', old.rowid, old.name);
+       INSERT INTO users_fts(rowid, name) VALUES (new.rowid, new.name); END`,
+    `CREATE TABLE IF NOT EXISTS posts (
+       post_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT '',
+       caption TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '',
+       created_at INTEGER NOT NULL DEFAULT 0)`,
+    `CREATE INDEX IF NOT EXISTS posts_created ON posts(created_at)`,
+    `CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
+       caption, tags, content='posts', content_rowid='rowid',
+       tokenize='trigram')`,
+    `CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
+       INSERT INTO posts_fts(rowid, caption, tags)
+         VALUES (new.rowid, new.caption, new.tags); END`,
+    `CREATE TRIGGER IF NOT EXISTS posts_ad AFTER DELETE ON posts BEGIN
+       INSERT INTO posts_fts(posts_fts, rowid, caption, tags)
+         VALUES ('delete', old.rowid, old.caption, old.tags); END`,
+    `CREATE TRIGGER IF NOT EXISTS posts_au AFTER UPDATE ON posts BEGIN
+       INSERT INTO posts_fts(posts_fts, rowid, caption, tags)
+         VALUES ('delete', old.rowid, old.caption, old.tags);
+       INSERT INTO posts_fts(rowid, caption, tags)
+         VALUES (new.rowid, new.caption, new.tags); END`,
+  ];
+  await env.SEARCH_DB.batch(statements.map((sql) => env.SEARCH_DB.prepare(sql)));
+  searchSchemaReady = true;
+}
+
+// Plain-text value of a Firestore REST field (string / timestamp / array
+// of strings).
+function fsString(fields, name) {
+  const v = fields && fields[name];
+  if (!v) return '';
+  if (typeof v.stringValue === 'string') return v.stringValue;
+  return '';
+}
+function fsStringArray(fields, name) {
+  const v = fields && fields[name];
+  const values = v && v.arrayValue && v.arrayValue.values;
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((x) => (typeof x.stringValue === 'string' ? x.stringValue : ''))
+    .filter((x) => !!x);
+}
+function fsMillis(fields, name) {
+  const v = fields && fields[name];
+  if (v && typeof v.timestampValue === 'string') {
+    const t = Date.parse(v.timestampValue);
+    return Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+function docIdFromName(name) {
+  return String(name).split('/').pop();
+}
+
+function searchUserStatement(env, uid, fields) {
+  const name = fsString(fields, 'displayName').trim().slice(0, 80);
+  // Only writes when the name really changed (rows written cost quota).
+  return env.SEARCH_DB.prepare(
+    `INSERT INTO users (uid, name, updated_at) VALUES (?1, ?2, ?3)
+     ON CONFLICT(uid) DO UPDATE SET name = excluded.name,
+       updated_at = excluded.updated_at
+     WHERE users.name IS NOT excluded.name`,
+  ).bind(uid, name, Date.now());
+}
+
+function searchPostStatement(env, postId, fields) {
+  const caption = fsString(fields, 'caption').slice(0, 500);
+  const tags = fsStringArray(fields, 'hashtags')
+    .map((t) => t.replace(/^#/, '').toLowerCase())
+    .join(' ')
+    .slice(0, 300);
+  return env.SEARCH_DB.prepare(
+    `INSERT INTO posts (post_id, owner_id, caption, tags, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT(post_id) DO UPDATE SET caption = excluded.caption,
+       tags = excluded.tags
+     WHERE posts.caption IS NOT excluded.caption
+        OR posts.tags IS NOT excluded.tags`,
+  ).bind(
+    postId,
+    fsString(fields, 'userId'),
+    caption,
+    tags,
+    fsMillis(fields, 'createdAt'),
+  );
+}
+
+async function searchUpsertPost(env, postId, fields) {
+  await searchPostStatement(env, postId, fields).run();
+}
+
+async function firestoreGetByName(accessToken, name) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/${name}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Firestore read failed: ${await response.text()}`);
+  }
+  return response.json();
+}
+
+// "aung" -> '"aung"' (an FTS5 phrase; quotes inside are doubled, so the
+// person's text can never be read as FTS syntax).
+function ftsPhrase(text) {
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function handleSearch(body, env) {
+  if (!env.SEARCH_DB) return jsonResponse({ error: 'search not set up' }, 503);
+  // Keep letters/numbers/spaces of any language; drop punctuation.
+  const raw = String(body.q || '').normalize('NFC').slice(0, 60);
+  const q = raw.replace(/[^\p{L}\p{N}\p{M}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!q) return jsonResponse({ users: [], posts: [] });
+
+  try {
+    await ensureSearchSchema(env);
+    const db = env.SEARCH_DB;
+    let userRows;
+    let postRows;
+    if ([...q].length >= 3) {
+      const phrase = ftsPhrase(q);
+      [userRows, postRows] = await db.batch([
+        db.prepare(
+          `SELECT u.uid AS id FROM users_fts f JOIN users u ON u.rowid = f.rowid
+           WHERE users_fts MATCH ?1 ORDER BY f.rank LIMIT 20`,
+        ).bind(`name : ${phrase}`),
+        db.prepare(
+          `SELECT p.post_id AS id FROM posts_fts f JOIN posts p ON p.rowid = f.rowid
+           WHERE posts_fts MATCH ?1 ORDER BY p.created_at DESC LIMIT 20`,
+        ).bind(phrase),
+      ]);
+    } else {
+      // 1-2 characters: names / hashtags that START with it.
+      [userRows, postRows] = await db.batch([
+        db.prepare(
+          `SELECT uid AS id FROM users WHERE name LIKE ?1 ESCAPE '\\'
+           ORDER BY name COLLATE NOCASE LIMIT 20`,
+        ).bind(`${q.replace(/[\\%_]/g, '\\$&')}%`),
+        db.prepare(
+          `SELECT post_id AS id FROM posts
+           WHERE (' ' || tags) LIKE ?1 ESCAPE '\\'
+           ORDER BY created_at DESC LIMIT 20`,
+        ).bind(`% ${q.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`),
+      ]);
+    }
+    return jsonResponse({
+      users: (userRows.results || []).map((r) => r.id),
+      posts: (postRows.results || []).map((r) => r.id),
+    });
+  } catch (err) {
+    return jsonResponse({ error: `search failed: ${err.message}` }, 500);
+  }
+}
+
+async function handleSearchSyncMe(env, caller) {
+  if (!env.SEARCH_DB) return jsonResponse({ skipped: 'search not set up' });
+  if (!caller || !isSafeUid(caller.uid)) {
+    return jsonResponse({ error: 'sign-in required' }, 401);
+  }
+  try {
+    await ensureSearchSchema(env);
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const fields = await firestoreGetFields(env, dbToken, `users/${caller.uid}`);
+    if (fields === null) {
+      await env.SEARCH_DB.prepare('DELETE FROM users WHERE uid = ?1')
+        .bind(caller.uid).run();
+      return jsonResponse({ removed: true });
+    }
+    const result = await searchUserStatement(env, caller.uid, fields).run();
+    return jsonResponse({ ok: true, changed: result.meta?.changes || 0 });
+  } catch (err) {
+    return jsonResponse({ error: `sync failed: ${err.message}` }, 500);
+  }
+}
+
+// GET /search-backfill?token=...&what=users|posts[&page=<token>]
+async function handleSearchBackfill(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:640px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  if (!env.SEARCH_DB) return html('<h2>❌ SEARCH_DB binding is missing.</h2>');
+  const what = url.searchParams.get('what') === 'posts' ? 'posts' : 'users';
+  const pageToken = url.searchParams.get('page') || '';
+
+  try {
+    await ensureSearchSchema(env);
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const mask = what === 'users'
+      ? ['displayName']
+      : ['caption', 'hashtags', 'userId', 'createdAt', 'videoFailed'];
+    const params = new URLSearchParams({ pageSize: '40' });
+    for (const f of mask) params.append('mask.fieldPaths', f);
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`${firestoreBase(env)}/${what}?${params}`, {
+      headers: { Authorization: `Bearer ${dbToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore list failed: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const docs = data.documents || [];
+    const statements = [];
+    for (const doc of docs) {
+      const id = docIdFromName(doc.name);
+      const fields = doc.fields || {};
+      if (what === 'users') {
+        statements.push(searchUserStatement(env, id, fields));
+      } else if (!(fields.videoFailed && fields.videoFailed.booleanValue)) {
+        statements.push(searchPostStatement(env, id, fields));
+      }
+    }
+    if (statements.length) await env.SEARCH_DB.batch(statements);
+
+    const counts = await env.SEARCH_DB.batch([
+      env.SEARCH_DB.prepare('SELECT COUNT(*) AS n FROM users'),
+      env.SEARCH_DB.prepare('SELECT COUNT(*) AS n FROM posts'),
+    ]);
+    const nUsers = counts[0].results[0].n;
+    const nPosts = counts[1].results[0].n;
+    const summary =
+      `<p>This page: ${docs.length} ${what}.</p>` +
+      `<p>In search now: <b>${nUsers}</b> users, <b>${nPosts}</b> posts.</p>`;
+
+    if (data.nextPageToken) {
+      const next = new URLSearchParams({ token, what, page: data.nextPageToken });
+      return html(
+        `<h2>⏳ Copying ${what}...</h2>${summary}` +
+          `<p><a style="font-size:20px" href="/search-backfill?${next}">` +
+          `Next page →</a></p>`,
+      );
+    }
+    const nextStep = what === 'users'
+      ? `<p><a style="font-size:20px" href="/search-backfill?${new URLSearchParams({ token, what: 'posts' })}">Now copy posts →</a></p>`
+      : '<h3>🎉 All done.</h3>';
+    return html(`<h2>✅ ${what} done</h2>${summary}${nextStep}`);
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${String(err.message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
   }
 }
 

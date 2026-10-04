@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -5,9 +6,14 @@ import 'home_screen.dart';
 import 'media_utils.dart';
 import 'public_profile_screen.dart';
 import '../block_service.dart';
+import '../search_service.dart';
+import 'presence_badge.dart';
 
 // Search / Discover screen: shows a browsable grid of recent videos by
-// default, and filters to matching accounts + videos once the user types.
+// default, and matching accounts + videos once the user types. Since 4 Oct
+// 2026 the matching runs on the server (search_service.dart -> Worker ->
+// Cloudflare D1): the phone only downloads the ~20 results, and finds
+// text anywhere in a name / caption ("ung" -> "Aung", "#travel").
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
 
@@ -17,10 +23,33 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _controller = TextEditingController();
+  // What's typed (drives the clear button) vs. what's actually searched -
+  // the search waits until typing pauses, so "aung" is one request, not 4.
+  String _typed = '';
   String _query = '';
+  Timer? _debounce;
+
+  void _onChanged(String v) {
+    final String text = v.trim();
+    setState(() => _typed = text);
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted && text != _query) setState(() => _query = text);
+    });
+  }
+
+  void _clear() {
+    _debounce?.cancel();
+    _controller.clear();
+    setState(() {
+      _typed = '';
+      _query = '';
+    });
+  }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -56,25 +85,30 @@ class _SearchScreenState extends State<SearchScreen> {
                     border: InputBorder.none,
                     isDense: true,
                   ),
-                  onChanged: (v) =>
-                      setState(() => _query = v.trim().toLowerCase()),
+                  textInputAction: TextInputAction.search,
+                  onChanged: _onChanged,
+                  onSubmitted: (v) {
+                    _debounce?.cancel();
+                    setState(() => _query = v.trim());
+                  },
                 ),
               ),
-              if (_query.isNotEmpty)
+              if (_typed.isNotEmpty)
                 GestureDetector(
-                  onTap: () {
-                    _controller.clear();
-                    setState(() => _query = '');
-                  },
+                  onTap: _clear,
                   child: Icon(Icons.close, color: Colors.grey[500], size: 18),
                 ),
             ],
           ),
         ),
       ),
-      body: _query.isEmpty
+      body: _typed.isEmpty
           ? const _DiscoverGrid()
-          : _SearchResults(query: _query),
+          : _query.isEmpty
+              ? const SizedBox.shrink()
+              // A new key per query = a fresh one-shot search (the Future
+              // is created once in initState, never inside build()).
+              : _SearchResults(key: ValueKey(_query), query: _query),
     );
   }
 }
@@ -147,165 +181,267 @@ class _DiscoverGrid extends StatelessWidget {
   }
 }
 
-// Filtered results once the user has typed a search query. Firestore has
-// no built-in text search, so this pulls a capped batch of users/posts and
-// filters by "contains" on the client - fine at this app's scale.
-class _SearchResults extends StatelessWidget {
+// Results for one query, from SearchService (server-side search). One
+// request per query; while it runs a spinner shows, and a failure shows a
+// friendly retry instead of raw error text.
+class _SearchResults extends StatefulWidget {
   final String query;
 
-  const _SearchResults({required this.query});
+  const _SearchResults({super.key, required this.query});
+
+  @override
+  State<_SearchResults> createState() => _SearchResultsState();
+}
+
+class _SearchResultsState extends State<_SearchResults> {
+  late Future<SearchResults> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = SearchService.search(widget.query);
+  }
+
+  void _retry() {
+    setState(() => _future = SearchService.search(widget.query));
+  }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream:
-          FirebaseFirestore.instance.collection('users').limit(200).snapshots(),
-      builder: (context, userSnap) {
-        return StreamBuilder<QuerySnapshot>(
-          stream: FirebaseFirestore.instance
-              .collection('posts')
-              .orderBy('createdAt', descending: true)
-              .limit(300)
-              .snapshots(),
-          builder: (context, postSnap) {
-            final bool isLoading =
-                userSnap.connectionState == ConnectionState.waiting ||
-                    postSnap.connectionState == ConnectionState.waiting;
-            if (isLoading) {
-              return const Center(
-                child: CircularProgressIndicator(color: Colors.redAccent),
-              );
-            }
+    return FutureBuilder<SearchResults>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const Center(
+            child: CircularProgressIndicator(color: Color(0xFFFF4B6E)),
+          );
+        }
+        if (snap.hasError) {
+          final String msg = snap.error is SearchException
+              ? snap.error.toString()
+              : "Couldn't search right now.";
+          return _SearchMessage(
+            icon: Icons.wifi_off_rounded,
+            title: msg,
+            actionLabel: 'Try again',
+            onAction: _retry,
+          );
+        }
+        final SearchResults results = snap.data!;
+        if (results.isEmpty) {
+          return _SearchMessage(
+            icon: Icons.search_off_rounded,
+            title: 'No results for "${widget.query}"',
+            subtitle: 'Try another name, a word from a caption, or a #hashtag.',
+          );
+        }
 
-            final matchedUsers = (userSnap.data?.docs ?? []).where((doc) {
-              if (BlockService.instance.isHidden(doc.id)) return false;
-              final data = doc.data() as Map<String, dynamic>;
-              final String name =
-                  (data['displayName'] as String? ?? '').toLowerCase();
-              final String email =
-                  (data['email'] as String? ?? '').toLowerCase();
-              return name.contains(query) || email.contains(query);
-            }).toList();
-
-            final matchedPosts = (postSnap.data?.docs ?? []).where((doc) {
-              final data = doc.data() as Map<String, dynamic>;
-              if (BlockService.instance.isHidden(data['userId'] as String?)) {
-                return false;
-              }
-              final String caption =
-                  (data['caption'] as String? ?? '').toLowerCase();
-              return caption.contains(query);
-            }).toList();
-
-            if (matchedUsers.isEmpty && matchedPosts.isEmpty) {
-              return const Center(
-                child: Text('No results found',
-                    style: TextStyle(color: Colors.grey)),
-              );
-            }
-
-            return ListView(
-              padding: const EdgeInsets.only(bottom: 24),
-              children: [
-                if (matchedUsers.isNotEmpty) ...[
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(14, 14, 14, 6),
-                    child: Text(
-                      'Accounts',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  ...matchedUsers.take(15).map((doc) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    final String name =
-                        (data['displayName'] as String?)?.trim().isNotEmpty ==
-                                true
-                            ? data['displayName']
-                            : (data['email'] as String? ?? 'User');
-                    final String photo = (data['photoUrl'] as String?) ?? '';
-                    return ListTile(
-                      leading: CircleAvatar(
-                        radius: 22,
-                        backgroundColor: Colors.grey[850],
-                        backgroundImage:
-                            photo.isNotEmpty ? NetworkImage(photo) : null,
-                        child: photo.isEmpty
-                            ? Text(
-                                name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                style: const TextStyle(color: Colors.white),
-                              )
-                            : null,
-                      ),
-                      title: Text(name,
-                          style: const TextStyle(color: Colors.white)),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => PublicProfileScreen(userId: doc.id),
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 24),
+          children: [
+            if (results.users.isNotEmpty) ...[
+              const _SectionTitle('Accounts'),
+              ...results.users.map((doc) {
+                final data = doc.data() ?? const <String, dynamic>{};
+                final String raw =
+                    ((data['displayName'] as String?) ?? '').trim();
+                final String name = raw.isEmpty ? 'User' : raw;
+                final String photo = (data['photoUrl'] as String?) ?? '';
+                return ListTile(
+                  leading: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: LinearGradient(colors: [
+                            Color(0xFFFF4B6E),
+                            Color(0xFF9C4DFF),
+                            Color(0xFF3A8DFF),
+                          ]),
+                        ),
+                        child: CircleAvatar(
+                          radius: 22,
+                          backgroundColor: Colors.grey[850],
+                          backgroundImage:
+                              photo.isNotEmpty ? NetworkImage(photo) : null,
+                          child: photo.isEmpty
+                              ? Text(
+                                  name[0].toUpperCase(),
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold),
+                                )
+                              : null,
                         ),
                       ),
-                    );
-                  }),
-                ],
-                if (matchedPosts.isNotEmpty) ...[
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(14, 14, 14, 6),
-                    child: Text(
-                      'Videos',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      if (isUserOnline(data))
+                        const Positioned(
+                          right: -2,
+                          bottom: -2,
+                          child: SparkleStarBadge(),
+                        ),
+                    ],
+                  ),
+                  title: Text(name,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600)),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => PublicProfileScreen(userId: doc.id),
                     ),
                   ),
-                  GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(2),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 2,
-                      mainAxisSpacing: 2,
-                      childAspectRatio: 0.7,
-                    ),
-                    itemCount: matchedPosts.length,
-                    itemBuilder: (context, index) {
-                      final doc = matchedPosts[index];
-                      final post = doc.data() as Map<String, dynamic>;
-                      return GestureDetector(
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => SingleVideoScreen(
-                              postId: doc.id,
-                              userId: post['userId'] ?? '',
-                              videoUrl: post['videoUrl'] ?? '',
-                              caption: post['caption'] ?? '',
-                              userEmail: post['userEmail'] ?? 'Unknown user',
-                              videoType:
-                                  (post['videoType'] as String?) ?? 'short',
-                            ),
-                          ),
-                        ),
-                        child: _SearchVideoThumbnail(
-                          videoUrl: post['videoUrl'] ?? '',
+                );
+              }),
+            ],
+            if (results.posts.isNotEmpty) ...[
+              const _SectionTitle('Videos'),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(2),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  crossAxisSpacing: 2,
+                  mainAxisSpacing: 2,
+                  childAspectRatio: 0.7,
+                ),
+                itemCount: results.posts.length,
+                itemBuilder: (context, index) {
+                  final doc = results.posts[index];
+                  final post = doc.data() ?? const <String, dynamic>{};
+                  return GestureDetector(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => SingleVideoScreen(
                           postId: doc.id,
+                          userId: post['userId'] ?? '',
+                          videoUrl: post['videoUrl'] ?? '',
+                          caption: post['caption'] ?? '',
+                          userEmail: post['userEmail'] ?? 'Unknown user',
+                          videoType: (post['videoType'] as String?) ?? 'short',
                         ),
-                      );
-                    },
-                  ),
-                ],
-              ],
-            );
-          },
+                      ),
+                    ),
+                    child: _SearchVideoThumbnail(
+                      videoUrl: post['videoUrl'] ?? '',
+                      postId: doc.id,
+                    ),
+                  );
+                },
+              ),
+            ],
+          ],
         );
       },
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  final String text;
+  const _SectionTitle(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 6),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white70,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+}
+
+// Friendly empty / error state: soft Fly-gradient bubble + icon, optional
+// action button.
+class _SearchMessage extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  const _SearchMessage({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 88,
+              height: 88,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(colors: [
+                  const Color(0xFFFF4B6E).withValues(alpha: 0.25),
+                  const Color(0xFF9C4DFF).withValues(alpha: 0.25),
+                  const Color(0xFF3A8DFF).withValues(alpha: 0.25),
+                ]),
+              ),
+              child: Icon(icon, color: Colors.white70, size: 40),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                subtitle!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
+              ),
+            ],
+            if (actionLabel != null && onAction != null) ...[
+              const SizedBox(height: 14),
+              GestureDetector(
+                onTap: onAction,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    gradient: const LinearGradient(colors: [
+                      Color(0xFFFF4B6E),
+                      Color(0xFF9C4DFF),
+                      Color(0xFF3A8DFF),
+                    ]),
+                  ),
+                  child: Text(
+                    actionLabel!,
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

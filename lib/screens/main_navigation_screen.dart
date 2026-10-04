@@ -22,6 +22,7 @@ import 'gifting.dart';
 import 'onboarding_screen.dart';
 import 'friend_requests_screen.dart';
 import '../friend_service.dart';
+import '../search_service.dart';
 import 'public_profile_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
@@ -119,6 +120,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // Who's blocked (either way) - read by the feed, stories, chat,
     // search and profiles to hide those accounts everywhere.
     BlockService.instance.start();
+    // Keep my name findable in search (Cloudflare D1, see
+    // search_service.dart). Once per app run, best-effort.
+    SearchService.syncMe();
     // Marks messages sent to me as "Delivered" once they reach this phone.
     ChatDeliveryService.instance.start();
     _setOnlineStatus(true);

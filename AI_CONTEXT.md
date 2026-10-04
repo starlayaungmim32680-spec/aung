@@ -56,6 +56,14 @@
 > request have inline Confirm / Delete, and repeats per person collapse
 > to the newest. Lesson: a push "not showing" was Phone B still on the
 > old APK - always install on BOTH phones._
+> _4 Oct 2026 (evening, confirmed on two phones): **Firebase moved to
+> the Blaze plan** (budget alert ~25 MYR - an email only, it does NOT cap
+> spending). **Search moved to Cloudflare D1** (database `fly-search`,
+> Worker binding `SEARCH_DB`, secret `SEARCH_ADMIN_TOKEN`): new Worker
+> routes `/search`, `/search-sync-me`, `GET /search-backfill`; the Bunny
+> webhook indexes posts when ready; the app (`search_service.dart`) gets
+> ~20 IDs and reads only those docs from Firestore. "ung" finds "Aung",
+> `#tags` and caption words work. Backfill done: 7 users, 48 posts._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -191,9 +199,12 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
 
 - **Flutter** (Android target, package `com.aungdev.fly`).
 - **Firebase** — project ID `aung-1756e`. Uses **Firestore** + **Email/Password
-  Auth**. On the **free Spark plan** (NO Cloud Functions / no Blaze) — Ko has
-  no card, so anything requiring Blaze is avoided; the Cloudflare Worker (see
-  below) fills the "need a trusted server" role instead.
+  Auth**. **Blaze plan since 4 Oct 2026** (Ko added a card; the Spark
+  no-cost quota is still included, so small usage stays $0; a ~25 MYR
+  budget alert emails Ko - it does NOT stop spending, so watch for runaway
+  reads). Cloud Functions are now possible but NOT used yet (would need
+  the Firebase CLI); the Cloudflare Worker (see below) still fills the
+  "need a trusted server" role.
   - **(Sep 2026)** The full security rules now live in **`firestore.rules`
     at the repo root**, written from an audit of every Firestore read/write
     in `lib/`. They are still **published by hand** (Firebase Console →
@@ -521,6 +532,29 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       priority. Returns 200 with `{"skipped":"no fcmToken"}` when the
       receiver has no token. uids are checked with `isSafeUid` (letters/
       digits only - they go into a Firestore path).
+    - **Search (4 Oct 2026, confirmed)** — Cloudflare **D1** database
+      `fly-search`, bound as `env.SEARCH_DB` (Settings → Bindings), free
+      plan (500 MB per DB, 5M rows read / 100k written per day - since
+      1 Sep 2026 queries ERROR when a daily limit is hit; Workers Paid
+      ~$5/mo lifts it to 10 GB/DB). Tables `users(uid, name)` and
+      `posts(post_id, owner_id, caption, tags, created_at)` mirrored into
+      FTS5 `users_fts` / `posts_fts` (external content, **trigram**
+      tokenizer) by triggers, so every upsert is ONE statement (free plan
+      = 50 D1 queries per request); `ensureSearchSchema()` creates it all
+      on first use. Upserts only write when the text changed.
+      `POST /search {q}` → `{users:[uid], posts:[postId]}` (max 20 each;
+      3+ chars = FTS phrase match anywhere in the text, 1-2 chars = name /
+      tag prefix LIKE; punctuation stripped, so `#travel` → `travel`).
+      `POST /search-sync-me` reads the caller's `users/{uid}` from
+      Firestore itself and upserts their name (deletes the row if the doc
+      is gone). `/bunny-webhook` upserts a post into search when its video
+      becomes ready (best-effort, never fails the webhook).
+      `GET /search-backfill?token=<SEARCH_ADMIN_TOKEN>&what=users|posts`
+      (no Firebase sign-in; token must be letters/digits only - `#&+%`
+      break the URL) copies existing docs 40 per page with a "Next page"
+      link; run once 4 Oct 2026. Re-run it any time search looks out of
+      sync. Known gap: deleted users/posts stay in D1 (harmless - the app
+      drops IDs Firestore doesn't return); a cleanup can come later.
     - `POST /create-video` — kept for potential future use (mints a
       presigned Bunny TUS signature) but **not currently called** by the app.
     - `POST /upload-video` — the video upload proxy described above
@@ -725,6 +759,13 @@ issue if this comes up again.
 
 ## 4. File structure (all under `lib/`, unless noted)
 
+- `search_service.dart` **(4 Oct 2026, confirmed)** — the app side of
+  search: `SearchService.search(q)` → Worker `/search` → IDs → reads those
+  docs with `whereIn(FieldPath.documentId)` (max 30), keeps D1's order,
+  drops me, blocked people, `videoFailed`, and others' `videoReady ==
+false` posts; throws `SearchException` with a friendly message.
+  `SearchService.syncMe()` - once per app run from
+  `MainNavigationScreen.initState` (after `BlockService.start()`).
 - `main.dart` — app entry, Firebase init (+ explicit Firestore offline-
   persistence settings, see §3), auth gate / auto-login (`_ensureUserDoc`
   creates the user's Firestore doc on first login),
@@ -1259,8 +1300,14 @@ incoming/loaded`); not friends → `_notFriendsBanner()` (Fly-gradient
   `screens/sound_sync_sheet.dart` — a sound's page (videos using it, "Use
   this sound", report/remove), the browsable/searchable library (hides
   removed/over-reported sounds), and the "choose part of the song" sheet.
-- `screens/search_screen.dart`, `screens/translation_service.dart` — search
-  and caption translation.
+- `screens/search_screen.dart` — Search/Discover. Empty box → discover
+  grid of the 60 newest posts. Typing is debounced 350 ms (`_typed` vs
+  `_query`); `_SearchResults` is keyed by the query and creates its
+  Future ONCE in initState (`SearchService.search`), showing Accounts
+  (gradient ring + sparkle) and a Videos grid; `_SearchMessage` for
+  no-results / errors with Try again. (4 Oct 2026; before, it streamed
+  200 users + 300 posts and filtered on the phone.)
+- `screens/translation_service.dart` — caption translation.
 - `screens/face_filter_camera_screen.dart` — AR face-filter camera capture.
 - `screens/notifications_screen.dart` — notifications list. Rows are
   tappable (1 Oct 2026, confirmed): a message opens that chat, a follow
@@ -1554,9 +1601,11 @@ others only see it once encoded (Bunny webhook).
    `friends` / `friendRequests` docs (both sides); unread-in-bold on the
    Messages list.
 1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
-   (a, the Messages list, is done - 4 Oct 2026, see §4 chat_screen.dart.)
-   b) Search: stop downloading 200 users / 300 posts and filtering on the
-   phone - real queries (e.g. a lower-cased name field + prefix search);
+   (a, the Messages list, and b, search on Cloudflare D1, are done -
+   4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
+   Next for search (Ko asked 4 Oct 2026): no video grid before typing -
+   show the person's own recent searches (names / video words) instead,
+   TikTok/Facebook style;
    c) separate Firebase projects for dev and prod;
    d) split the huge files (home_screen.dart ~6,700 lines) into feature
    folders, a piece at a time;
