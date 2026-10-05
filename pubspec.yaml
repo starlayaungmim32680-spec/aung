@@ -51,4 +51,7 @@ dev_dependencies:
   flutter_lints: ^5.0.0
 
 flutter:
+  # Plain `flutter build apk` / `flutter run` = the real app (5 Oct 2026,
+  # see lib/app_config.dart). Use --flavor dev for the Fly Dev test app.
+  default-flavor: prod
   uses-material-design: true

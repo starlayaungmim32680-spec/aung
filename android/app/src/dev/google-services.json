@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "379132029898",
+    "project_id": "fly-dev-58b29",
+    "storage_bucket": "fly-dev-58b29.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:379132029898:android:a44f21a52f3e26b91b3d33",
+        "android_client_info": {
+          "package_name": "com.aungdev.fly.dev"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB1rBr4viLaLIjTcVTT_jmrjMdM4sSuXe8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

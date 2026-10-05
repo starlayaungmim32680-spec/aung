@@ -3,7 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'firebase_options.dart';
+import 'app_config.dart';
 import 'notification_service.dart';
 import 'call_kit_service.dart';
 import 'chat_delivery_service.dart';
@@ -74,8 +74,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     );
     if (chatId.isNotEmpty) {
       try {
-        await Firebase.initializeApp(
-            options: DefaultFirebaseOptions.currentPlatform);
+        await Firebase.initializeApp(options: AppConfig.firebaseOptions);
         await ChatDeliveryService.markChatDelivered(chatId);
       } catch (_) {}
     }
@@ -83,7 +82,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
   if (type != 'incoming_call') return;
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await Firebase.initializeApp(options: AppConfig.firebaseOptions);
   await CallKitService.showIncomingCall(
     roomName: message.data['roomName'] as String? ?? '',
     callerName: message.data['callerName'] as String? ?? 'Someone',
@@ -96,9 +95,8 @@ final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  // prod = aung-1756e, dev = fly-dev (app_config.dart).
+  await Firebase.initializeApp(options: AppConfig.firebaseOptions);
   // Firestore already caches reads and queues writes locally on
   // Android/iOS by default - this just makes that explicit and raises the
   // cache limit past its default 40MB, so a longer scroll through the
@@ -132,6 +130,16 @@ class FlyApp extends StatelessWidget {
       title: 'Fly',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
+      // The test app wears a red "DEV" ribbon so it's never mistaken for
+      // the real one (app_config.dart).
+      builder: AppConfig.isDev
+          ? (context, child) => Banner(
+                message: 'DEV',
+                location: BannerLocation.topEnd,
+                color: Colors.red,
+                child: child ?? const SizedBox.shrink(),
+              )
+          : null,
       // Lets a playing video know when another screen is pushed on top
       // of it, so it can pause instead of playing on in the background.
       navigatorObservers: [flyRouteObserver],

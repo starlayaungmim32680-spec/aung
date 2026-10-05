@@ -91,6 +91,17 @@
 > a video, max 30 per person per day) and `/search-trending` (cached 10
 > min); new D1 table `search_hits`. Words count only on a real search
 > (search button, recent/trending tap, opening a video), not typing._
+> _5-6 Oct 2026 (part A confirmed on two phones): **dev / prod split** -
+> the app now builds in two flavors. **prod** = `com.aungdev.fly`, label
+> "fly", Firebase `aung-1756e`, Worker `livekit-token-worker` (nothing
+> changed for real users). **dev** = `com.aungdev.fly.dev` ("Fly Dev",
+> installs next to the real app, red DEV ribbon), Firebase **`fly-dev-58b29`**
+> (Spark/free, Email/Password, Firestore `(default)` nam5, same rules),
+> Worker `fly-dev-worker` (**not created yet - part B**: own Worker, D1
+> and Bunny library; until then search/upload/calls fail in Fly Dev).
+> Build: `flutter build apk --release --flavor prod` / `--flavor dev` ->
+> `app-prod-release.apk` / `app-dev-release.apk` (the old
+> `app-release.apk` name is gone). See `lib/app_config.dart`._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -166,7 +177,9 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
 - **All code comments and strings must be in English** (only chat replies are in
   Burmese).
 - Ko develops on **Windows + VS Code**, and tests by building a release APK and
-  side-loading it on an Android phone (`flutter build apk --release`). Ko also
+  side-loading it on an Android phone (`flutter build apk --release
+--flavor prod`, or `--flavor dev` for the Fly Dev test app - since
+  5 Oct 2026, see §3). Ko also
   sometimes runs `flutter run` for quicker debug-mode iteration. Ko has no
   physical/emulated device or Flutter SDK on the assistant's own side — always
   hand Ko the exact commands (`flutter pub get`, `flutter analyze` first, then
@@ -225,6 +238,26 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
 ## 3. Tech stack & configuration
 
 - **Flutter** (Android target, package `com.aungdev.fly`).
+- **Two flavors since 5 Oct 2026** (`android/app/build.gradle.kts`
+  productFlavors, dimension `env`; `lib/app_config.dart`):
+  - **prod** - `com.aungdev.fly`, label `fly`, Firebase `aung-1756e`
+    (`android/app/google-services.json` + `firebase_options.dart`),
+    Worker `https://livekit-token-worker.chakaboycom.workers.dev`.
+  - **dev** - `applicationIdSuffix .dev` → `com.aungdev.fly.dev`, label
+    `Fly Dev`, `versionNameSuffix -dev`, red "DEV" `Banner` (MaterialApp
+    builder), Firebase **`fly-dev-58b29`** (Spark plan, Email/Password,
+    Firestore Standard `(default)` in nam5, rules = same `firestore.rules`
+    - publish to BOTH projects when rules change) read from
+      `android/app/src/dev/google-services.json` (the google-services
+      plugin picks the flavor's file; `Firebase.initializeApp(options:
+null)` in dev), Worker `https://fly-dev-worker.chakaboycom.workers.dev`
+      (part B, not created yet).
+  - The label comes from `resValue("string", "app_name", ...)`
+    (`buildFeatures.resValues = true`); the manifest uses
+    `@string/app_name`. `pubspec.yaml` has `default-flavor: prod`, but
+    always pass `--flavor prod` / `--flavor dev` explicitly.
+  - APKs: `build/app/outputs/flutter-apk/app-prod-release.apk` and
+    `app-dev-release.apk`. Signing is still the debug key for both.
 - **Firebase** — project ID `aung-1756e`. Uses **Firestore** + **Email/Password
   Auth**. **Blaze plan since 4 Oct 2026** (Ko added a card; the Spark
   no-cost quota is still included, so small usage stays $0; a ~25 MYR
@@ -815,6 +848,13 @@ false` posts; throws `SearchException` with a friendly message.
   ValueNotifier (max 8) from `/search-trending` at most every 10 min,
   showing the phone's last copy first (SharedPreferences
   `fly_trending_searches`).
+- `app_config.dart` **(5 Oct 2026)** — dev/prod switch:
+  `AppConfig.isDev` (`appFlavor == 'dev'`, a compile-time const),
+  `AppConfig.workerUrl` (dev / prod Worker), `AppConfig.firebaseOptions`
+  (null in dev → native google-services.json; `DefaultFirebaseOptions`
+  in prod). `kTokenServerUrl` in video_call_screen.dart = `workerUrl`,
+  so every Worker call follows the flavor. All 3
+  `Firebase.initializeApp` calls in main.dart use `firebaseOptions`.
 - `main.dart` — app entry, Firebase init (+ explicit Firestore offline-
   persistence settings, see §3), auth gate / auto-login (`_ensureUserDoc`
   creates the user's Firestore doc on first login),
@@ -1687,7 +1727,7 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 4 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 6 Oct 2026)
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
@@ -1710,7 +1750,17 @@ others only see it once encoded (Bunny webhook).
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
    Recent searches (TikTok/Facebook style) are done too (4 Oct 2026),
    and "Trending on Fly" from D1 (5 Oct 2026).
-   c) separate Firebase projects for dev and prod;
+   c) separate Firebase projects for dev and prod - **part A done
+   (5-6 Oct 2026)**: flavors + Firebase `fly-dev-58b29` (see §3). **Part
+   B next**: Cloudflare Worker `fly-dev-worker` (same code as
+   livekit_token_worker.js) with its own D1 `fly-search-dev` (binding
+   SEARCH_DB), a dev Bunny Stream library + webhook, a service-account
+   key from fly-dev-58b29 (FIREBASE_PROJECT_ID / CLIENT_EMAIL /
+   PRIVATE_KEY_B64), LiveKit keys and its own SEARCH_ADMIN_TOKEN /
+   BUNNY_WEBHOOK_TOKEN. Then part C: full test in Fly Dev. Never touch
+   the prod Worker's secrets while doing this. Composite indexes in
+   fly-dev get created from the error links the first time a query
+   needs one;
    d) split the huge files (home_screen.dart ~6,700 lines) into feature
    folders, a piece at a time;
    e) move coins server-side (Worker) before coins are ever sold.
@@ -1783,7 +1833,8 @@ or point at the real error. Pre-existing, harmless noise to ignore:
 class" error (old template test, doesn't affect the APK). Mention which
 new infos came from your own code if any.
 
-**5. Build + test checklist.** Then `flutter build apk --release`, install
+**5. Build + test checklist.** Then `flutter build apk --release --flavor
+prod` (→ `app-prod-release.apk`; `--flavor dev` for Fly Dev), install
 on **both** test phones (A and B, vivo), and give a numbered A/B test
 script with the exact expected result for each step ("B: close Fly from
 Recents → A sends → B gets 🔔 …, A shows ●✓ Delivered"). Mention vivo

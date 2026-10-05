@@ -26,6 +26,29 @@ android {
         versionName = flutter.versionName
     }
 
+    // Dev / prod split (5 Oct 2026) - see lib/app_config.dart.
+    //   prod: com.aungdev.fly, "fly", uses android/app/google-services.json
+    //         (Firebase aung-1756e).
+    //   dev:  com.aungdev.fly.dev, "Fly Dev", uses
+    //         android/app/src/dev/google-services.json (Firebase fly-dev).
+    // Build with --flavor prod / --flavor dev.
+    buildFeatures {
+        resValues = true
+    }
+    flavorDimensions += "env"
+    productFlavors {
+        create("prod") {
+            dimension = "env"
+            resValue("string", "app_name", "fly")
+        }
+        create("dev") {
+            dimension = "env"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            resValue("string", "app_name", "Fly Dev")
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

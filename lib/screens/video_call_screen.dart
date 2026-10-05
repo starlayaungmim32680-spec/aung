@@ -11,6 +11,7 @@ import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:proximity_sensor/proximity_sensor.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:audioplayers/audioplayers.dart';
+import '../app_config.dart';
 import '../call_kit_service.dart';
 import '../call_permissions.dart';
 import '../active_call.dart';
@@ -23,8 +24,9 @@ import 'call_push_service.dart' show sendCallCancelledPush;
 // instead of LiveKit's "Sandbox" endpoint - Sandbox is meant for demos/
 // development only, and this app is moving to real users. Fill these in
 // after deploying the Worker (see that file's setup comment).
-const String kTokenServerUrl =
-    'https://livekit-token-worker.chakaboycom.workers.dev';
+// Since 5 Oct 2026 the URL depends on the flavor: prod ->
+// livekit-token-worker, dev -> fly-dev-worker (app_config.dart).
+const String kTokenServerUrl = AppConfig.workerUrl;
 // Worker requests are authenticated with the signed-in user's Firebase ID
 // token (see worker_auth.dart). The old shared secret that used to live
 // here was removed because this repo is public.
