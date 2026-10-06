@@ -32,6 +32,13 @@ class AppConfig {
       ? 'https://fly-dev-worker.chakaboycom.workers.dev'
       : 'https://livekit-token-worker.chakaboycom.workers.dev';
 
+  /// Bunny Stream CDN (videos). Each flavor has its own Bunny library:
+  /// prod 756617, dev 771031 ("fly-dev", 6 Oct 2026). Photos share the
+  /// prod Storage zone (fly-images-aungdev756617) in both flavors - they
+  /// are only files, and dev's Firestore never points real users at them.
+  static const String bunnyStreamCdnHost =
+      isDev ? 'vz-6cc91834-d0e.b-cdn.net' : 'vz-a6ab9346-730.b-cdn.net';
+
   /// Options for Firebase.initializeApp - null in dev (read from the dev
   /// google-services.json instead).
   static FirebaseOptions? get firebaseOptions =>

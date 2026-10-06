@@ -21,6 +21,7 @@ import 'content_filter.dart';
 import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
+import '../app_config.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -57,7 +58,8 @@ class _UploadScreenState extends State<UploadScreen> {
   // secret (they're just addresses), but the actual API key never lives
   // here - see the Worker's /create-video endpoint, which is the only
   // thing that ever touches it.
-  static const String _bunnyCdnHostname = 'vz-a6ab9346-730.b-cdn.net';
+  // Per flavor since 6 Oct 2026 (prod / dev library) - app_config.dart.
+  static const String _bunnyCdnHostname = AppConfig.bunnyStreamCdnHost;
 
   final TextEditingController _captionController = TextEditingController();
   Uint8List? _videoBytes;

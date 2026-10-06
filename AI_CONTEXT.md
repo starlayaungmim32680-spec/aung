@@ -97,11 +97,26 @@
 > changed for real users). **dev** = `com.aungdev.fly.dev` ("Fly Dev",
 > installs next to the real app, red DEV ribbon), Firebase **`fly-dev-58b29`**
 > (Spark/free, Email/Password, Firestore `(default)` nam5, same rules),
-> Worker `fly-dev-worker` (**not created yet - part B**: own Worker, D1
-> and Bunny library; until then search/upload/calls fail in Fly Dev).
+> Worker `fly-dev-worker` (part B, see below).
 > Build: `flutter build apk --release --flavor prod` / `--flavor dev` ->
 > `app-prod-release.apk` / `app-dev-release.apk` (the old
 > `app-release.apk` name is gone). See `lib/app_config.dart`._
+> _6-7 Oct 2026 (part B confirmed on two phones): **Fly Dev has its own
+> backend** - Cloudflare Worker **`fly-dev-worker`** (same code as
+> livekit_token_worker.js, 12 secrets, D1 **`fly-search-dev`** bound as
+> SEARCH_DB), its own Bunny Stream library **`fly-dev` (771031, CDN
+> `vz-6cc91834-d0e.b-cdn.net`)** with webhook -> fly-dev-worker, its own
+> LiveKit API key (same LiveKit project) and Firebase service account
+> from fly-dev-58b29. Photos share the prod Storage zone. Search, upload,
+> friends, chat and calls all work in Fly Dev; prod unchanged.
+> **Security note:** two Bunny values were briefly saved as plain
+> Variables and shown in a screenshot, so on 6 Oct 2026 the Bunny
+> **Storage password was rotated** (prod `livekit-token-worker` AND
+> fly-dev-worker updated, prod photo upload re-tested OK) and the dev
+> library API key was rotated. Lesson: in Cloudflare's "Add variable"
+> form tick **Secret** on every row before deploying; tell Chrome
+> "Never" to save Cloudflare forms (its autofill once pasted an old
+> secret into a value box)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -246,12 +261,31 @@ streaming, gifting, a cute animated mascot guide, online presence, and more.
   - **dev** - `applicationIdSuffix .dev` → `com.aungdev.fly.dev`, label
     `Fly Dev`, `versionNameSuffix -dev`, red "DEV" `Banner` (MaterialApp
     builder), Firebase **`fly-dev-58b29`** (Spark plan, Email/Password,
-    Firestore Standard `(default)` in nam5, rules = same `firestore.rules`
-    - publish to BOTH projects when rules change) read from
-      `android/app/src/dev/google-services.json` (the google-services
-      plugin picks the flavor's file; `Firebase.initializeApp(options:
+    Firestore Standard `(default)` in nam5, rules = same `firestore.rules` - publish to BOTH projects when rules change) read from
+    `android/app/src/dev/google-services.json` (the google-services
+    plugin picks the flavor's file; `Firebase.initializeApp(options:
 null)` in dev), Worker `https://fly-dev-worker.chakaboycom.workers.dev`
-      (part B, not created yet).
+    (part B, 6-7 Oct 2026 - see "Dev backend" below).
+  - **Dev backend (6-7 Oct 2026, confirmed):** Worker `fly-dev-worker`
+    runs the SAME `cloudflare/livekit_token_worker.js` (deploy code
+    changes to BOTH Workers). Secrets (all type Secret):
+    FIREBASE_PROJECT_ID=`fly-dev-58b29`, FIREBASE_CLIENT_EMAIL /
+    FIREBASE_PRIVATE_KEY_B64 (from a fly-dev-58b29 service-account key;
+    the B64 value = the PEM body of `private_key` with header/footer and
+    whitespace removed - made in PowerShell straight to the clipboard),
+    LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET (separate
+    "fly-dev" key in the same LiveKit project), BUNNY_LIBRARY_ID=`771031`,
+    BUNNY_API_KEY (dev library), BUNNY_STORAGE_ZONE=
+    `fly-images-aungdev756617` + BUNNY_STORAGE_PASSWORD (shared with prod
+    - if it is ever rotated, update BOTH Workers), BUNNY_WEBHOOK_TOKEN,
+      SEARCH_ADMIN_TOKEN (random, PowerShell). No APP_SHARED_SECRET. D1
+      `fly-search-dev` bound as SEARCH_DB (tables auto-created). Bunny
+      Stream library `fly-dev` (771031, CDN `vz-6cc91834-d0e.b-cdn.net`,
+      "Block direct url file access" OFF, no premium encoding) with Webhook
+      URL `https://fly-dev-worker.chakaboycom.workers.dev/bunny-webhook?
+token=<BUNNY_WEBHOOK_TOKEN>`. The app picks the video CDN per flavor
+      via `AppConfig.bunnyStreamCdnHost` (upload_screen.dart,
+      story_screen.dart).
   - The label comes from `resValue("string", "app_name", ...)`
     (`buildFeatures.resValues = true`); the manifest uses
     `@string/app_name`. `pubspec.yaml` has `default-flavor: prod`, but
@@ -290,7 +324,9 @@ Settings.CACHE_SIZE_UNLIMITED)`) — writes queue locally when offline and
   session — Cloudinary's account was disabled for exceeding its free-plan
   usage quota, and a cost-scaling discussion showed Cloudinary's per-GB
   bandwidth would be far too expensive at real scale vs. a dedicated CDN).
-  - Library ID `756617`, CDN hostname `vz-a6ab9346-730.b-cdn.net`.
+  - Library ID `756617`, CDN hostname `vz-a6ab9346-730.b-cdn.net` (prod;
+    Fly Dev uses library 771031 / `vz-6cc91834-d0e.b-cdn.net` - §3
+    "Dev backend").
   - The real Bunny API key lives ONLY as a Cloudflare Worker secret
     (`BUNNY_API_KEY`/`BUNNY_LIBRARY_ID`) — never in the Flutter app.
   - **Upload flow (rewritten Sep 2026):** both feed posts
@@ -855,6 +891,10 @@ false` posts; throws `SearchException` with a friendly message.
   in prod). `kTokenServerUrl` in video_call_screen.dart = `workerUrl`,
   so every Worker call follows the flavor. All 3
   `Firebase.initializeApp` calls in main.dart use `firebaseOptions`.
+  `AppConfig.bunnyStreamCdnHost` (6 Oct 2026) = the Bunny Stream video
+  CDN per flavor (prod `vz-a6ab9346-730`, dev `vz-6cc91834-d0e`), used
+  by upload_screen.dart and story_screen.dart. Photo CDN
+  (`fly-images-aungdev756617.b-cdn.net`) is shared by both flavors.
 - `main.dart` — app entry, Firebase init (+ explicit Firestore offline-
   persistence settings, see §3), auth gate / auto-login (`_ensureUserDoc`
   creates the user's Firestore doc on first login),
@@ -1727,7 +1767,7 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 6 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 7 Oct 2026)
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
@@ -1750,25 +1790,21 @@ others only see it once encoded (Bunny webhook).
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
    Recent searches (TikTok/Facebook style) are done too (4 Oct 2026),
    and "Trending on Fly" from D1 (5 Oct 2026).
-   c) separate Firebase projects for dev and prod - **part A done
-   (5-6 Oct 2026)**: flavors + Firebase `fly-dev-58b29` (see §3). **Part
-   B next**: Cloudflare Worker `fly-dev-worker` (same code as
-   livekit_token_worker.js) with its own D1 `fly-search-dev` (binding
-   SEARCH_DB), a dev Bunny Stream library + webhook, a service-account
-   key from fly-dev-58b29 (FIREBASE_PROJECT_ID / CLIENT_EMAIL /
-   PRIVATE_KEY_B64), LiveKit keys and its own SEARCH_ADMIN_TOKEN /
-   BUNNY_WEBHOOK_TOKEN. Then part C: full test in Fly Dev. Never touch
-   the prod Worker's secrets while doing this. Composite indexes in
-   fly-dev get created from the error links the first time a query
-   needs one;
-   d) split the huge files (home_screen.dart ~6,700 lines) into feature
-   folders, a piece at a time;
-   e) move coins server-side (Worker) before coins are ever sold.
-   Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
+   c) separate Firebase projects for dev and prod - **done (5-7 Oct 2026)**: flavors + Firebase `fly-dev-58b29` + Worker `fly-dev-worker`
+   - D1 `fly-search-dev` + Bunny library 771031 (see §3). New features
+     should be tried in Fly Dev first. Composite indexes in fly-dev get
+     created from the error links the first time a query needs one;
+     d) split the huge files (home_screen.dart ~6,700 lines) into feature
+     folders, a piece at a time;
+     e) move coins server-side (Worker) before coins are ever sold.
+     Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
 2. **Delete the `APP_SHARED_SECRET` Worker secret** in Cloudflare — only
    after _every_ test phone runs an APK built after commit `0fcaf1a`
    (Firebase ID token auth). Until then the leaked public secret still
    works. Tell Ko to read the dialog title before pressing Delete.
+   (6 Oct 2026: its value showed up again via Chrome autofill in a
+   screenshot - one more reason to delete it soon. fly-dev-worker
+   never had it.)
 3. **Sound strike system** (repeat copyright offenders lose sound uploads).
 4. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.

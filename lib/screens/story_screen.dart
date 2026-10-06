@@ -25,6 +25,7 @@ import 'call_push_service.dart' show sendChatPush;
 import 'media_utils.dart' show cloudinaryThumbUrl;
 import '../block_service.dart';
 import '../friend_service.dart';
+import '../app_config.dart';
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -40,7 +41,8 @@ const Map<String, String> kStoryReactions = {
 // live only as Cloudflare Worker secrets - see livekit_token_worker.js's
 // /upload-image and /upload-video handlers.
 const String _bunnyImagesCdnHostname = 'fly-images-aungdev756617.b-cdn.net';
-const String _bunnyStreamCdnHostname = 'vz-a6ab9346-730.b-cdn.net';
+// Per flavor since 6 Oct 2026 (prod / dev library) - app_config.dart.
+const String _bunnyStreamCdnHostname = AppConfig.bunnyStreamCdnHost;
 
 // How long a story stays visible
 const Duration kStoryLifetime = Duration(hours: 14);
