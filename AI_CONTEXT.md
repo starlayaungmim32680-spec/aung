@@ -276,16 +276,15 @@ null)` in dev), Worker `https://fly-dev-worker.chakaboycom.workers.dev`
     LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET (separate
     "fly-dev" key in the same LiveKit project), BUNNY_LIBRARY_ID=`771031`,
     BUNNY_API_KEY (dev library), BUNNY_STORAGE_ZONE=
-    `fly-images-aungdev756617` + BUNNY_STORAGE_PASSWORD (shared with prod
-    - if it is ever rotated, update BOTH Workers), BUNNY_WEBHOOK_TOKEN,
-      SEARCH_ADMIN_TOKEN (random, PowerShell). No APP_SHARED_SECRET. D1
-      `fly-search-dev` bound as SEARCH_DB (tables auto-created). Bunny
-      Stream library `fly-dev` (771031, CDN `vz-6cc91834-d0e.b-cdn.net`,
-      "Block direct url file access" OFF, no premium encoding) with Webhook
-      URL `https://fly-dev-worker.chakaboycom.workers.dev/bunny-webhook?
+    `fly-images-aungdev756617` + BUNNY_STORAGE_PASSWORD (shared with prod - if it is ever rotated, update BOTH Workers), BUNNY_WEBHOOK_TOKEN,
+    SEARCH_ADMIN_TOKEN (random, PowerShell). No APP_SHARED_SECRET. D1
+    `fly-search-dev` bound as SEARCH_DB (tables auto-created). Bunny
+    Stream library `fly-dev` (771031, CDN `vz-6cc91834-d0e.b-cdn.net`,
+    "Block direct url file access" OFF, no premium encoding) with Webhook
+    URL `https://fly-dev-worker.chakaboycom.workers.dev/bunny-webhook?
 token=<BUNNY_WEBHOOK_TOKEN>`. The app picks the video CDN per flavor
-      via `AppConfig.bunnyStreamCdnHost` (upload_screen.dart,
-      story_screen.dart).
+    via `AppConfig.bunnyStreamCdnHost` (upload_screen.dart,
+    story_screen.dart).
   - The label comes from `resValue("string", "app_name", ...)`
     (`buildFeatures.resValues = true`); the manifest uses
     `@string/app_name`. `pubspec.yaml` has `default-flavor: prod`, but
@@ -595,10 +594,12 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     (`securetoken@system.gserviceaccount.com`, cached per Cache-Control)
     and checks `aud`/`iss` = `FIREBASE_PROJECT_ID`, `exp`, `iat`, `sub`.
     The app gets the header from `workerAuthHeaders()` in
-    `lib/screens/worker_auth.dart`. The old `X-App-Secret` header is only
-    accepted while the `APP_SHARED_SECRET` Worker secret still exists
-    (transition for old app builds) — once every phone runs the new build,
-    **delete that secret** and the leaked value becomes useless.
+    `lib/screens/worker_auth.dart`. The old `X-App-Secret` header was
+    only accepted while the `APP_SHARED_SECRET` Worker secret existed -
+    **that secret was deleted from the prod Worker on 7 Oct 2026**
+    (confirmed: search, calls, photo upload still work), so the leaked
+    value is now useless. The legacy branch in `authenticateCaller()` is
+    harmless dead code (it needs the secret) and can be removed later.
     `/upload-image` also requires `X-File-Name` to start with the caller's
     own `uid_` (token callers). Routes:
     - `POST /token` — mints a LiveKit access token (`LIVEKIT_API_KEY`/
@@ -1533,7 +1534,7 @@ button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action
   **`cloudflare/livekit_token_worker.js`** (fetch it via the raw URL). It
   contains no secrets — all keys come from `env.*` Worker secrets:
   `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL`,
-  `APP_SHARED_SECRET` (legacy; delete after all phones update),
+  (`APP_SHARED_SECRET` - legacy, deleted 7 Oct 2026),
   `FIREBASE_PROJECT_ID` (also used to verify ID tokens), `FIREBASE_CLIENT_EMAIL`,
   `FIREBASE_PRIVATE_KEY_B64`, `BUNNY_LIBRARY_ID`, `BUNNY_API_KEY`,
   `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_PASSWORD`, `BUNNY_WEBHOOK_TOKEN`.
@@ -1708,11 +1709,11 @@ others only see it once encoded (Bunny webhook).
 - Borrowed Sound doesn't work for new (Bunny-hosted) video posts — see §3;
   it's blocked at upload time with a message. (Trim, listed here in an
   earlier version of this file, now actually works - see §3.)
-- **Security (in progress, Sep 2026):** the Worker now verifies Firebase ID
-  tokens and the app no longer contains `kAppSharedSecret` — but the old
-  value is still in git history and still works until the
-  `APP_SHARED_SECRET` Worker secret is **deleted** (do that once every
-  test phone runs the new build). Still open: `/token` lets any signed-in
+- **Security (Sep 2026; shared secret retired 7 Oct 2026):** the Worker
+  verifies Firebase ID tokens, the app no longer contains
+  `kAppSharedSecret`, and the `APP_SHARED_SECRET` Worker secret was
+  deleted on 7 Oct 2026, so the old value in git history no longer works.
+  Still open: `/token` lets any signed-in
   user mint a token for any room name, and `/call-push` doesn't check that
   `callerId` equals the caller's uid.
 - **Coins are granted client-side** (`gifting.dart`); the rules only cap each
@@ -1798,13 +1799,17 @@ others only see it once encoded (Bunny webhook).
      folders, a piece at a time;
      e) move coins server-side (Worker) before coins are ever sold.
      Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
-2. **Delete the `APP_SHARED_SECRET` Worker secret** in Cloudflare — only
-   after _every_ test phone runs an APK built after commit `0fcaf1a`
-   (Firebase ID token auth). Until then the leaked public secret still
-   works. Tell Ko to read the dialog title before pressing Delete.
-   (6 Oct 2026: its value showed up again via Chrome autofill in a
-   screenshot - one more reason to delete it soon. fly-dev-worker
-   never had it.)
+2. ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
+   (prod Worker; fly-dev-worker never had it). Optional cleanup: remove
+   the legacy `X-App-Secret` branch from `authenticateCaller()` in the
+   Worker (deploy to BOTH Workers).
+   **Bunny Storage password note (7 Oct 2026):** a Bunny Storage upload
+   error `{"HttpCode":401,"Message":"Unauthorized"}` means the Worker's
+   `BUNNY_STORAGE_PASSWORD` doesn't match Bunny's current password. Fix:
+   Bunny -> Storage -> fly-images-aungdev756617 -> FTP & API Access ->
+   Password **copy (📋) only - never 🔄 again** -> paste into BOTH
+   Workers (✏️, Ctrl+A, Ctrl+V, Deploy). Happened once after the 6 Oct
+   rotation; fixed the same night.
 3. **Sound strike system** (repeat copyright offenders lose sound uploads).
 4. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
