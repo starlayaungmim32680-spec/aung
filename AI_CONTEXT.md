@@ -117,6 +117,24 @@
 > form tick **Secret** on every row before deploying; tell Chrome
 > "Never" to save Cloudflare forms (its autofill once pasted an old
 > secret into a value box)._
+> _8-9 Oct 2026 (confirmed on the phone): **Fly Dev videos fixed.**
+> Symptom: in Fly Dev a new video played right after upload (local
+> file), but after reopening the app it showed "Processing video..." and
+> after 30 min "Couldn't load - tap to retry". Cause: the phone still had
+> an APK built from **part A** code (6 Oct, `74b7611`), where
+> `upload_screen.dart` hardcoded the **prod** CDN host
+> (`vz-a6ab9346-730`) while the dev Worker uploaded to the **dev**
+> library 771031 - so every post pointed at a URL that 404s. Part B
+> (`cb6cc65`) already switched it to `AppConfig.bunnyStreamCdnHost`; the
+> code was right, the installed APK was old. The part-A build also had
+> the DEV ribbon, so the ribbon alone can't tell builds apart. Fix:
+> `flutter clean` → rebuild `--flavor dev` → check the APK really has
+> the dev host (see §7 step 5) → copy it under a unique name
+> (`FlyDev-8Oct-v2.apk`) → uninstall + install. Also done that day on
+> fly-dev: Worker `BUNNY_WEBHOOK_TOKEN` + 3 Firebase service-account
+> secrets re-added (`/bunny-webhook` test OK), 3 composite indexes
+> (posts videoType+createdAt, reposts videoType+createdAt, posts
+> hashtags+createdAt). Still open: see To-do 0b._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1768,7 +1786,24 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 7 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 9 Oct 2026)
+
+0b. **Fly Dev leftovers (9 Oct 2026):**
+
+- Bunny → Stream → **fly-dev** → Webhook URL is **not set yet** (the
+  URL is on line 2 of `Desktop\flydev-webhook.txt` - delete that file
+  afterwards). Until it's set, new Fly Dev posts stay
+  `videoReady: false`: only the uploader sees them, other accounts
+  don't, and D1 search doesn't index them.
+- Delete the old Fly Dev test posts whose `videoUrl` uses the prod
+  host `vz-a6ab9346-730` (uploaded with the part-A APK) - they can
+  never play.
+- Re-check that a new account shows up in Search (not checked since
+  the fly-dev Firebase secrets were fixed).
+- `home_screen.dart` split step 1 (`lib/screens/home_screen.dart` +
+  new `lib/screens/home/home_fx_widgets.dart`) is on Ko's PC,
+  `flutter analyze` OK, **not committed yet** - test in Fly Dev, then
+  commit.
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
@@ -1881,6 +1916,13 @@ script with the exact expected result for each step ("B: close Fly from
 Recents → A sends → B gets 🔔 …, A shows ●✓ Delivered"). Mention vivo
 quirks (Settings → Battery → Fly → allow background activity) when push
 or background work is involved.
+If a fix "doesn't work" on the phone, first prove the phone runs the new
+build (9 Oct 2026: an old APK cost a whole evening). Check a string
+that only the new code has, inside the built APK:
+`Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk $env:TEMP\flydev.zip -Force; Expand-Archive $env:TEMP\flydev.zip $env:TEMP\flydev -Force; Select-String -Path $env:TEMP\flydev\lib\arm64-v8a\libapp.so -Pattern '<unique string>' -SimpleMatch -Quiet`
+→ `True`. Then copy the APK under a unique name (e.g.
+`FlyDev-8Oct-v2.apk`) so the phone can't pick an older
+`app-dev-release.apk`, uninstall, and install that one.
 
 **6. Ko confirms ("ဟုတ် အဆင်ပြေတယ် ဆရာ 🥰").** In that SAME reply, send the
 updated **AI_CONTEXT.md as a full file** (his standing rule) plus commit
