@@ -152,6 +152,13 @@
 > ~790 lines out). Tested: first-frame cover, bell, comment/share
 > icons, orbit ring, like badge, reaction picker + flying emoji, comment
 > spotlight and reaction burst from notifications. See §4._
+> _10 Oct 2026 (confirmed on two phones in Fly Dev): **home_screen.dart
+> split, step 2** - everything about comments moved unchanged into
+> `lib/screens/home/home_comments.dart` (~1,110 lines: `_CommentsSheet`,
+> `_CommentTile`, `_ReplyTile`, `_ReactionSummary`, `_HiddenCommentTag`,
+> `_isCommentVisibleTo`, `_visibleCommentCount`). home_screen.dart is now
+> ~5,260 lines (was ~7,160 before step 1). Tested: open sheet, comment,
+> reply, react, hide, delete, spotlight from a notification._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1151,6 +1158,16 @@ new file under `screens/home/`starting with`part of
   '../home_screen.dart';`, one `part 'home/<file>.dart';` line in
   home_screen.dart, move classes as-is (no renames), analyze, then test
   every moved widget in Fly Dev before committing.
+- `screens/home/home_comments.dart` — **(10 Oct 2026, home split step 2)**
+  `part of '../home_screen.dart'`: the comments bottom sheet
+  (`_CommentsSheet` - list, composer, replies, reactions, hide / delete /
+  report options, notification spotlight, `_sendComment` +
+  `_moderateAfterPost` which writes the video owner's `comment`
+  notification), `_CommentTile`, `_ReplyTile`, `_ReactionSummary`,
+  `_HiddenCommentTag`, and the hidden-comment helpers
+  `_isCommentVisibleTo` / `_visibleCommentCount`. Replies live in
+  `posts/{id}/comments/{cid}/replies`; anyone signed in can reply to a
+  comment, but a reply row has no Reply button yet (see To-do).
 - `screens/home_screen.dart` — the main video feed (very large file; several
   screens live here as separate classes rather than separate files — always
   check here first before assuming a screen doesn't exist; since 9 Oct
@@ -1817,9 +1834,28 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 9 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 10 Oct 2026)
 
-0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
+0a. **Comment replies, Facebook style (asked 10 Oct 2026, next up):**
+
+1.  **Reply to a reply** - a Reply button on `_ReplyTile` that keeps
+    the thread one level deep (Facebook/TikTok): the new reply goes
+    into the same comment's `replies` with an `@Name` prefix /
+    `replyToUserId`. No rules/Worker change.
+2.  **Reply notifications** - today a reply notifies nobody
+    (`_moderateAfterPost` returns early for replies). Plan agreed in
+    chat: after moderation passes, notify the comment's author (and
+    the video owner, if different; never yourself) with a new `reply`
+    type in `users/{uid}/notifications` (fits the existing rule:
+    `fromId == auth.uid`); don't fan out to everyone in the thread
+    (cost + noise); collapse repeats from the same person in the 🔔
+    list like friend requests; tap opens the video with that comment
+    spotlighted. `notifications_screen.dart` needs the `reply` text /
+    icon / tap case. Cost: 1-2 Firestore writes per reply (free up to
+    20k writes/day on Blaze). Phone push (a Worker route like
+    `/friend-push`) is a later, separate step.
+
+0) **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
    Messages list). Decisions Ko made: strict Facebook style - only friends
    can chat/call (no "message requests" folder for now); a request is one
@@ -1835,7 +1871,7 @@ others only see it once encoded (Bunny webhook).
    Cloud Functions now that we're on Blaze): Bunny files, comments /
    reactions on others' posts, others' reposts, others' `following` /
    `followers` / `blockedBy` entries, chat docs.
-1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
+1) **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
    Recent searches (TikTok/Facebook style) are done too (4 Oct 2026),
@@ -1846,12 +1882,14 @@ others only see it once encoded (Bunny webhook).
      created from the error links the first time a query needs one;
      d) split the huge files (home_screen.dart ~6,700 lines) into feature
      folders, a piece at a time - **step 1 done 9 Oct 2026**
-     (`screens/home/home_fx_widgets.dart`, ~790 lines out); next pieces:
-     comments sheet, share sheet, feed screens (one per step, test in
-     Fly Dev each time);
+     (`screens/home/home_fx_widgets.dart`, ~790 lines out), **step 2 done
+     10 Oct 2026** (`screens/home/home_comments.dart`, ~1,110 lines out);
+     next pieces: share sheet / owner info, feed screens, then
+     `_VideoPostItem` (~2,600 lines, biggest - last) - one per step, test
+     in Fly Dev each time;
      e) move coins server-side (Worker) before coins are ever sold.
      Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
-2. ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
+2) ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
    (prod Worker; fly-dev-worker never had it). Optional cleanup: remove
    the legacy `X-App-Secret` branch from `authenticateCaller()` in the
    Worker (deploy to BOTH Workers).
@@ -1862,14 +1900,14 @@ others only see it once encoded (Bunny webhook).
    Password **copy (📋) only - never 🔄 again** -> paste into BOTH
    Workers (✏️, Ctrl+A, Ctrl+V, Deploy). Happened once after the 6 Oct
    rotation; fixed the same night.
-3. **Sound strike system** (repeat copyright offenders lose sound uploads).
-4. **Delete old tiny videos** (uploaded before the orientation guard) and
+3) **Sound strike system** (repeat copyright offenders lose sound uploads).
+4) **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
-5. Before publishing: put the `/delete-account` link in Play Console's
+5) Before publishing: put the `/delete-account` link in Play Console's
    Data safety form (done on the Worker side 3 Oct 2026), and add a
    Privacy Policy page if Fly doesn't have one (Play requires one; not
    confirmed yet whether it exists).
-6. Optional / later: AudD song recognition, direct MP3 upload, resumable
+6) Optional / later: AudD song recognition, direct MP3 upload, resumable
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already
    built — removed 27 Sep 2026.)
