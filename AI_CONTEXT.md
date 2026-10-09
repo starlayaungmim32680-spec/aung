@@ -146,6 +146,12 @@
 > and **Fly Dev search confirmed**: a new account shows up in Search
 > after it opens the app once (`syncMe()` -> `/search-sync-me`, which
 > needed the fly-dev Firebase secrets fixed on 8 Oct)._
+> _9 Oct 2026 (confirmed on two phones in Fly Dev): **home_screen.dart
+> split, step 1** - 21 visual/animation widgets moved unchanged into
+> `lib/screens/home/home_fx_widgets.dart` (a `part` of home_screen.dart,
+> ~790 lines out). Tested: first-frame cover, bell, comment/share
+> icons, orbit ring, like badge, reaction picker + flying emoji, comment
+> spotlight and reaction burst from notifications. See §4._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1132,9 +1138,23 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   posts. **(30 Sep 2026)** Blocking is now two-way and complete — see
   `block_service.dart` below; unblocking here goes through
   `BlockService.unblock`.
+- `screens/home/home_fx_widgets.dart` — **(9 Oct 2026, home split step 1)** a `part of '../home_screen.dart'` file holding the purely visual /
+  animation widgets moved out of home*screen.dart unchanged:
+  `_OrbitRingPainter`, `_NotificationBell`, `_FirstFrameCover`,
+  `_FlyActionGlow`, `_FlyCommentIcon`/`_FlyCommentPainter`,
+  `_FlySwooshShareIcon`/`_FlySwooshSharePainter`, `_CommentBubbleIcon`/
+  `_FacebookCommentPainter`, `_FlyingEmoji` + `_FlyingEmojiWidget`,
+  `_AnimatedEmoji`, `_PopInEmoji`, `_PopInLikeBadge`, `_CommentSpotlight`.
+  Because it is a `part`, these stay library-private (`*`) and are used
+by home_screen.dart exactly as before. Split pattern for later steps:
+new file under `screens/home/`starting with`part of
+  '../home_screen.dart';`, one `part 'home/<file>.dart';` line in
+  home_screen.dart, move classes as-is (no renames), analyze, then test
+  every moved widget in Fly Dev before committing.
 - `screens/home_screen.dart` — the main video feed (very large file; several
   screens live here as separate classes rather than separate files — always
-  check here first before assuming a screen doesn't exist):
+  check here first before assuming a screen doesn't exist; since 9 Oct
+  2026 also check `screens/home/` for its `part` files):
   - `HomeScreen` / `_HomeScreenState` — the main vertical feed.
   - `FullScreenVideoScreen` — opened by tapping a Home video; a dedicated
     `PageView` host with its own explicit `_activeIndex`
@@ -1799,13 +1819,6 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 9 Oct 2026)
 
-0b. **Fly Dev leftovers (9 Oct 2026):**
-
-- `home_screen.dart` split step 1 (`lib/screens/home_screen.dart` +
-  new `lib/screens/home/home_fx_widgets.dart`) is on Ko's PC,
-  `flutter analyze` OK, **not committed yet** - test in Fly Dev, then
-  commit.
-
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
    Messages list). Decisions Ko made: strict Facebook style - only friends
@@ -1832,7 +1845,10 @@ others only see it once encoded (Bunny webhook).
      should be tried in Fly Dev first. Composite indexes in fly-dev get
      created from the error links the first time a query needs one;
      d) split the huge files (home_screen.dart ~6,700 lines) into feature
-     folders, a piece at a time;
+     folders, a piece at a time - **step 1 done 9 Oct 2026**
+     (`screens/home/home_fx_widgets.dart`, ~790 lines out); next pieces:
+     comments sheet, share sheet, feed screens (one per step, test in
+     Fly Dev each time);
      e) move coins server-side (Worker) before coins are ever sold.
      Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
 2. ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
