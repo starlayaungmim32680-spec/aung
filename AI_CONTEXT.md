@@ -138,8 +138,14 @@
 > _9 Oct 2026 (confirmed): **Bunny fly-dev Webhook URL set** (->
 > `fly-dev-worker/bunny-webhook?token=...`). New Fly Dev posts now flip
 > to `videoReady: true` after encoding and show for other accounts too.
-> Posts uploaded before this stay `videoReady: false` (no webhook ever
-> fired for them) - test data, delete them._
+> Posts uploaded before this stayed `videoReady: false` (no webhook ever
+> fired for them). Same evening: those old Fly Dev test posts (prod-host
+> URLs / stuck `videoReady: false`) were deleted in the app (Profile ->
+> long-press -> Delete; their Bunny files in library 771031 were left
+> alone - tiny, and deleting in Bunny risks touching the prod library),
+> and **Fly Dev search confirmed**: a new account shows up in Search
+> after it opens the app once (`syncMe()` -> `/search-sync-me`, which
+> needed the fly-dev Firebase secrets fixed on 8 Oct)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1795,12 +1801,6 @@ others only see it once encoded (Bunny webhook).
 
 0b. **Fly Dev leftovers (9 Oct 2026):**
 
-- Delete the old Fly Dev test posts whose `videoUrl` uses the prod
-  host `vz-a6ab9346-730` (uploaded with the part-A APK) - they can
-  never play - and any posts from before the webhook was set (9 Oct)
-  that are stuck at `videoReady: false`.
-- Re-check that a new account shows up in Search (not checked since
-  the fly-dev Firebase secrets were fixed).
 - `home_screen.dart` split step 1 (`lib/screens/home_screen.dart` +
   new `lib/screens/home/home_fx_widgets.dart`) is on Ko's PC,
   `flutter analyze` OK, **not committed yet** - test in Fly Dev, then
