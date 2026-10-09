@@ -135,6 +135,11 @@
 > secrets re-added (`/bunny-webhook` test OK), 3 composite indexes
 > (posts videoType+createdAt, reposts videoType+createdAt, posts
 > hashtags+createdAt). Still open: see To-do 0b._
+> _9 Oct 2026 (confirmed): **Bunny fly-dev Webhook URL set** (->
+> `fly-dev-worker/bunny-webhook?token=...`). New Fly Dev posts now flip
+> to `videoReady: true` after encoding and show for other accounts too.
+> Posts uploaded before this stay `videoReady: false` (no webhook ever
+> fired for them) - test data, delete them._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1790,14 +1795,10 @@ others only see it once encoded (Bunny webhook).
 
 0b. **Fly Dev leftovers (9 Oct 2026):**
 
-- Bunny → Stream → **fly-dev** → Webhook URL is **not set yet** (the
-  URL is on line 2 of `Desktop\flydev-webhook.txt` - delete that file
-  afterwards). Until it's set, new Fly Dev posts stay
-  `videoReady: false`: only the uploader sees them, other accounts
-  don't, and D1 search doesn't index them.
 - Delete the old Fly Dev test posts whose `videoUrl` uses the prod
   host `vz-a6ab9346-730` (uploaded with the part-A APK) - they can
-  never play.
+  never play - and any posts from before the webhook was set (9 Oct)
+  that are stuck at `videoReady: false`.
 - Re-check that a new account shows up in Search (not checked since
   the fly-dev Firebase secrets were fixed).
 - `home_screen.dart` split step 1 (`lib/screens/home_screen.dart` +
