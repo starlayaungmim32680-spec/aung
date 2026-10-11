@@ -17,6 +17,10 @@
 //     in the thread is notified (keeps it cheap and quiet);
 //   - opening that notification opens the comments with the thread's
 //     comment spotlighted and its replies already open.
+//   - 11 Oct 2026: every comment / reply notification also asks the
+//     Worker (/activity-push, call_push_service.dart) to ping that
+//     person's phone, so it shows in the notification bar even when Fly
+//     is closed.
 //
 // 10 Oct 2026 (later) - TikTok/Facebook-style look:
 //   - header "12 comments" + close button;
@@ -358,7 +362,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
     if (postOwnerId.isEmpty || postOwnerId == myId) return;
     try {
-      await FirebaseFirestore.instance
+      final DocumentReference notifRef = await FirebaseFirestore.instance
           .collection('users')
           .doc(postOwnerId)
           .collection('notifications')
@@ -372,6 +376,9 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         'seen': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
+      // Phone notification too (works with Fly closed). Best-effort.
+      unawaited(sendActivityPush(
+          receiverId: postOwnerId, notificationId: notifRef.id));
     } catch (_) {
       // A missed notification shouldn't bother the commenter.
     }
@@ -410,7 +417,8 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     final users = FirebaseFirestore.instance.collection('users');
     for (final MapEntry<String, String> r in recipients.entries) {
       try {
-        await users.doc(r.key).collection('notifications').add({
+        final DocumentReference notifRef =
+            await users.doc(r.key).collection('notifications').add({
           'type': 'reply',
           'replyKind': r.value,
           'text': text,
@@ -422,6 +430,8 @@ class _CommentsSheetState extends State<_CommentsSheet> {
           'seen': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
+        unawaited(
+            sendActivityPush(receiverId: r.key, notificationId: notifRef.id));
       } catch (_) {
         // A missed notification shouldn't bother the person replying.
       }

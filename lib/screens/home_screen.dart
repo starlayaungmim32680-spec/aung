@@ -34,6 +34,7 @@ import 'content_filter.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'local_video_cache.dart';
+import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
 
 // Pieces of this screen that live in their own files (same library).

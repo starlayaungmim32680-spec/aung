@@ -159,6 +159,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // Tapping a friend notification opens Friend Requests / the profile.
     NotificationService.pendingFriend.addListener(_onPendingFriend);
     WidgetsBinding.instance.addPostFrameCallback((_) => _onPendingFriend());
+    // Tapping a comment / reply notification opens that video.
+    NotificationService.pendingPost.addListener(_openPendingPost);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingPost());
     CoinService.instance.awardDailyLogin();
     navigateToHomeSignal.addListener(_onNavigateToHomeSignal);
     // Call-reliability permissions (battery optimization, overlay,
@@ -519,6 +522,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
     NotificationService.pendingChat.removeListener(_openPendingChat);
     NotificationService.pendingFriend.removeListener(_onPendingFriend);
+    NotificationService.pendingPost.removeListener(_openPendingPost);
     super.dispose();
   }
 
@@ -568,6 +572,34 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
         builder: (_) => info['kind'] == 'friend_request'
             ? const FriendRequestsScreen()
             : PublicProfileScreen(userId: userId),
+      ),
+    );
+  }
+
+  // Opens the video a tapped comment / reply notification is about (11
+  // Oct 2026) - the same screen the in-app 🔔 list opens, with the comment
+  // spotlighted (and, for a reply, its replies already open).
+  void _openPendingPost() {
+    final Map<String, String>? info = NotificationService.pendingPost.value;
+    if (info == null || !mounted) return;
+    NotificationService.pendingPost.value = null;
+    final String postId = info['postId'] ?? '';
+    final String fromId = info['userId'] ?? '';
+    if (postId.isEmpty || BlockService.instance.isHidden(fromId)) return;
+    final String commentId = info['commentId'] ?? '';
+    final String replyKind = info['replyKind'] ?? '';
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PostFromNotificationScreen(
+          postId: postId,
+          fromId: fromId,
+          fromName: info['name'] ?? 'Someone',
+          fromPhoto: info['photo'] ?? '',
+          type: info['kind'] ?? 'comment',
+          text: info['text'] ?? '',
+          commentId: commentId.isEmpty ? null : commentId,
+          replyKind: replyKind.isEmpty ? null : replyKind,
+        ),
       ),
     );
   }

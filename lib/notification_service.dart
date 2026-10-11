@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // A simple wrapper around flutter_local_notifications for showing chat alerts
 class NotificationService {
@@ -29,6 +30,14 @@ class NotificationService {
   // MainNavigationScreen opens Friend Requests / that profile, then sets
   // it back to null.
   static final ValueNotifier<Map<String, String>?> pendingFriend =
+      ValueNotifier<Map<String, String>?>(null);
+
+  // A comment / reply notification the person tapped (11 Oct 2026):
+  // {'kind': 'comment' | 'reply', 'postId', 'userId' (who wrote it),
+  //  'name', 'photo', 'text', 'commentId', 'replyKind'}.
+  // MainNavigationScreen opens that video (PostFromNotificationScreen),
+  // then sets it back to null.
+  static final ValueNotifier<Map<String, String>?> pendingPost =
       ValueNotifier<Map<String, String>?>(null);
 
   // One notification per conversation (like Messenger): a newer message
@@ -98,6 +107,21 @@ class NotificationService {
       final String userId = (data['userId'] as String?) ?? '';
       if (userId.isEmpty) return;
       final String kind = (data['kind'] as String?) ?? '';
+      if (kind == 'comment' || kind == 'reply') {
+        final String postId = (data['postId'] as String?) ?? '';
+        if (postId.isEmpty) return;
+        pendingPost.value = {
+          'kind': kind,
+          'postId': postId,
+          'userId': userId,
+          'name': (data['name'] as String?) ?? 'Someone',
+          'photo': (data['photo'] as String?) ?? '',
+          'text': (data['text'] as String?) ?? '',
+          'commentId': (data['commentId'] as String?) ?? '',
+          'replyKind': (data['replyKind'] as String?) ?? '',
+        };
+        return;
+      }
       if (kind == 'friend_request' || kind == 'friend_accept') {
         pendingFriend.value = {
           'kind': kind,
@@ -247,6 +271,129 @@ class NotificationService {
       );
     } catch (_) {
       // A notification failing must never break anything else.
+    }
+  }
+
+  // Push diagnostics (12 Oct 2026) - a short on-phone log of what happened
+  // to the last few pushes (received where, shown or not, errors), shown
+  // in Wallet -> Push notifications. Works from the background push
+  // isolate too (SharedPreferences is shared on disk; read with reload()).
+  static Future<void> recordPushDebug(String line) async {
+    try {
+      final SharedPreferences p = await SharedPreferences.getInstance();
+      await p.reload();
+      final List<String> list = p.getStringList('push_debug') ?? <String>[];
+      final String t = DateTime.now().toIso8601String().substring(5, 19);
+      list.insert(0, '$t  $line');
+      await p.setStringList('push_debug', list.take(10).toList());
+    } catch (_) {}
+  }
+
+  static Future<List<String>> readPushDebug() async {
+    try {
+      final SharedPreferences p = await SharedPreferences.getInstance();
+      await p.reload();
+      return p.getStringList('push_debug') ?? <String>[];
+    } catch (_) {
+      return <String>[];
+    }
+  }
+
+  // Whether Android lets Fly show notifications at all (app-level switch).
+  static Future<bool?> notificationsEnabled() async {
+    try {
+      if (!_pluginReady) {
+        await _plugin.initialize(
+          const InitializationSettings(android: _androidInit),
+        );
+        _pluginReady = true;
+      }
+      return await _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.areNotificationsEnabled();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Comment / reply notification (11 Oct 2026), shown by the background
+  // push handler in main.dart (Worker /activity-push). One per person per
+  // video, so a burst of replies from the same person replaces instead of
+  // stacking. Their photo is the large icon; tapping opens the video with
+  // the comment spotlighted (pendingPost).
+  static Future<void> showActivityNotification({
+    required String kind,
+    required String senderId,
+    required String senderName,
+    String senderPhoto = '',
+    String text = '',
+    required String postId,
+    String commentId = '',
+    String replyKind = '',
+  }) async {
+    if (postId.isEmpty) return;
+    try {
+      if (!_pluginReady) {
+        await _plugin.initialize(
+          const InitializationSettings(android: _androidInit),
+        );
+        _pluginReady = true;
+      }
+      final String body;
+      if (kind == 'reply') {
+        body = replyKind == 'video'
+            ? 'replied to a comment on your video: $text'
+            : 'replied to your comment: $text';
+      } else {
+        body = 'commented: $text';
+      }
+
+      AndroidBitmap<Object>? largeIcon;
+      if (senderPhoto.startsWith('http')) {
+        try {
+          final res = await http
+              .get(Uri.parse(senderPhoto))
+              .timeout(const Duration(seconds: 4));
+          if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+            largeIcon = ByteArrayAndroidBitmap(res.bodyBytes);
+          }
+        } catch (_) {}
+      }
+
+      final AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'activity',
+        'Comments & replies',
+        channelDescription: 'New comments on your videos and replies to you',
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.social,
+        icon: '@drawable/ic_notification',
+        largeIcon: largeIcon,
+        styleInformation: BigTextStyleInformation(body),
+      );
+
+      await _plugin.show(
+        ('act_${postId}_$senderId').hashCode & 0x7ffffff0 | 0x2,
+        senderName,
+        body,
+        NotificationDetails(android: androidDetails),
+        payload: jsonEncode({
+          'kind': kind,
+          'postId': postId,
+          'userId': senderId,
+          'name': senderName,
+          'photo': senderPhoto,
+          'text': text,
+          'commentId': commentId,
+          'replyKind': replyKind,
+        }),
+      );
+      await recordPushDebug('shown: $kind from $senderName');
+    } catch (e) {
+      // A notification failing must never break anything else.
+      await recordPushDebug('SHOW FAILED: $e');
     }
   }
 

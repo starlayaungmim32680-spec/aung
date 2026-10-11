@@ -167,6 +167,23 @@
 > home_screen.dart, notifications_screen.dart. No rules / Worker change.
 > Lesson: a build kept showing the OLD sheet until `flutter clean` -
 > see §7 step 5._
+> _12 Oct 2026 (confirmed on two phones in Fly Dev): **phone push for
+> comments and replies** (Messenger style, works with Fly closed). After
+> writing a `comment`/`reply` notification doc, the app calls the new
+> Worker route `POST /activity-push` with only `{receiverId,
+notificationId}`; the Worker re-reads that doc, checks it and sends an
+> FCM data push; `showActivityNotification` shows it (sender photo,
+> channel `activity`), a tap opens the video with the comment
+> highlighted. Wallet → Push notifications got "Notifications allowed",
+> **Test notification**, **Refresh log** and a last-10-pushes log
+> (`recordPushDebug`). **Root cause of a long hunt:** release builds'
+> resource shrinking removed `@drawable/ic_notification` (only referenced
+> by name from Dart) → `PlatformException(invalid_icon)` and NO
+> notification at all; fixed with `android/app/src/main/res/raw/keep.xml`
+> (`tools:keep`). Also found `res/raw` had been committed as a text FILE
+> (5 Oct) instead of a folder, so the Fly ringtone never shipped - now
+> `res/raw/fly_ringtone.mp3`. Worker deployed to **fly-dev-worker only**;
+> prod rollout is To-do 0a._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -679,6 +696,17 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       priority. Returns 200 with `{"skipped":"no fcmToken"}` when the
       receiver has no token. uids are checked with `isSafeUid` (letters/
       digits only - they go into a Firestore path).
+    - `POST /activity-push` **(12 Oct 2026, confirmed in Fly Dev; NOT yet
+      on prod `livekit-token-worker`)** — body `{receiverId,
+notificationId}` only. `handleActivityPush` reads
+      `users/{receiverId}/notifications/{notificationId}` with the service
+      account and refuses unless `type` is `comment`/`reply`, `fromId` ==
+      the VERIFIED caller and the doc is < 10 minutes old; takes the
+      receiver's `fcmToken` from Firestore; sends FCM data `{type:
+'activity', kind, replyKind, senderId, senderName, senderPhoto, text,
+postId, commentId}` (text from the doc, trimmed). Has
+      `console.log('activity-push: ...')` lines (receiver, token tail, FCM
+      status) - watch with `npx wrangler tail fly-dev-worker`.
     - **Search (4 Oct 2026, confirmed)** — Cloudflare **D1** database
       `fly-search`, bound as `env.SEARCH_DB` (Settings → Bindings), free
       plan (500 MB per DB, 5M rows read / 100k written per day - since
@@ -1605,11 +1633,21 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
   matching comment (newest from that user, same text if possible) is
   wrapped in `_CommentSpotlight` — scrolls into view and a rotating
   pink→purple→blue sweep-gradient border glows ~3.5s, then fades.
-- `notification_service.dart` — flutter*local_notifications wrapper;
+- `notification_service.dart` — flutter*local*notifications wrapper;
   `registerAndSaveToken()` saves the device's `fcmToken` onto the user's
-  Firestore doc. **Friend notifications (4 Oct 2026, confirmed):**
-  `showFriendNotification(kind, senderId, senderName, senderPhoto)` -
-  channel `friend_requests`, one per person (id from `friend*<uid>`),
+  Firestore doc. **Comment/reply push (12 Oct 2026, confirmed):**
+  `showActivityNotification(...)` - channel `activity` "Comments &
+  replies", one per post+sender (id from `act*<postId>\_<senderId>`),
+  sender photo as `largeIcon`; tap → `pendingPost`ValueNotifier →
+ `MainNavigationScreen.\_openPendingPost`→`PostFromNotificationScreen`  (commentId, replyKind). Diagnostics:`recordPushDebug`/`readPushDebug`  (SharedPreferences`push_debug`, last 10) and `notificationsEnabled()`,
+  shown in Wallet → Push notifications. main.dart: the background handler
+  and `FirebaseMessaging.onMessage` (`\_onPushWhileProcessAlive`, shows it
+  unless Fly is in the foreground) handle `type: 'activity'`. The app side
+  is `sendActivityPush(receiverId, notificationId)`in
+ `call_push_service.dart`, called (unawaited) after each comment/reply
+  notification `.add()`in`home_comments.dart`. **Friend notifications (4 Oct 2026, confirmed):**
+  `showFriendNotification(kind, senderId, senderName, senderPhoto)`-
+  channel`friend_requests`, one per person (id from `friend*<uid>`),
 sender photo downloaded (4s timeout) as `largeIcon`, and for a request
 two `AndroidNotificationAction`s `confirm`/`delete`
 (`showsUserInterface: true`). Called from main.dart's background
@@ -1625,6 +1663,14 @@ button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action
   `MethodChannel` (`moveToBackground`, `setCallActive`/`clearCallActive`,
   `startPresenceService`/`stopPresenceService`), Picture-in-Picture handling,
   and `requestDismissKeyguard()`.
+- `res/raw/keep.xml` **(12 Oct 2026)** — `tools:keep=
+"@drawable/ic_notification,@raw/fly_ringtone"`. Release resource
+  shrinking deletes resources only referenced by NAME from Dart/plugins;
+  without this every local notification failed with `invalid_icon`. Any
+  new drawable/raw used by name (notification icon, sound) must be added
+  here. `res/raw/fly_ringtone.mp3` = call ringtone (`ringtonePath:
+'fly_ringtone'` in call_kit_service.dart). `res/raw` must be a FOLDER
+  (it was a text file by mistake until 12 Oct 2026).
 - `kotlin/com/aungdev/fly/CallForegroundService.kt`,
   `PresenceForegroundService.kt` — see §3.
 
@@ -1870,13 +1916,16 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 10 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 12 Oct 2026)
 
-0a. **Phone push for comments / replies (later, optional):** comment and
-reply notifications (11 Oct 2026) only show in the in-app 🔔 list. A
-phone notification-bar push would need a Worker route like
-`/friend-push` (Worker checks the notification doc, finds the
-receiver's fcmToken) - deploy to fly-dev-worker first, then prod.
+0a. **Prod rollout of comment/reply push (12 Oct 2026):** works in Fly
+Dev. Paste `cloudflare/livekit_token_worker.js` into the PROD Worker
+`livekit-token-worker` (Edit code → Deploy, don't touch Secrets), then
+`flutter clean` → build `--flavor prod`, install on A and B, test: A in
+background → B comments → A gets the notification; Wallet → Test
+notification. The prod build also gets the `keep.xml` fix, so prod
+chat/friend/call notifications (same missing icon) and the Fly ringtone
+should start working there too - check them.
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
@@ -2010,7 +2059,12 @@ NEW one `True`. Clear the old extract first
 (`Remove-Item $env:TEMP\flydev -Recurse -Force`). If the APK still has
 the old code even though the .dart file is new, run **`flutter clean`**
 → `flutter pub get` → build again (a stale build cache did exactly
-this on 10 Oct 2026).
+this on 10 Oct 2026). A `flutter clean` line "Failed to remove build"
+(a folder locked by Explorer/Gradle) is harmless - the rest is cleared.
+A notification that never shows: open Wallet → Push notifications →
+Test notification / Refresh log first - it shows `shown:` or the exact
+`SHOW FAILED:` error (12 Oct 2026 it was `invalid_icon`, see §4 Native
+Android `keep.xml`).
 
 **6. Ko confirms ("ဟုတ် အဆင်ပြေတယ် ဆရာ 🥰").** In that SAME reply, send the
 updated **AI_CONTEXT.md as a full file** (his standing rule) plus commit

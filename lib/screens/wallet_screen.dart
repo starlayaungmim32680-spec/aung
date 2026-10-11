@@ -125,6 +125,40 @@ class _PushNotificationCard extends StatefulWidget {
 class _PushNotificationCardState extends State<_PushNotificationCard> {
   bool _checking = false;
 
+  // Push diagnostics (12 Oct 2026): what happened to the last pushes on
+  // this phone, plus a button that shows a local test notification.
+  List<String> _debug = const [];
+  bool? _enabled;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDebug();
+  }
+
+  Future<void> _loadDebug() async {
+    final List<String> d = await NotificationService.readPushDebug();
+    final bool? on = await NotificationService.notificationsEnabled();
+    if (mounted) {
+      setState(() {
+        _debug = d;
+        _enabled = on;
+      });
+    }
+  }
+
+  Future<void> _testNotification() async {
+    await NotificationService.recordPushDebug('test button pressed');
+    await NotificationService.showActivityNotification(
+      kind: 'comment',
+      senderId: 'test',
+      senderName: 'Fly test',
+      text: 'If you can see this, Fly can show notifications.',
+      postId: 'test',
+    );
+    await _loadDebug();
+  }
+
   Future<void> _retry() async {
     setState(() => _checking = true);
     final String? error = await NotificationService.registerAndSaveToken();
@@ -247,6 +281,57 @@ class _PushNotificationCardState extends State<_PushNotificationCard> {
               ),
             ),
           ),
+          const SizedBox(height: 14),
+          Text(
+            _enabled == null
+                ? 'Notifications allowed: checking...'
+                : _enabled!
+                    ? 'Notifications allowed: yes'
+                    : 'Notifications allowed: NO - turn them on in phone Settings',
+            style: TextStyle(
+              color: _enabled == false ? Colors.orangeAccent : Colors.white54,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _testNotification,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  child: const Text('Test notification',
+                      style: TextStyle(color: Colors.white70)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _loadDebug,
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.white24),
+                  ),
+                  child: const Text('Refresh log',
+                      style: TextStyle(color: Colors.white70)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text('Last pushes on this phone:',
+              style: TextStyle(color: Colors.white54, fontSize: 11)),
+          const SizedBox(height: 4),
+          if (_debug.isEmpty)
+            const Text('(nothing yet)',
+                style: TextStyle(color: Colors.white38, fontSize: 11))
+          else
+            ..._debug.map((l) => Text(l,
+                style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontFamily: 'monospace'))),
         ],
       ),
     );

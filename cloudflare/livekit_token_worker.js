@@ -32,6 +32,16 @@
 //                         exists for the verified caller, looks up the
 //                         receiver's fcmToken and the caller's name/photo
 //                         itself - so nobody can spam fake friend pushes.
+//  POST /activity-push  - (11 Oct 2026) wakes someone's phone for a new
+//                         comment on their video or a reply in their
+//                         comment thread. The app only sends
+//                         {receiverId, notificationId}: the Worker reads
+//                         users/{receiverId}/notifications/{notificationId}
+//                         itself and only pushes if it exists, is a
+//                         'comment' / 'reply', was written by the verified
+//                         caller (fromId) and is less than 10 minutes old -
+//                         so nobody can push made-up text to anyone. Text,
+//                         names and ids come from that doc, not the app.
 //  POST /search          - (4 Oct 2026) Fly's search. Body {q}. Looks the
 //                         words up in Cloudflare D1 (database `fly-search`,
 //                         binding SEARCH_DB, SQLite FTS5) and returns only
@@ -193,6 +203,9 @@ export default {
     }
     if (path === '/friend-push') {
       return handleFriendPush(body, env, caller);
+    }
+    if (path === '/activity-push') {
+      return handleActivityPush(body, env, caller);
     }
     if (path === '/search') {
       return handleSearch(body, env);
@@ -1070,6 +1083,94 @@ async function handleFriendPush(body, env, caller) {
     });
   } catch (err) {
     return new Response(`Friend push failed: ${err.message}`, { status: 500 });
+  }
+}
+
+// Comment / reply push (11 Oct 2026) - see the route list at the top.
+async function handleActivityPush(body, env, caller) {
+  const receiverId = body.receiverId;
+  const notificationId = body.notificationId;
+  if (!caller || !isSafeUid(caller.uid) || !isSafeUid(receiverId) ||
+      receiverId === caller.uid || !isSafeUid(notificationId)) {
+    return new Response('Bad request', { status: 400 });
+  }
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const notif = await firestoreGetFields(
+      env, dbToken, `users/${receiverId}/notifications/${notificationId}`);
+    if (notif === null) {
+      console.log('activity-push: no such notification', receiverId, notificationId);
+      return new Response('Nothing to notify about', { status: 403 });
+    }
+    const kind = stringField(notif, 'type');
+    if ((kind !== 'comment' && kind !== 'reply') ||
+        stringField(notif, 'fromId') !== caller.uid) {
+      return new Response('Nothing to notify about', { status: 403 });
+    }
+    // Only fresh notifications - an old doc can't be pushed again later.
+    const created = notif.createdAt && notif.createdAt.timestampValue;
+    if (!created || Date.now() - Date.parse(created) > 10 * 60 * 1000) {
+      console.log('activity-push: too old', created);
+      return new Response('Too old', { status: 403 });
+    }
+
+    const receiver = await firestoreGetFields(env, dbToken, `users/${receiverId}`);
+    const fcmToken = stringField(receiver, 'fcmToken');
+    if (!fcmToken) {
+      console.log('activity-push: receiver has no fcmToken', receiverId);
+      return new Response('{"skipped":"no fcmToken"}', {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const fcmAccessToken = await getGoogleAccessToken(env);
+    const fcmResponse = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/messages:send`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${fcmAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: {
+            token: fcmToken,
+            data: {
+              type: 'activity',
+              kind,
+              replyKind: stringField(notif, 'replyKind'),
+              senderId: caller.uid,
+              senderName:
+                (stringField(notif, 'fromName').trim() || 'Someone').slice(0, 80),
+              senderPhoto: stringField(notif, 'fromPhoto').slice(0, 500),
+              text: stringField(notif, 'text').slice(0, 200),
+              postId: stringField(notif, 'postId').slice(0, 128),
+              commentId: stringField(notif, 'commentId').slice(0, 128),
+            },
+            android: { priority: 'high' },
+            apns: {
+              headers: { 'apns-priority': '10' },
+              payload: { aps: { 'content-available': 1, sound: 'default' } },
+            },
+          },
+        }),
+      },
+    );
+    const resultText = await fcmResponse.text();
+    // Diagnostics (11 Oct 2026) - visible with `npx wrangler tail`.
+    console.log('activity-push:', kind, 'to', receiverId,
+      'token ...' + fcmToken.slice(-8), 'project', env.FIREBASE_PROJECT_ID,
+      'FCM', fcmResponse.status, resultText.slice(0, 300));
+    if (!fcmResponse.ok) {
+      return new Response(`FCM send failed: ${resultText}`, { status: 502 });
+    }
+    return new Response(resultText, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    console.log('activity-push: error', err.message);
+    return new Response(`Activity push failed: ${err.message}`, { status: 500 });
   }
 }
 

@@ -42,9 +42,31 @@ import 'screens/home_screen.dart' show flyRouteObserver;
 // And 'friend_request' / 'friend_accept' (4 Oct 2026, the Worker's
 // /friend-push): shows a friend notification; tapping it opens Friend
 // Requests or the new friend's profile (NotificationService.pendingFriend).
+//
+// And 'activity' (11 Oct 2026, the Worker's /activity-push): a new comment
+// on my video or a reply in my comment thread; tapping it opens that
+// video with the comment spotlighted (NotificationService.pendingPost).
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final String? type = message.data['type'] as String?;
+  // Push diagnostics (Wallet -> Push notifications).
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.recordPushDebug('received (background): $type');
+  if (type == 'activity') {
+    WidgetsFlutterBinding.ensureInitialized();
+    String d(String k) => message.data[k] as String? ?? '';
+    await NotificationService.showActivityNotification(
+      kind: d('kind'),
+      senderId: d('senderId'),
+      senderName: d('senderName').isEmpty ? 'Someone' : d('senderName'),
+      senderPhoto: d('senderPhoto'),
+      text: d('text'),
+      postId: d('postId'),
+      commentId: d('commentId'),
+      replyKind: d('replyKind'),
+    );
+    return;
+  }
   if (type == 'friend_request' || type == 'friend_accept') {
     WidgetsFlutterBinding.ensureInitialized();
     await NotificationService.showFriendNotification(
@@ -91,6 +113,36 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   );
 }
 
+// A push that arrives while Fly's process is still alive (11 Oct 2026).
+//
+// firebase_messaging hands a push to the BACKGROUND handler above only
+// when Android says Fly is not in the foreground. Fly's "You're online"
+// foreground service (PresenceForegroundService) keeps the process alive
+// and in the foreground priority class even after Fly is swiped away or
+// sent to the background, so on some phones (seen on vivo) every push
+// was delivered HERE instead - to onMessage, which nothing listened to -
+// and silently dropped. Now a comment / reply push that lands here is
+// shown as a phone notification unless Fly is really on screen (then the
+// in-app 🔔 list is enough, like Messenger).
+void _onPushWhileProcessAlive(RemoteMessage message) {
+  final AppLifecycleState? state = WidgetsBinding.instance.lifecycleState;
+  NotificationService.recordPushDebug(
+      'received (app alive, ${state?.name}): ${message.data['type']}');
+  if (message.data['type'] != 'activity') return;
+  if (state == AppLifecycleState.resumed) return;
+  String d(String k) => message.data[k] as String? ?? '';
+  NotificationService.showActivityNotification(
+    kind: d('kind'),
+    senderId: d('senderId'),
+    senderName: d('senderName').isEmpty ? 'Someone' : d('senderName'),
+    senderPhoto: d('senderPhoto'),
+    text: d('text'),
+    postId: d('postId'),
+    commentId: d('commentId'),
+    replyKind: d('replyKind'),
+  );
+}
+
 final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
@@ -107,6 +159,7 @@ void main() async {
     cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
   );
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  FirebaseMessaging.onMessage.listen(_onPushWhileProcessAlive);
   CallKitService.navigatorKey = _navigatorKey;
   // Registered once, here, so it's ready to catch an Accept/Decline tap
   // even if the app is cold-starting because of that exact tap.

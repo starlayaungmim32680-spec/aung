@@ -162,3 +162,30 @@ Future<void> sendFriendPush({
     // Best-effort, as noted above.
   }
 }
+
+// Phone notification for a new comment on someone's video or a reply in
+// their comment thread (11 Oct 2026, the Worker's /activity-push). Only
+// the ids are sent - the Worker reads the notification doc itself,
+// checks I really wrote it (and that it's fresh), finds their fcmToken
+// and pushes the text from that doc. Best-effort: the in-app 🔔 list
+// works without it.
+Future<void> sendActivityPush({
+  required String receiverId,
+  required String notificationId,
+}) async {
+  try {
+    await http.post(
+      Uri.parse('$kTokenServerUrl/activity-push'),
+      headers: {
+        ...await workerAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'receiverId': receiverId,
+        'notificationId': notificationId,
+      }),
+    );
+  } catch (_) {
+    // Best-effort, as noted above.
+  }
+}
