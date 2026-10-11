@@ -1716,6 +1716,9 @@ class _VideoPostItem extends StatefulWidget {
   final bool openCommentsOnStart;
   final String? highlightCommentFrom;
   final String? highlightCommentText;
+  // Reply notification (10 Oct 2026): spotlight this comment by id and
+  // open its replies.
+  final String? highlightCommentId;
   final String? burstEmojiOnStart;
 
   const _VideoPostItem({
@@ -1741,6 +1744,7 @@ class _VideoPostItem extends StatefulWidget {
     this.openCommentsOnStart = false,
     this.highlightCommentFrom,
     this.highlightCommentText,
+    this.highlightCommentId,
     this.burstEmojiOnStart,
   });
 
@@ -2997,6 +3001,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
         ownerId: widget.userId,
         highlightUserId: widget.highlightCommentFrom,
         highlightText: widget.highlightCommentText,
+        highlightCommentId: widget.highlightCommentId,
       ),
     );
   }
@@ -4939,14 +4944,20 @@ class _OwnerInfo extends StatelessWidget {
 //    pulsing Fly ring + what they said) instead of a bare spinner;
 //  - a glass banner slides in saying who did what, then tucks away;
 //  - a reaction bursts that emoji over the video; a comment opens the
-//    comments with that comment spotlighted.
+//    comments with that comment spotlighted;
+//  - a reply (10 Oct 2026) opens the comments with the thread's comment
+//    ([commentId]) spotlighted and its replies already open.
 class PostFromNotificationScreen extends StatefulWidget {
   final String postId;
   final String fromId;
   final String fromName;
   final String fromPhoto;
-  final String type; // 'comment' or 'reaction'
-  final String text; // the comment text, or the reaction emoji
+  final String type; // 'comment', 'reply' or 'reaction'
+  final String text; // the comment / reply text, or the reaction emoji
+  // 'reply' only: the thread's comment id, and 'you' (my comment / I was
+  // answered) or 'video' (a reply under a comment on my video).
+  final String? commentId;
+  final String? replyKind;
 
   const PostFromNotificationScreen({
     super.key,
@@ -4956,6 +4967,8 @@ class PostFromNotificationScreen extends StatefulWidget {
     required this.fromPhoto,
     required this.type,
     required this.text,
+    this.commentId,
+    this.replyKind,
   });
 
   @override
@@ -4994,9 +5007,17 @@ class _PostFromNotificationScreenState
     });
   }
 
-  String get _actionText => widget.type == 'reaction'
-      ? 'reacted ${widget.text} to your video'
-      : 'commented: ${widget.text}';
+  String get _actionText {
+    if (widget.type == 'reaction') {
+      return 'reacted ${widget.text} to your video';
+    }
+    if (widget.type == 'reply') {
+      return widget.replyKind == 'video'
+          ? 'replied to a comment on your video: ${widget.text}'
+          : 'replied to your comment: ${widget.text}';
+    }
+    return 'commented: ${widget.text}';
+  }
 
   Widget _avatar(double radius) {
     return Container(
@@ -5223,6 +5244,7 @@ class _PostFromNotificationScreenState
           }
           _showBannerOnce();
           final bool isReaction = widget.type == 'reaction';
+          final bool isReply = widget.type == 'reply';
           return Stack(
             children: [
               _VideoPostItem(
@@ -5245,8 +5267,11 @@ class _PostFromNotificationScreenState
                 effectsBaked: post['effectsBaked'] as bool? ?? false,
                 onVideoEnd: () {},
                 openCommentsOnStart: !isReaction,
-                highlightCommentFrom: isReaction ? null : widget.fromId,
-                highlightCommentText: isReaction ? null : widget.text,
+                highlightCommentFrom:
+                    isReaction || isReply ? null : widget.fromId,
+                highlightCommentText:
+                    isReaction || isReply ? null : widget.text,
+                highlightCommentId: isReply ? widget.commentId : null,
                 burstEmojiOnStart: isReaction ? widget.text : null,
               ),
               _backButton(),

@@ -9,8 +9,8 @@ import 'public_profile_screen.dart';
 import 'friend_requests_screen.dart';
 import 'home_screen.dart' show PostFromNotificationScreen;
 
-// Shows the current user's notifications (reactions, comments, messages,
-// follows, friend requests / accepted requests)
+// Shows the current user's notifications (reactions, comments, replies,
+// messages, follows, friend requests / accepted requests)
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
 
@@ -38,6 +38,14 @@ class NotificationsScreen extends StatelessWidget {
         return 'reacted $text to your video';
       case 'comment':
         return 'commented: $text';
+      case 'reply':
+        // Several replies from the same person in the same thread are
+        // shown as one row (newest text) - see build().
+        final int more = (data['_more'] as int?) ?? 0;
+        final String times = more > 0 ? ' (+$more more)' : '';
+        return data['replyKind'] == 'video'
+            ? 'replied to a comment on your video: $text$times'
+            : 'replied to your comment: $text$times';
       case 'message':
         return 'sent you a message: $text';
       case 'follow':
@@ -57,6 +65,8 @@ class NotificationsScreen extends StatelessWidget {
         return Icons.favorite;
       case 'comment':
         return Icons.mode_comment;
+      case 'reply':
+        return Icons.reply_rounded;
       case 'message':
         return Icons.send;
       case 'follow':
@@ -76,6 +86,8 @@ class NotificationsScreen extends StatelessWidget {
         return const Color(0xFFFF4B6E);
       case 'comment':
         return const Color(0xFF3A8DFF);
+      case 'reply':
+        return const Color(0xFF9C4DFF);
       case 'message':
         return const Color(0xFF9C4DFF);
       case 'follow':
@@ -107,7 +119,7 @@ class NotificationsScreen extends StatelessWidget {
           ),
         ),
       );
-    } else if (type == 'comment' || type == 'reaction') {
+    } else if (type == 'comment' || type == 'reaction' || type == 'reply') {
       final String postId = (data['postId'] as String?) ?? '';
       if (postId.isEmpty) return;
       Navigator.push(
@@ -122,6 +134,8 @@ class NotificationsScreen extends StatelessWidget {
             fromPhoto: (data['fromPhoto'] as String?) ?? '',
             type: type,
             text: (data['text'] as String?) ?? '',
+            commentId: data['commentId'] as String?,
+            replyKind: data['replyKind'] as String?,
           ),
           // Grows up out of the tapped row's area with a fade.
           transitionsBuilder: (_, animation, __, child) {
@@ -204,18 +218,36 @@ class NotificationsScreen extends StatelessWidget {
                 // requests / accepts show only the NEWEST one per person
                 // (4 Oct 2026) - like Facebook, not a stack of repeats
                 // every time someone re-sends after a cancel.
+                // Replies (10 Oct 2026): several from the same person in
+                // the same thread collapse into the newest one, with a
+                // "(+N more)" count, instead of a wall of rows.
                 final Set<String> seenFriendKeys = {};
-                final docs = allDocs.where((d) {
+                final Map<String, Map<String, dynamic>> replyRows = {};
+                final List<Map<String, dynamic>> docs = [];
+                for (final d in allDocs) {
                   final data = d.data() as Map<String, dynamic>;
                   final String? fromId = data['fromId'] as String?;
-                  if (BlockService.instance.isHidden(fromId)) return false;
+                  if (BlockService.instance.isHidden(fromId)) continue;
                   final String type = (data['type'] as String?) ?? '';
                   if (type == 'friend_request' || type == 'friend_accept') {
                     // Newest first, so the first one kept wins.
-                    return seenFriendKeys.add('$type|$fromId');
+                    if (!seenFriendKeys.add('$type|$fromId')) continue;
+                  } else if (type == 'reply') {
+                    final String key =
+                        '$fromId|${data['postId']}|${data['commentId']}';
+                    final Map<String, dynamic>? kept = replyRows[key];
+                    if (kept != null) {
+                      kept['_more'] = ((kept['_more'] as int?) ?? 0) + 1;
+                      continue;
+                    }
+                    final Map<String, dynamic> row =
+                        Map<String, dynamic>.from(data);
+                    replyRows[key] = row;
+                    docs.add(row);
+                    continue;
                   }
-                  return true;
-                }).toList();
+                  docs.add(data);
+                }
                 FriendService.instance.start();
 
                 if (docs.isEmpty) {
@@ -239,7 +271,7 @@ class NotificationsScreen extends StatelessWidget {
                 return ListView.builder(
                   itemCount: docs.length,
                   itemBuilder: (context, index) {
-                    final data = docs[index].data() as Map<String, dynamic>;
+                    final Map<String, dynamic> data = docs[index];
                     final String fromName = data['fromName'] ?? 'Someone';
                     final String fromPhoto = data['fromPhoto'] ?? '';
                     final String type = data['type'] ?? '';

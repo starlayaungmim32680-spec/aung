@@ -5,6 +5,29 @@
 // comment and reply rows (_CommentTile, _ReplyTile), the reaction summary
 // chip, the "Hidden" tag, and the visibility helpers for hidden comments.
 //
+// 10 Oct 2026 - replies, Facebook style:
+//   - every reply row has its own Reply button. Replying to a reply stays
+//     in the SAME comment's thread (one level deep, like Facebook/TikTok)
+//     and the new reply shows "@Name" in Fly blue in front of the text
+//     (stored as replyToUserId / replyToName on the reply doc);
+//   - a reply now notifies people (type 'reply' in users/{uid}/
+//     notifications), after the moderation check passes: the person
+//     replied to, the comment's author and the video owner - each at most
+//     once, never yourself, never someone blocked either way. Nobody else
+//     in the thread is notified (keeps it cheap and quiet);
+//   - opening that notification opens the comments with the thread's
+//     comment spotlighted and its replies already open.
+//
+// 10 Oct 2026 (later) - TikTok/Facebook-style look:
+//   - header "12 comments" + close button;
+//   - rows: avatar, grey name (+ gradient "Creator" pill for the video
+//     owner), white text, then "2h  Reply" and a Facebook-style emoji chip;
+//   - a heart on the right: tap = ❤️ (pop + haptic), long-press = any emoji;
+//   - replies tucked under "── View 3 replies ⌄" / "── Hide ⌃";
+//   - tap a name/avatar/@mention to open that profile;
+//   - quick-emoji bar and my avatar by the composer; send button lights up
+//     in the Fly gradient only when there's text.
+//
 // It's a `part` file: it shares home_screen.dart's imports and its private
 // (_) names, so moving the code here changed nothing else. Add new imports
 // to home_screen.dart, not here.
@@ -43,12 +66,16 @@ class _CommentsSheet extends StatefulWidget {
   // [highlightText] when possible) gets a short glowing spotlight.
   final String? highlightUserId;
   final String? highlightText;
+  // Opened from a reply notification: spotlight this comment (by id) and
+  // open its replies straight away.
+  final String? highlightCommentId;
 
   const _CommentsSheet({
     required this.postId,
     required this.ownerId,
     this.highlightUserId,
     this.highlightText,
+    this.highlightCommentId,
   });
 
   @override
@@ -59,8 +86,17 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   final TextEditingController _commentController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
 
+  // Who the next send replies to. _replyToCommentId is always the
+  // top-level comment (the thread); _replyToUserId is the person actually
+  // being answered (the comment's author, or a reply's author when
+  // replying to a reply); _replyToCommentOwnerId is the thread owner.
   String? _replyToCommentId;
   String? _replyToName;
+  String? _replyToUserId;
+  String? _replyToCommentOwnerId;
+  // True when answering a reply (not the comment itself) - the new reply
+  // then carries "@Name".
+  bool _replyIsToReply = false;
 
   // Accounts to hide (blocked either way - see block_service.dart): their
   // comments and replies don't show here.
@@ -104,6 +140,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   void dispose() {
     _commentController.dispose();
     _focusNode.dispose();
+    _commentCount.dispose();
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
     super.dispose();
   }
@@ -124,10 +161,20 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
   }
 
-  void _startReply(String commentId, String name) {
+  void _startReply(
+    String commentId,
+    String name, {
+    required String toUserId,
+    required String commentOwnerId,
+    bool isReplyToReply = false,
+  }) {
+    HapticFeedback.selectionClick();
     setState(() {
       _replyToCommentId = commentId;
       _replyToName = name;
+      _replyToUserId = toUserId;
+      _replyToCommentOwnerId = commentOwnerId;
+      _replyIsToReply = isReplyToReply;
     });
     _focusNode.requestFocus();
   }
@@ -136,6 +183,9 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     setState(() {
       _replyToCommentId = null;
       _replyToName = null;
+      _replyToUserId = null;
+      _replyToCommentOwnerId = null;
+      _replyIsToReply = false;
     });
   }
 
@@ -204,6 +254,10 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
 
     final String? replyToId = _replyToCommentId;
+    final String? replyToName = _replyToName;
+    final String? replyToUserId = _replyToUserId;
+    final String? commentOwnerId = _replyToCommentOwnerId;
+    final bool replyIsToReply = _replyIsToReply;
     _commentController.clear();
     _cancelReply();
 
@@ -223,6 +277,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       'photoUrl': photoUrl,
       'text': text,
       'reactions': <String, dynamic>{},
+      // Replying to a reply: shown as "@Name" in front of the text.
+      if (replyIsToReply && replyToUserId != null && replyToName != null) ...{
+        'replyToUserId': replyToUserId,
+        'replyToName': replyToName,
+      },
       'createdAt': FieldValue.serverTimestamp(),
     }).catchError((_) {
       messenger.showSnackBar(
@@ -236,6 +295,9 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       ref: ref,
       text: text,
       isReply: replyToId != null,
+      commentId: replyToId,
+      commentOwnerId: commentOwnerId,
+      replyToUserId: replyToUserId,
       myId: user.uid,
       postId: widget.postId,
       postOwnerId: widget.ownerId,
@@ -249,6 +311,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     required DocumentReference ref,
     required String text,
     required bool isReply,
+    // Replies only: the thread's comment id and author, and the person
+    // directly answered.
+    String? commentId,
+    String? commentOwnerId,
+    String? replyToUserId,
     required String myId,
     // Passed in (not read from `widget`) because this can finish after the
     // sheet has been closed and this State disposed.
@@ -275,8 +342,20 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       return;
     }
 
-    // Replies don't notify the video owner (unchanged behaviour).
-    if (isReply) return;
+    if (isReply) {
+      await _notifyReply(
+        text: text,
+        myId: myId,
+        postId: postId,
+        postOwnerId: postOwnerId,
+        commentId: commentId ?? '',
+        commentOwnerId: commentOwnerId ?? '',
+        replyToUserId: replyToUserId ?? '',
+        displayName: displayName,
+        photoUrl: photoUrl,
+      );
+      return;
+    }
     if (postOwnerId.isEmpty || postOwnerId == myId) return;
     try {
       await FirebaseFirestore.instance
@@ -295,6 +374,57 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       });
     } catch (_) {
       // A missed notification shouldn't bother the commenter.
+    }
+  }
+
+  // Reply notifications (10 Oct 2026). At most three people, each once:
+  //   - the person I answered and the thread's comment author -> 'you'
+  //     ("replied to your comment"),
+  //   - the video owner, if not already one of those -> 'video'
+  //     ("replied to a comment on your video").
+  // Never me, never anyone blocked either way. Static so it still runs
+  // after the sheet is closed. One Firestore write per person.
+  static Future<void> _notifyReply({
+    required String text,
+    required String myId,
+    required String postId,
+    required String postOwnerId,
+    required String commentId,
+    required String commentOwnerId,
+    required String replyToUserId,
+    required String displayName,
+    required String photoUrl,
+  }) async {
+    if (commentId.isEmpty) return;
+    final Map<String, String> recipients = {};
+    void add(String uid, String kind) {
+      if (uid.isEmpty || uid == myId) return;
+      if (BlockService.instance.isHidden(uid)) return;
+      recipients.putIfAbsent(uid, () => kind);
+    }
+
+    add(replyToUserId, 'you');
+    add(commentOwnerId, 'you');
+    add(postOwnerId, 'video');
+
+    final users = FirebaseFirestore.instance.collection('users');
+    for (final MapEntry<String, String> r in recipients.entries) {
+      try {
+        await users.doc(r.key).collection('notifications').add({
+          'type': 'reply',
+          'replyKind': r.value,
+          'text': text,
+          'fromId': myId,
+          'fromName': displayName,
+          'fromPhoto': photoUrl,
+          'postId': postId,
+          'commentId': commentId,
+          'seen': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {
+        // A missed notification shouldn't bother the person replying.
+      }
     }
   }
 
@@ -566,6 +696,63 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     );
   }
 
+  // Header count ("12 comments"). A ValueNotifier so only the header
+  // rebuilds when the number changes - not the whole sheet (Fly's
+  // flicker rule).
+  final ValueNotifier<int> _commentCount = ValueNotifier<int>(-1);
+
+  void _publishCount(int n) {
+    if (_commentCount.value == n) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _commentCount.value = n;
+    });
+  }
+
+  // TikTok-style heart: one tap = ❤️ (tap again to take it back, or to
+  // swap whatever emoji I had for ❤️); long-press = the full emoji picker.
+  Future<void> _quickLove(
+      DocumentReference ref, Map<String, dynamic> reactions) async {
+    final String? mine = reactions[_myId] as String?;
+    if (mine != null && mine != 'love') {
+      // Had another emoji: tapping the heart removes my reaction.
+      await _setReaction(ref, reactions, mine);
+      return;
+    }
+    await _setReaction(ref, reactions, 'love');
+  }
+
+  // Quick emojis above the composer - one tap drops it into the text.
+  static const List<String> _quickEmojis = [
+    '😂',
+    '❤️',
+    '🔥',
+    '👏',
+    '😍',
+    '😮',
+    '😢',
+    '🙏'
+  ];
+
+  void _insertEmoji(String emoji) {
+    HapticFeedback.selectionClick();
+    final TextEditingValue v = _commentController.value;
+    final int start = v.selection.isValid ? v.selection.start : v.text.length;
+    final int end = v.selection.isValid ? v.selection.end : v.text.length;
+    final String text = v.text.replaceRange(start, end, emoji);
+    _commentController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + emoji.length),
+    );
+  }
+
+  void _openProfile(String userId) {
+    if (userId.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: userId)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final double bottomInset = MediaQuery.of(context).viewInsets.bottom;
@@ -574,39 +761,65 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     return Container(
       height: MediaQuery.of(context).size.height * 0.75,
       decoration: const BoxDecoration(
-        color: Color(0xFF161616),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        color: Color(0xFF121212),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       padding: EdgeInsets.only(bottom: bottomInset),
       child: Column(
         children: [
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Container(
-            width: 40,
+            width: 36,
             height: 4,
             decoration: BoxDecoration(
               color: Colors.white24,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const SizedBox(height: 12),
-          const Text(
-            'Comments',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
+          // Header: "12 comments" + close, TikTok style. Full width, so
+          // the close button sits at the sheet's right edge instead of on
+          // top of the title.
+          SizedBox(
+            width: double.infinity,
+            height: 44,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                ValueListenableBuilder<int>(
+                  valueListenable: _commentCount,
+                  builder: (context, n, _) => Text(
+                    n < 0
+                        ? 'Comments'
+                        : n == 0
+                            ? 'Comments'
+                            : '$n ${n == 1 ? "comment" : "comments"}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 6,
+                  child: IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        color: Colors.white70, size: 22),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 8),
-          const Divider(color: Colors.white12, height: 1),
+          const Divider(color: Colors.white10, height: 1),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _commentsStream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData) {
                   return const Center(
-                    child: CircularProgressIndicator(color: Colors.redAccent),
+                    child: CircularProgressIndicator(
+                        color: Color(0xFF9C4DFF), strokeWidth: 2.5),
                   );
                 }
 
@@ -618,21 +831,22 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                       _isCommentVisibleTo(data,
                           myId: myId, postOwnerId: widget.ownerId);
                 }).toList();
+                _publishCount(comments.length);
 
                 if (comments.isEmpty) {
-                  return Center(
-                    child: Text(
-                      'No comments yet. Say something!',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                    ),
-                  );
+                  return const _EmptyComments();
                 }
 
                 // The comment the notification was about (newest first, so
                 // the first match is the latest one from that person).
                 int spotlightIndex = -1;
+                final String? hlComment = widget.highlightCommentId;
                 final String? hlUser = widget.highlightUserId;
-                if (hlUser != null && hlUser.isNotEmpty) {
+                if (hlComment != null && hlComment.isNotEmpty) {
+                  // A reply notification: the thread's comment, by id.
+                  spotlightIndex =
+                      comments.indexWhere((d) => d.id == hlComment);
+                } else if (hlUser != null && hlUser.isNotEmpty) {
                   final String hlText = (widget.highlightText ?? '').trim();
                   spotlightIndex = comments.indexWhere((d) {
                     final m = d.data() as Map<String, dynamic>;
@@ -647,7 +861,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                 }
 
                 return ListView.builder(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  padding: const EdgeInsets.only(top: 6, bottom: 12),
                   itemCount: comments.length,
                   itemBuilder: (context, index) {
                     final doc = comments[index];
@@ -663,7 +877,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                       blockedIds: _blockedIds,
                       onReply: _startReply,
                       onReact: _openReactionPicker,
+                      onQuickLove: _quickLove,
                       onOptions: _showCommentOptions,
+                      onOpenProfile: _openProfile,
+                      initiallyShowReplies:
+                          hlComment != null && doc.id == hlComment,
                     );
                     if (index != spotlightIndex) return tile;
                     return _CommentSpotlight(
@@ -675,23 +893,60 @@ class _CommentsSheetState extends State<_CommentsSheet> {
               },
             ),
           ),
-          const Divider(color: Colors.white12, height: 1),
+          const Divider(color: Colors.white10, height: 1),
+          // Quick emoji bar (Fly extra) - one tap adds it to the text.
+          SizedBox(
+            height: 42,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              children: _quickEmojis
+                  .map((e) => GestureDetector(
+                        onTap: () => _insertEmoji(e),
+                        behavior: HitTestBehavior.opaque,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 9, vertical: 8),
+                          child: Text(e, style: const TextStyle(fontSize: 22)),
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
           if (_replyToName != null)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-              color: Colors.white.withOpacity(0.05),
+              padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+              color: Colors.white.withValues(alpha: 0.05),
               child: Row(
                 children: [
-                  Text(
-                    'Replying to $_replyToName',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                  Icon(Icons.reply_rounded, color: Colors.grey[400], size: 16),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        text: 'Replying to ',
+                        children: [
+                          TextSpan(
+                            text: _replyToName,
+                            style: const TextStyle(
+                              color: Color(0xFF3A8DFF),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                    ),
                   ),
-                  const Spacer(),
                   GestureDetector(
                     onTap: _cancelReply,
-                    child:
-                        const Icon(Icons.close, color: Colors.grey, size: 18),
+                    behavior: HitTestBehavior.opaque,
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(Icons.close, color: Colors.grey, size: 18),
+                    ),
                   ),
                 ],
               ),
@@ -700,49 +955,82 @@ class _CommentsSheetState extends State<_CommentsSheet> {
             padding: EdgeInsets.only(
               left: 12,
               right: 12,
-              top: 8,
+              top: 6,
               bottom: 8 + MediaQuery.of(context).padding.bottom,
             ),
             child: Row(
               children: [
+                // My own avatar next to the box, like TikTok/Facebook.
+                FutureBuilder<Map<String, String>>(
+                  future: _myProfileFuture,
+                  builder: (context, snap) => _CommentAvatar(
+                    name: snap.data?['name'] ?? '',
+                    photoUrl: snap.data?['photo'] ?? '',
+                    radius: 17,
+                  ),
+                ),
+                const SizedBox(width: 10),
                 Expanded(
                   child: TextField(
                     controller: _commentController,
                     focusNode: _focusNode,
-                    style: const TextStyle(color: Colors.white),
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
                     minLines: 1,
                     maxLines: 4,
+                    textCapitalization: TextCapitalization.sentences,
                     decoration: InputDecoration(
                       hintText: _replyToName != null
-                          ? 'Write a reply...'
+                          ? 'Reply to $_replyToName...'
                           : 'Add a comment...',
-                      hintStyle: const TextStyle(color: Colors.grey),
+                      hintStyle: TextStyle(color: Colors.grey[600]),
                       filled: true,
-                      fillColor: Colors.grey[900],
+                      fillColor: const Color(0xFF242424),
+                      isDense: true,
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
+                          horizontal: 16, vertical: 11),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
+                        borderRadius: BorderRadius.circular(22),
                         borderSide: BorderSide.none,
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: _sendComment,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: [Color(0xFF3A8DFF), Color(0xFF1565C0)],
+                // Send lights up (Fly gradient) only when there's text.
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: _commentController,
+                  builder: (context, v, _) {
+                    final bool ready = v.text.trim().isNotEmpty;
+                    return GestureDetector(
+                      onTap: ready
+                          ? () {
+                              HapticFeedback.lightImpact();
+                              _sendComment();
+                            }
+                          : null,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: ready ? null : const Color(0xFF2A2A2A),
+                          gradient: ready
+                              ? const LinearGradient(
+                                  colors: [
+                                    Color(0xFFFF4B6E),
+                                    Color(0xFF9C4DFF),
+                                    Color(0xFF3A8DFF),
+                                  ],
+                                )
+                              : null,
+                        ),
+                        child: Icon(Icons.arrow_upward_rounded,
+                            color: ready ? Colors.white : Colors.white38,
+                            size: 22),
                       ),
-                    ),
-                    child:
-                        const Icon(Icons.send, color: Colors.white, size: 20),
-                  ),
+                    );
+                  },
                 ),
               ],
             ),
@@ -753,49 +1041,109 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   }
 }
 
-// Shows the distinct emoji reactions present plus the total count
-class _ReactionSummary extends StatelessWidget {
-  final Map<String, dynamic> reactions;
-  final VoidCallback onTap;
-  final double emojiSize;
+// ---------------------------------------------------------------------------
+// Small building blocks for the comment rows (10 Oct 2026 redesign,
+// TikTok/Facebook style with Fly touches).
+// ---------------------------------------------------------------------------
 
-  const _ReactionSummary({
-    required this.reactions,
-    required this.onTap,
-    this.emojiSize = 16,
+// "now", "5m", "2h", "3d", "2w", then a short date.
+String _commentTimeAgo(dynamic ts) {
+  if (ts is! Timestamp) return 'now';
+  final DateTime t = ts.toDate();
+  final Duration d = DateTime.now().difference(t);
+  if (d.inSeconds < 60) return 'now';
+  if (d.inMinutes < 60) return '${d.inMinutes}m';
+  if (d.inHours < 24) return '${d.inHours}h';
+  if (d.inDays < 7) return '${d.inDays}d';
+  if (d.inDays < 35) return '${(d.inDays / 7).floor()}w';
+  return '${t.day}/${t.month}/${t.year % 100}';
+}
+
+// Shown when a video has no comments yet.
+class _EmptyComments extends StatelessWidget {
+  const _EmptyComments();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ShaderMask(
+            shaderCallback: (r) => const LinearGradient(
+              colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF), Color(0xFF3A8DFF)],
+            ).createShader(r),
+            child: const Icon(Icons.chat_bubble_outline_rounded,
+                color: Colors.white, size: 44),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'No comments yet',
+            style: TextStyle(
+                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Be the first to say something ✨',
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommentAvatar extends StatelessWidget {
+  final String name;
+  final String photoUrl;
+  final double radius;
+
+  const _CommentAvatar({
+    required this.name,
+    required this.photoUrl,
+    required this.radius,
   });
 
   @override
   Widget build(BuildContext context) {
-    final List<String> distinctTypes =
-        reactions.values.map((e) => e.toString()).toSet().toList();
-    final int count = reactions.length;
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: const Color(0xFF2A2A2A),
+      backgroundImage:
+          photoUrl.isNotEmpty ? CachedNetworkImageProvider(photoUrl) : null,
+      child: photoUrl.isEmpty
+          ? Text(
+              name.isNotEmpty ? name[0].toUpperCase() : '?',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: radius * 0.8,
+              ),
+            )
+          : null,
+    );
+  }
+}
 
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Column(
-        children: [
-          if (distinctTypes.isEmpty)
-            Icon(Icons.add_reaction_outlined,
-                color: Colors.grey[500], size: emojiSize + 2)
-          else
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: distinctTypes
-                  .take(3)
-                  .map((type) => Text(
-                        kReactions[type] ?? '',
-                        style: TextStyle(fontSize: emojiSize),
-                      ))
-                  .toList(),
-            ),
-          if (count > 0)
-            Text(
-              '$count',
-              style: TextStyle(color: Colors.grey[500], fontSize: 11),
-            ),
-        ],
+// Little "Creator" pill next to the video owner's name (Fly gradient).
+class _CreatorTag extends StatelessWidget {
+  const _CreatorTag();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(left: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+        ),
+      ),
+      child: const Text(
+        'Creator',
+        style: TextStyle(
+            color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w700),
       ),
     );
   }
@@ -826,23 +1174,169 @@ class _HiddenCommentTag extends StatelessWidget {
   }
 }
 
+// Facebook-style chip of the emojis people used (only when it's more
+// than plain hearts): "😂❤️ 3".
+class _EmojiChip extends StatelessWidget {
+  final Map<String, dynamic> reactions;
+  final VoidCallback onTap;
+
+  const _EmojiChip({required this.reactions, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final List<String> types =
+        reactions.values.map((e) => e.toString()).toSet().toList();
+    if (types.isEmpty || (types.length == 1 && types.first == 'love')) {
+      return const SizedBox.shrink();
+    }
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(left: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          color: const Color(0xFF242424),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ...types.take(3).map((t) => Text(kReactions[t] ?? '',
+                style: const TextStyle(fontSize: 11))),
+            const SizedBox(width: 3),
+            Text('${reactions.length}',
+                style: TextStyle(color: Colors.grey[400], fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// TikTok-style heart on the right of each row: tap = ❤️ (with a little
+// pop + haptic), long-press = choose any emoji. If I reacted with another
+// emoji, that emoji shows instead of the heart.
+class _CommentLikeButton extends StatefulWidget {
+  final Map<String, dynamic> reactions;
+  final String? myId;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  final bool small;
+
+  const _CommentLikeButton({
+    required this.reactions,
+    required this.myId,
+    required this.onTap,
+    required this.onLongPress,
+    this.small = false,
+  });
+
+  @override
+  State<_CommentLikeButton> createState() => _CommentLikeButtonState();
+}
+
+class _CommentLikeButtonState extends State<_CommentLikeButton> {
+  double _scale = 1;
+
+  void _pop() {
+    HapticFeedback.lightImpact();
+    setState(() => _scale = 1.35);
+    Future.delayed(const Duration(milliseconds: 130), () {
+      if (mounted) setState(() => _scale = 1);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final String? mine = widget.reactions[widget.myId] as String?;
+    final int count = widget.reactions.length;
+    final double size = widget.small ? 16 : 18;
+
+    final Widget icon;
+    if (mine == null) {
+      icon = Icon(Icons.favorite_border_rounded,
+          color: Colors.grey[500], size: size);
+    } else if (mine == 'love') {
+      icon = ShaderMask(
+        shaderCallback: (r) => const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
+        ).createShader(r),
+        child: Icon(Icons.favorite_rounded, color: Colors.white, size: size),
+      );
+    } else {
+      icon =
+          Text(kReactions[mine] ?? '❤️', style: TextStyle(fontSize: size - 2));
+    }
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        _pop();
+        widget.onTap();
+      },
+      onLongPress: () {
+        HapticFeedback.mediumImpact();
+        widget.onLongPress();
+      },
+      child: Padding(
+        padding: const EdgeInsets.only(left: 12, right: 2, top: 2),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedScale(
+              scale: _scale,
+              duration: const Duration(milliseconds: 130),
+              curve: Curves.easeOutBack,
+              child: icon,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              count > 0 ? '$count' : '',
+              style: TextStyle(color: Colors.grey[500], fontSize: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 typedef _CommentOptionsCallback = void Function(
   DocumentReference ref,
   Map<String, dynamic> data, {
   required bool isReply,
 });
 
-// A single comment with emoji reactions, a reply button, and its replies
+// Starts a reply in the composer (see _CommentsSheetState._startReply).
+typedef _StartReplyCallback = void Function(
+  String commentId,
+  String name, {
+  required String toUserId,
+  required String commentOwnerId,
+  bool isReplyToReply,
+});
+
+typedef _ReactCallback = void Function(
+    DocumentReference ref, Map<String, dynamic> reactions);
+
+// One comment + its replies (TikTok layout: avatar, name, text, then
+// "2h  Reply" and the heart on the right; replies tucked under a
+// "── View 3 replies ⌄" line).
 class _CommentTile extends StatefulWidget {
   final DocumentReference commentRef;
   final Map<String, dynamic> data;
   final String? myId;
   final String postOwnerId;
   final Set<String> blockedIds;
-  final void Function(String commentId, String name) onReply;
-  final void Function(DocumentReference ref, Map<String, dynamic> reactions)
-      onReact;
+  final _StartReplyCallback onReply;
+  final _ReactCallback onReact;
+  final _ReactCallback onQuickLove;
   final _CommentOptionsCallback onOptions;
+  final void Function(String userId) onOpenProfile;
+  // Opened from a reply notification: show this thread's replies at once.
+  final bool initiallyShowReplies;
 
   const _CommentTile({
     super.key,
@@ -853,7 +1347,10 @@ class _CommentTile extends StatefulWidget {
     required this.blockedIds,
     required this.onReply,
     required this.onReact,
+    required this.onQuickLove,
     required this.onOptions,
+    required this.onOpenProfile,
+    this.initiallyShowReplies = false,
   });
 
   @override
@@ -861,7 +1358,7 @@ class _CommentTile extends StatefulWidget {
 }
 
 class _CommentTileState extends State<_CommentTile> {
-  bool _showReplies = false;
+  late bool _showReplies = widget.initiallyShowReplies;
 
   // One replies stream per tile, built once (not in build()) - used both
   // for the "View N replies" count and for the reply list itself.
@@ -884,6 +1381,7 @@ class _CommentTileState extends State<_CommentTile> {
     final String name = widget.data['displayName'] ?? 'User';
     final String text = widget.data['text'] ?? '';
     final String photoUrl = widget.data['photoUrl'] ?? '';
+    final String userId = (widget.data['userId'] as String?) ?? '';
     final Map<String, dynamic> reactions =
         (widget.data['reactions'] as Map<String, dynamic>?) ?? {};
     // Only the video owner is ever shown the "Hidden" look.
@@ -902,30 +1400,20 @@ class _CommentTileState extends State<_CommentTile> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onLongPress: () => widget
                   .onOptions(widget.commentRef, widget.data, isReply: false),
               child: Opacity(
                 opacity: showAsHidden ? 0.5 : 1,
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.fromLTRB(16, 10, 12, 4),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CircleAvatar(
-                        radius: 18,
-                        backgroundColor: Colors.grey[800],
-                        backgroundImage:
-                            photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                        child: photoUrl.isEmpty
-                            ? Text(
-                                name.isNotEmpty ? name[0].toUpperCase() : '?',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              )
-                            : null,
+                      GestureDetector(
+                        onTap: () => widget.onOpenProfile(userId),
+                        child: _CommentAvatar(
+                            name: name, photoUrl: photoUrl, radius: 18),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -935,66 +1423,76 @@ class _CommentTileState extends State<_CommentTile> {
                             Row(
                               children: [
                                 Flexible(
-                                  child: Text(
-                                    name,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
+                                  child: GestureDetector(
+                                    onTap: () => widget.onOpenProfile(userId),
+                                    child: Text(
+                                      name,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Colors.grey[400],
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
                                     ),
                                   ),
                                 ),
+                                if (userId.isNotEmpty &&
+                                    userId == widget.postOwnerId)
+                                  const _CreatorTag(),
                                 if (showAsHidden) const _HiddenCommentTag(),
                               ],
                             ),
-                            const SizedBox(height: 2),
+                            const SizedBox(height: 3),
                             Text(
                               text,
                               style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 14,
+                                color: Colors.white,
+                                fontSize: 14.5,
+                                height: 1.3,
                               ),
                             ),
                             const SizedBox(height: 6),
                             Row(
                               children: [
+                                Text(
+                                  _commentTimeAgo(widget.data['createdAt']),
+                                  style: TextStyle(
+                                      color: Colors.grey[600], fontSize: 12),
+                                ),
+                                const SizedBox(width: 16),
                                 GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
                                   onTap: () => widget.onReply(
-                                      widget.commentRef.id, name),
+                                    widget.commentRef.id,
+                                    name,
+                                    toUserId: userId,
+                                    commentOwnerId: userId,
+                                  ),
                                   child: Text(
                                     'Reply',
                                     style: TextStyle(
                                       color: Colors.grey[400],
                                       fontSize: 12,
-                                      fontWeight: FontWeight.bold,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 16),
-                                if (replyCount > 0)
-                                  GestureDetector(
-                                    onTap: () => setState(
-                                        () => _showReplies = !_showReplies),
-                                    child: Text(
-                                      _showReplies
-                                          ? 'Hide replies'
-                                          : 'View $replyCount ${replyCount == 1 ? "reply" : "replies"}',
-                                      style: TextStyle(
-                                        color: Colors.grey[400],
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
+                                _EmojiChip(
+                                  reactions: reactions,
+                                  onTap: () => widget.onReact(
+                                      widget.commentRef, reactions),
+                                ),
                               ],
                             ),
                           ],
                         ),
                       ),
-                      _ReactionSummary(
+                      _CommentLikeButton(
                         reactions: reactions,
+                        myId: widget.myId,
                         onTap: () =>
+                            widget.onQuickLove(widget.commentRef, reactions),
+                        onLongPress: () =>
                             widget.onReact(widget.commentRef, reactions),
                       ),
                     ],
@@ -1003,18 +1501,37 @@ class _CommentTileState extends State<_CommentTile> {
               ),
             ),
             if (_showReplies)
-              Column(
-                children: replies.map((replyDoc) {
-                  return _ReplyTile(
-                    key: ValueKey(replyDoc.id),
-                    replyRef: replyDoc.reference,
-                    data: replyDoc.data() as Map<String, dynamic>,
-                    myId: widget.myId,
-                    postOwnerId: widget.postOwnerId,
-                    onReact: widget.onReact,
-                    onOptions: widget.onOptions,
-                  );
-                }).toList(),
+              ...replies.map((replyDoc) {
+                final Map<String, dynamic> r =
+                    replyDoc.data() as Map<String, dynamic>;
+                return _ReplyTile(
+                  key: ValueKey(replyDoc.id),
+                  replyRef: replyDoc.reference,
+                  data: r,
+                  myId: widget.myId,
+                  postOwnerId: widget.postOwnerId,
+                  onReact: widget.onReact,
+                  onQuickLove: widget.onQuickLove,
+                  onOptions: widget.onOptions,
+                  onOpenProfile: widget.onOpenProfile,
+                  // Answering a reply stays in this comment's thread.
+                  onReply: () => widget.onReply(
+                    widget.commentRef.id,
+                    (r['displayName'] as String?) ?? 'User',
+                    toUserId: (r['userId'] as String?) ?? '',
+                    commentOwnerId: userId,
+                    isReplyToReply: true,
+                  ),
+                );
+              }),
+            if (replyCount > 0)
+              _RepliesToggle(
+                open: _showReplies,
+                count: replyCount,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  setState(() => _showReplies = !_showReplies);
+                },
               ),
           ],
         );
@@ -1023,15 +1540,62 @@ class _CommentTileState extends State<_CommentTile> {
   }
 }
 
-// A single reply (indented) with emoji reactions
+// "── View 3 replies ⌄" / "── Hide ⌃" under a comment (TikTok style).
+class _RepliesToggle extends StatelessWidget {
+  final bool open;
+  final int count;
+  final VoidCallback onTap;
+
+  const _RepliesToggle({
+    required this.open,
+    required this.count,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Color c = Colors.grey[500]!;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(64, 4, 16, 8),
+        child: Row(
+          children: [
+            Container(width: 24, height: 1, color: Colors.white24),
+            const SizedBox(width: 8),
+            Text(
+              open ? 'Hide' : 'View $count ${count == 1 ? "reply" : "replies"}',
+              style: TextStyle(
+                  color: c, fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(width: 2),
+            AnimatedRotation(
+              turns: open ? 0.5 : 0,
+              duration: const Duration(milliseconds: 200),
+              child:
+                  Icon(Icons.keyboard_arrow_down_rounded, color: c, size: 18),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// A single reply (indented) - same layout as a comment, smaller, with its
+// own Reply button and heart. A reply to a reply shows "@Name" in Fly
+// blue first (10 Oct 2026).
 class _ReplyTile extends StatelessWidget {
   final DocumentReference replyRef;
   final Map<String, dynamic> data;
   final String? myId;
   final String postOwnerId;
-  final void Function(DocumentReference ref, Map<String, dynamic> reactions)
-      onReact;
+  final _ReactCallback onReact;
+  final _ReactCallback onQuickLove;
   final _CommentOptionsCallback onOptions;
+  final void Function(String userId) onOpenProfile;
+  final VoidCallback onReply;
 
   const _ReplyTile({
     super.key,
@@ -1040,7 +1604,10 @@ class _ReplyTile extends StatelessWidget {
     required this.myId,
     required this.postOwnerId,
     required this.onReact,
+    required this.onQuickLove,
     required this.onOptions,
+    required this.onOpenProfile,
+    required this.onReply,
   });
 
   @override
@@ -1048,36 +1615,28 @@ class _ReplyTile extends StatelessWidget {
     final String name = data['displayName'] ?? 'User';
     final String text = data['text'] ?? '';
     final String photoUrl = data['photoUrl'] ?? '';
+    final String userId = (data['userId'] as String?) ?? '';
+    final String replyToName = (data['replyToName'] as String?) ?? '';
+    final String replyToUserId = (data['replyToUserId'] as String?) ?? '';
     final Map<String, dynamic> reactions =
         (data['reactions'] as Map<String, dynamic>?) ?? {};
     final bool showAsHidden =
         data['hidden'] == true && myId != null && myId == postOwnerId;
 
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onLongPress: () => onOptions(replyRef, data, isReply: true),
       child: Opacity(
         opacity: showAsHidden ? 0.5 : 1,
         child: Padding(
-          padding:
-              const EdgeInsets.only(left: 56, right: 16, top: 6, bottom: 6),
+          padding: const EdgeInsets.fromLTRB(64, 6, 12, 4),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              CircleAvatar(
-                radius: 14,
-                backgroundColor: Colors.grey[800],
-                backgroundImage:
-                    photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                child: photoUrl.isEmpty
-                    ? Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 11,
-                        ),
-                      )
-                    : null,
+              GestureDetector(
+                onTap: () => onOpenProfile(userId),
+                child:
+                    _CommentAvatar(name: name, photoUrl: photoUrl, radius: 12),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1087,32 +1646,83 @@ class _ReplyTile extends StatelessWidget {
                     Row(
                       children: [
                         Flexible(
-                          child: Text(
-                            name,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
+                          child: GestureDetector(
+                            onTap: () => onOpenProfile(userId),
+                            child: Text(
+                              name,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12.5,
+                              ),
                             ),
                           ),
                         ),
+                        if (userId.isNotEmpty && userId == postOwnerId)
+                          const _CreatorTag(),
                         if (showAsHidden) const _HiddenCommentTag(),
                       ],
                     ),
                     const SizedBox(height: 2),
-                    Text(
-                      text,
-                      style:
-                          const TextStyle(color: Colors.white70, fontSize: 13),
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          if (replyToName.isNotEmpty)
+                            TextSpan(
+                              text: '@$replyToName ',
+                              style: const TextStyle(
+                                color: Color(0xFF3A8DFF),
+                                fontWeight: FontWeight.w600,
+                              ),
+                              recognizer: replyToUserId.isEmpty
+                                  ? null
+                                  : (TapGestureRecognizer()
+                                    ..onTap =
+                                        () => onOpenProfile(replyToUserId)),
+                            ),
+                          TextSpan(text: text),
+                        ],
+                      ),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 14, height: 1.3),
+                    ),
+                    const SizedBox(height: 5),
+                    Row(
+                      children: [
+                        Text(
+                          _commentTimeAgo(data['createdAt']),
+                          style: TextStyle(
+                              color: Colors.grey[600], fontSize: 11.5),
+                        ),
+                        const SizedBox(width: 16),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: onReply,
+                          child: Text(
+                            'Reply',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        _EmojiChip(
+                          reactions: reactions,
+                          onTap: () => onReact(replyRef, reactions),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              _ReactionSummary(
+              _CommentLikeButton(
                 reactions: reactions,
-                onTap: () => onReact(replyRef, reactions),
-                emojiSize: 14,
+                myId: myId,
+                small: true,
+                onTap: () => onQuickLove(replyRef, reactions),
+                onLongPress: () => onReact(replyRef, reactions),
               ),
             ],
           ),

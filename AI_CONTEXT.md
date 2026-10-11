@@ -159,6 +159,14 @@
 > `_isCommentVisibleTo`, `_visibleCommentCount`). home_screen.dart is now
 > ~5,260 lines (was ~7,160 before step 1). Tested: open sheet, comment,
 > reply, react, hide, delete, spotlight from a notification._
+> _11 Oct 2026 (confirmed on two phones in Fly Dev): **comments,
+> TikTok/Facebook style** - new look for the comments sheet, a Reply
+> button on every reply ("@Name", same thread), and **reply
+> notifications** in the 🔔 list (comment author + person answered +
+> video owner, collapsed per person/thread). Files: home_comments.dart,
+> home_screen.dart, notifications_screen.dart. No rules / Worker change.
+> Lesson: a build kept showing the OLD sheet until `flutter clean` -
+> see §7 step 5._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1166,8 +1174,32 @@ new file under `screens/home/`starting with`part of
   notification), `_CommentTile`, `_ReplyTile`, `_ReactionSummary`,
   `_HiddenCommentTag`, and the hidden-comment helpers
   `_isCommentVisibleTo` / `_visibleCommentCount`. Replies live in
-  `posts/{id}/comments/{cid}/replies`; anyone signed in can reply to a
-  comment, but a reply row has no Reply button yet (see To-do).
+  `posts/{id}/comments/{cid}/replies`; anyone signed in can reply.
+  **11 Oct 2026 (confirmed on two phones) - TikTok/Facebook-style
+  comments:** header "N comments" (a `ValueNotifier`, set post-frame) +
+  close ✕; rows = avatar, grey name (+ gradient **Creator** pill for the
+  video owner), white text, "2h Reply" + a Facebook-style emoji chip
+  (`_EmojiChip`, only when there's more than plain hearts); a heart on
+  the right (`_CommentLikeButton`: tap = ❤️ / take back, long-press =
+  emoji picker; pop + haptic); replies under "── View N replies ⌄" /
+  "── Hide ⌃" (`_RepliesToggle`); tap name/avatar/@mention → profile;
+  quick-emoji bar + my avatar by the composer, send button lights up in
+  the Fly gradient only with text; `_EmptyComments`, `_CommentAvatar`,
+  `_commentTimeAgo`. `_ReactionSummary` is gone.
+  **Reply to a reply:** every `_ReplyTile` has a Reply button; the new
+  reply stays in the same comment's `replies` (one level, like
+  Facebook/TikTok) with `replyToUserId` / `replyToName`, shown as a blue
+  "@Name" in front of the text.
+  **Reply notifications:** after moderation passes, `_notifyReply`
+  writes a `reply` notification (fields `replyKind` 'you' | 'video',
+  `commentId`, `postId`, `text`, from\*) to at most 3 people, each once:
+  the person answered and the thread's comment author ('you' -
+  "replied to your comment") and the video owner ('video' - "replied to
+  a comment on your video"); never yourself, never blocked either way.
+  No rules change (fits `fromId == auth.uid`). Opening it →
+  `PostFromNotificationScreen(type: 'reply', commentId)` →
+  `_VideoPostItem.highlightCommentId` → the sheet spotlights that
+  comment and opens its replies.
 - `screens/home_screen.dart` — the main video feed (very large file; several
   screens live here as separate classes rather than separate files — always
   check here first before assuming a screen doesn't exist; since 9 Oct
@@ -1553,7 +1585,11 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
   2026 a still-pending `friend_request` row has inline Confirm / Delete
   (`_InlineFriendActions`, listens to `FriendService.incoming/friends`;
   answered → "Friends ✓" / "Request removed"), and friend request /
-  accept rows show only the newest per person. A comment/reaction (they carry `postId`)
+  accept rows show only the newest per person. **11 Oct 2026:** `reply`
+  rows (purple ↩ badge, "replied to your comment: …" / "replied to a
+  comment on your video: …"); several replies from the same person in
+  the same thread collapse into the newest row with "(+N more)" (the
+  list is now built as plain maps, `_more` = extra count). A comment/reaction/reply (they carry `postId`)
   opens `PostFromNotificationScreen` (home_screen.dart, fade+scale route)
   (`_openNotification`).
 - `PostFromNotificationScreen` (in `home_screen.dart`, **1 Oct 2026,
@@ -1836,26 +1872,13 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 10 Oct 2026)
 
-0a. **Comment replies, Facebook style (asked 10 Oct 2026, next up):**
+0a. **Phone push for comments / replies (later, optional):** comment and
+reply notifications (11 Oct 2026) only show in the in-app 🔔 list. A
+phone notification-bar push would need a Worker route like
+`/friend-push` (Worker checks the notification doc, finds the
+receiver's fcmToken) - deploy to fly-dev-worker first, then prod.
 
-1.  **Reply to a reply** - a Reply button on `_ReplyTile` that keeps
-    the thread one level deep (Facebook/TikTok): the new reply goes
-    into the same comment's `replies` with an `@Name` prefix /
-    `replyToUserId`. No rules/Worker change.
-2.  **Reply notifications** - today a reply notifies nobody
-    (`_moderateAfterPost` returns early for replies). Plan agreed in
-    chat: after moderation passes, notify the comment's author (and
-    the video owner, if different; never yourself) with a new `reply`
-    type in `users/{uid}/notifications` (fits the existing rule:
-    `fromId == auth.uid`); don't fan out to everyone in the thread
-    (cost + noise); collapse repeats from the same person in the 🔔
-    list like friend requests; tap opens the video with that comment
-    spotlighted. `notifications_screen.dart` needs the `reply` text /
-    icon / tap case. Cost: 1-2 Firestore writes per reply (free up to
-    20k writes/day on Blaze). Phone push (a Worker route like
-    `/friend-push`) is a later, separate step.
-
-0) **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
+0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
    Messages list). Decisions Ko made: strict Facebook style - only friends
    can chat/call (no "message requests" folder for now); a request is one
@@ -1871,7 +1894,7 @@ others only see it once encoded (Bunny webhook).
    Cloud Functions now that we're on Blaze): Bunny files, comments /
    reactions on others' posts, others' reposts, others' `following` /
    `followers` / `blockedBy` entries, chat docs.
-1) **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
+1. **Scale-proofing plan (agreed 3 Oct 2026, in this order):**
    (a, the Messages list, and b, search on Cloudflare D1, are done -
    4 Oct 2026, see §4 chat_screen.dart / search_service.dart.)
    Recent searches (TikTok/Facebook style) are done too (4 Oct 2026),
@@ -1889,7 +1912,7 @@ others only see it once encoded (Bunny webhook).
      in Fly Dev each time;
      e) move coins server-side (Worker) before coins are ever sold.
      Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
-2) ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
+2. ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
    (prod Worker; fly-dev-worker never had it). Optional cleanup: remove
    the legacy `X-App-Secret` branch from `authenticateCaller()` in the
    Worker (deploy to BOTH Workers).
@@ -1900,14 +1923,14 @@ others only see it once encoded (Bunny webhook).
    Password **copy (📋) only - never 🔄 again** -> paste into BOTH
    Workers (✏️, Ctrl+A, Ctrl+V, Deploy). Happened once after the 6 Oct
    rotation; fixed the same night.
-3) **Sound strike system** (repeat copyright offenders lose sound uploads).
-4) **Delete old tiny videos** (uploaded before the orientation guard) and
+3. **Sound strike system** (repeat copyright offenders lose sound uploads).
+4. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
-5) Before publishing: put the `/delete-account` link in Play Console's
+5. Before publishing: put the `/delete-account` link in Play Console's
    Data safety form (done on the Worker side 3 Oct 2026), and add a
    Privacy Policy page if Fly doesn't have one (Play requires one; not
    confirmed yet whether it exists).
-6) Optional / later: AudD song recognition, direct MP3 upload, resumable
+6. Optional / later: AudD song recognition, direct MP3 upload, resumable
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already
    built — removed 27 Sep 2026.)
@@ -1978,6 +2001,16 @@ that only the new code has, inside the built APK:
 → `True`. Then copy the APK under a unique name (e.g.
 `FlyDev-8Oct-v2.apk`) so the phone can't pick an older
 `app-dev-release.apk`, uninstall, and install that one.
+String-check gotchas (11 Oct 2026): add **`-CaseSensitive`** (without it
+a short word like `Creator` matches some library's "creator" and gives
+a false `True`); a Dart string with any emoji / non-ASCII character is
+stored as UTF-16, so search it with **`-Encoding Unicode`** or pick an
+ASCII-only string; best is a pair - an OLD string must be `False` and a
+NEW one `True`. Clear the old extract first
+(`Remove-Item $env:TEMP\flydev -Recurse -Force`). If the APK still has
+the old code even though the .dart file is new, run **`flutter clean`**
+→ `flutter pub get` → build again (a stale build cache did exactly
+this on 10 Oct 2026).
 
 **6. Ko confirms ("ဟုတ် အဆင်ပြေတယ် ဆရာ 🥰").** In that SAME reply, send the
 updated **AI_CONTEXT.md as a full file** (his standing rule) plus commit
