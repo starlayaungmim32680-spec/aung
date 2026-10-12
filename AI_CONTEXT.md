@@ -198,6 +198,11 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > mangling AI_CONTEXT.md (merged list items) - turned off for markdown
 > in Ko's settings; and a locked `build` folder is fixed with
 > `Get-Process java, javaw | Stop-Process -Force` (see §7 step 5)._
+> _13 Oct 2026 (confirmed in Fly Dev): **home_screen.dart split, step
+> 3** - `_CaptionWithHashtags`, `HashtagScreen` and `_OwnerInfo` moved
+> unchanged into `lib/screens/home/home_post_info.dart` (~620 lines).
+> home_screen.dart is now ~4,660 lines. Tested: owner photo/name →
+> profile, Follow, caption, #hashtag → grid, translate._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1228,6 +1233,11 @@ new file under `screens/home/`starting with`part of
   quick-emoji bar + my avatar by the composer, send button lights up in
   the Fly gradient only with text; `_EmptyComments`, `_CommentAvatar`,
   `_commentTimeAgo`. `_ReactionSummary` is gone.
+- `screens/home/home_post_info.dart` — **(13 Oct 2026, home split step 3)**
+  `part of '../home_screen.dart'`: `_CaptionWithHashtags` (caption with
+  tappable #hashtags + translate), `HashtagScreen` (public - other files
+  still get it from `import 'home_screen.dart'`) and `_OwnerInfo` (owner
+  photo / name / follow button). Moved unchanged.
   **Reply to a reply:** every `_ReplyTile` has a Reply button; the new
   reply stays in the same comment's `replies` (one level, like
   Facebook/TikTok) with `replyToUserId` / `replyToName`, shown as a blue
@@ -1962,8 +1972,11 @@ others only see it once encoded (Bunny webhook).
      d) split the huge files (home_screen.dart ~6,700 lines) into feature
      folders, a piece at a time - **step 1 done 9 Oct 2026**
      (`screens/home/home_fx_widgets.dart`, ~790 lines out), **step 2 done
-     10 Oct 2026** (`screens/home/home_comments.dart`, ~1,110 lines out);
-     next pieces: share sheet / owner info, feed screens, then
+     10 Oct 2026** (`screens/home/home_comments.dart`, ~1,110 lines out),
+     **step 3 done 13 Oct 2026** (`screens/home/home_post_info.dart`,
+     caption / hashtag screen / owner info, ~620 lines out); next pieces:
+     `PostFromNotificationScreen` (~340 lines), feed screens
+     (Shorts / UserVideoFeed / Saved / Single, ~1,200 lines), then
      `_VideoPostItem` (~2,600 lines, biggest - last) - one per step, test
      in Fly Dev each time;
      e) move coins server-side (Worker) before coins are ever sold.
