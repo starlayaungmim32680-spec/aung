@@ -190,6 +190,14 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > `registerAndSaveToken`, which also asks the Android notification
 > permission); the Wallet "Test notification" button is only a
 > diagnostic._
+> _12 Oct 2026 (late, confirmed on prod): the Wallet **Push
+> notifications** card (token, Test notification, log) is now hidden
+> from normal users - always shown in Fly Dev; in prod a **long-press on
+> the "Your balance" card** shows/hides it (`WalletScreen._showPushDebug`
+> ValueNotifier, `AppConfig.isDev`). Also: VS Code `formatOnSave` was
+> mangling AI_CONTEXT.md (merged list items) - turned off for markdown
+> in Ko's settings; and a locked `build` folder is fixed with
+> `Get-Process java, javaw | Stop-Process -Force` (see §7 step 5)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1578,6 +1586,8 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
 - `screens/wallet_screen.dart` — coin balance, "how to earn" list, gifts
   received (`liveStreams/{uid}/gifts`), and a disabled "Withdraw to cash"
   placeholder. Opened from the 🪙 icon in `profile_screen.dart`'s AppBar.
+  Also the **Push notifications** diagnostics card (12 Oct 2026): shown
+  in Fly Dev; hidden in prod until a long-press on the balance card.
 - `screens/sound_screen.dart`, `screens/sounds_library_screen.dart`,
   `screens/sound_sync_sheet.dart` — a sound's page (videos using it, "Use
   this sound", report/remove), the browsable/searchable library (hides
@@ -1924,11 +1934,6 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 12 Oct 2026)
 
-0a. **(Optional, small) Hide the Wallet "Push notifications" debug card
-from normal users** (token, Test notification, log) - e.g. show it only
-in Fly Dev or behind a long-press. It is a diagnostic, not needed for
-push to work.
-
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
    Messages list). Decisions Ko made: strict Facebook style - only friends
@@ -2062,7 +2067,15 @@ NEW one `True`. Clear the old extract first
 the old code even though the .dart file is new, run **`flutter clean`**
 → `flutter pub get` → build again (a stale build cache did exactly
 this on 10 Oct 2026). A `flutter clean` line "Failed to remove build"
-(a folder locked by Explorer/Gradle) is harmless - the rest is cleared.
+means a Java/Gradle process still holds files in `build` - and then the
+APK CAN come out stale (12 Oct 2026: string check `False`, build only
+69s). Fix BEFORE building (never after a good build - it deletes the
+APK): `cd android; .\gradlew --stop; cd ..` →
+`Get-Process java, javaw -ErrorAction SilentlyContinue | Stop-Process -Force`
+→ `Remove-Item build -Recurse -Force` → `Test-Path build` must be
+`False` → `flutter clean` (no "Failed") → pub get → build (a real
+rebuild takes ~3-5 min). The string-check copy in
+`$env:TEMP\flyprod.zip` is a usable APK backup.
 A notification that never shows: open Wallet → Push notifications →
 Test notification / Refresh log first - it shows `shown:` or the exact
 `SHOW FAILED:` error (12 Oct 2026 it was `invalid_icon`, see §4 Native

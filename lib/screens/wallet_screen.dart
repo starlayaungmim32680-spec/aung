@@ -8,15 +8,40 @@
 // out of scope until there's a real plan for it. It's built into this
 // screen now, greyed out, so turning it on later is just enabling a
 // button - the earning/balance/history side doesn't need to change.
+//
+// The "Push notifications" card (token, Test notification, push log) is
+// a diagnostic for Ko, not something normal users need - push works on
+// its own after sign-in. It is always shown in Fly Dev; in the prod app
+// it is hidden and appears only after a long-press on the balance card.
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'gifting.dart';
+import '../app_config.dart';
 import '../notification_service.dart';
 
 class WalletScreen extends StatelessWidget {
   const WalletScreen({super.key});
+
+  // Whether the push diagnostics card is visible. Static so it stays
+  // revealed while the app is running (reopening Wallet keeps it), and a
+  // ValueNotifier so toggling it rebuilds only that card, not the list.
+  static final ValueNotifier<bool> _showPushDebug =
+      ValueNotifier<bool>(AppConfig.isDev);
+
+  void _togglePushDebug(BuildContext context) {
+    HapticFeedback.mediumImpact();
+    _showPushDebug.value = !_showPushDebug.value;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(_showPushDebug.value
+            ? 'Push diagnostics shown'
+            : 'Push diagnostics hidden'),
+        duration: const Duration(seconds: 1),
+      ));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -35,10 +60,21 @@ class WalletScreen extends StatelessWidget {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _BalanceCard(uid: user.uid),
+                // Long-press = show/hide the push diagnostics card.
+                GestureDetector(
+                  onLongPress: () => _togglePushDebug(context),
+                  child: _BalanceCard(uid: user.uid),
+                ),
                 const SizedBox(height: 20),
-                _PushNotificationCard(uid: user.uid),
-                const SizedBox(height: 20),
+                ValueListenableBuilder<bool>(
+                  valueListenable: _showPushDebug,
+                  builder: (context, show, _) => show
+                      ? Padding(
+                          padding: const EdgeInsets.only(bottom: 20),
+                          child: _PushNotificationCard(uid: user.uid),
+                        )
+                      : const SizedBox.shrink(),
+                ),
                 _HowToEarnCard(),
                 const SizedBox(height: 20),
                 _WithdrawCard(),
