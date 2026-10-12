@@ -674,45 +674,50 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     value is now useless. The legacy branch in `authenticateCaller()` is
     harmless dead code (it needs the secret) and can be removed later.
     `/upload-image` also requires `X-File-Name` to start with the caller's
-    own `uid_` (token callers). Routes: - `POST /token` — mints a LiveKit access token (`LIVEKIT_API_KEY`/
-    `LIVEKIT_API_SECRET`/`LIVEKIT_URL` secrets). - `POST /call-push` — sends an FCM push (Google service-account OAuth2
-    flow; `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/
-    `FIREBASE_PRIVATE_KEY_B64` secrets) to wake a phone for an incoming
-    call even if Fly is fully closed — see `firebaseMessagingBackgroundHandler`
-    in `main.dart`. Body field `type` (Sep 2026): omitted/`'incoming_call'`
-    = ring (needs `callerName`); `'call_cancelled'` = stop ringing (needs
-    only `fcmToken` + `roomName`). Defaulting to incoming keeps old app
-    builds working. `'chat_message'` (1 Oct 2026, confirmed) = new chat
-    message (needs `fcmToken`, `chatId`, `senderName`; optional
-    `senderPhoto`, `text`); the Worker rejects it (403) unless the
-    verified caller uid is one of the two ids in `chatId`, sets
-    `senderId` to that uid itself, and trims text (300) / name (80) to
-    stay under FCM's 4 KB data limit. - `POST /friend-push` **(4 Oct 2026, confirmed)** — body
-    `{type: 'friend_request' | 'friend_accept', receiverId}` only.
-    `handleFriendPush` reads Firestore with the service account
-    (`firestoreGetFields`, DATASTORE_SCOPE): 403 unless
-    `users/{receiver}/friendRequests/{caller}` (request) or
-    `users/{caller}/friends/{receiver}` (accept) exists for the
-    VERIFIED caller; takes the receiver's `fcmToken` and the caller's
-    `displayName`/`photoUrl` from their user docs (never from the app);
-    sends FCM data `{type, senderId, senderName, senderPhoto}`, high
-    priority. Returns 200 with `{"skipped":"no fcmToken"}` when the
-    receiver has no token. uids are checked with `isSafeUid` (letters/
-    digits only - they go into a Firestore path). - `POST /activity-push` **(12 Oct 2026, confirmed; deployed to BOTH
-    `fly-dev-worker` and prod `livekit-token-worker`)** — body `{receiverId,
+    own `uid_` (token callers). Routes:
+    - `POST /token` — mints a LiveKit access token (`LIVEKIT_API_KEY`/
+      `LIVEKIT_API_SECRET`/`LIVEKIT_URL` secrets).
+    - `POST /call-push` — sends an FCM push (Google service-account OAuth2
+      flow; `FIREBASE_PROJECT_ID`/`FIREBASE_CLIENT_EMAIL`/
+      `FIREBASE_PRIVATE_KEY_B64` secrets) to wake a phone for an incoming
+      call even if Fly is fully closed — see `firebaseMessagingBackgroundHandler`
+      in `main.dart`. Body field `type` (Sep 2026): omitted/`'incoming_call'`
+      = ring (needs `callerName`); `'call_cancelled'` = stop ringing (needs
+      only `fcmToken` + `roomName`). Defaulting to incoming keeps old app
+      builds working. `'chat_message'` (1 Oct 2026, confirmed) = new chat
+      message (needs `fcmToken`, `chatId`, `senderName`; optional
+      `senderPhoto`, `text`); the Worker rejects it (403) unless the
+      verified caller uid is one of the two ids in `chatId`, sets
+      `senderId` to that uid itself, and trims text (300) / name (80) to
+      stay under FCM's 4 KB data limit.
+    - `POST /friend-push` **(4 Oct 2026, confirmed)** — body
+      `{type: 'friend_request' | 'friend_accept', receiverId}` only.
+      `handleFriendPush` reads Firestore with the service account
+      (`firestoreGetFields`, DATASTORE_SCOPE): 403 unless
+      `users/{receiver}/friendRequests/{caller}` (request) or
+      `users/{caller}/friends/{receiver}` (accept) exists for the
+      VERIFIED caller; takes the receiver's `fcmToken` and the caller's
+      `displayName`/`photoUrl` from their user docs (never from the app);
+      sends FCM data `{type, senderId, senderName, senderPhoto}`, high
+      priority. Returns 200 with `{"skipped":"no fcmToken"}` when the
+      receiver has no token. uids are checked with `isSafeUid` (letters/
+      digits only - they go into a Firestore path).
+    - `POST /activity-push` **(12 Oct 2026, confirmed; deployed to BOTH
+      `fly-dev-worker` and prod `livekit-token-worker`)** — body `{receiverId,
 notificationId}` only. `handleActivityPush` reads
-    `users/{receiverId}/notifications/{notificationId}` with the service
-    account and refuses unless `type` is `comment`/`reply`, `fromId` ==
-    the VERIFIED caller and the doc is < 10 minutes old; takes the
-    receiver's `fcmToken` from Firestore; sends FCM data `{type:
+      `users/{receiverId}/notifications/{notificationId}` with the service
+      account and refuses unless `type` is `comment`/`reply`, `fromId` ==
+      the VERIFIED caller and the doc is < 10 minutes old; takes the
+      receiver's `fcmToken` from Firestore; sends FCM data `{type:
 'activity', kind, replyKind, senderId, senderName, senderPhoto, text,
 postId, commentId}` (text from the doc, trimmed). Has
-    `console.log('activity-push: ...')` lines (receiver, token tail, FCM
-    status) - watch with `npx wrangler tail fly-dev-worker`. - **Search (4 Oct 2026, confirmed)** — Cloudflare **D1** database
-    `fly-search`, bound as `env.SEARCH_DB` (Settings → Bindings), free
-    plan (500 MB per DB, 5M rows read / 100k written per day - since
-    1 Sep 2026 queries ERROR when a daily limit is hit; Workers Paid
-    ~$5/mo lifts it to 10 GB/DB). Tables `users(uid, name)` and
+      `console.log('activity-push: ...')` lines (receiver, token tail, FCM
+      status) - watch with `npx wrangler tail fly-dev-worker`.
+    - **Search (4 Oct 2026, confirmed)** — Cloudflare **D1** database
+      `fly-search`, bound as `env.SEARCH_DB` (Settings → Bindings), free
+      plan (500 MB per DB, 5M rows read / 100k written per day - since
+      1 Sep 2026 queries ERROR when a daily limit is hit; Workers Paid
+      ~$5/mo lifts it to 10 GB/DB). Tables `users(uid, name)` and
       `posts(post_id, owner_id, caption, tags, created_at)` mirrored into
       FTS5 `users_fts` / `posts_fts` (external content, **trigram**
       tokenizer) by triggers, so every upsert is ONE statement (free plan
@@ -760,17 +765,20 @@ postId, commentId}` (text from the doc, trimmed). Has
       Worker as `DELETE_ACCOUNT_PAGE_HTML` (a `String.raw` template, so
       keep it free of backticks and `${`). Live URL:
       `https://livekit-token-worker.chakaboycom.workers.dev/delete-account`
-    — this is the link for Play Console → App content → Data safety
-    (data deletion questions). The page promises deletion within 30
-    days and backups cleared within 90 days. - `POST /delete-request` — the page's form, no sign-in. Only STORES a
-    request (`deletionRequests/{uuid}`, status `pending`) via the
-    service account; never deletes anything. Bot guards: hidden
-    `website` honeypot and a <2.5s-on-page check both "succeed"
-    silently without storing; body ≤4 KB; email validated. - `POST /bunny-webhook?token=...` — called by Bunny, not the app;
-    authenticated by the `BUNNY_WEBHOOK_TOKEN` secret in the URL; sets
-    `videoReady` (see "Video ready" flow above). - `POST /upload-image` — plain pass-through PUT to Bunny Storage, used
-    for profile photos, story images and chat photos/voice notes (see the profile/story note
-    further down in this section).
+      — this is the link for Play Console → App content → Data safety
+      (data deletion questions). The page promises deletion within 30
+      days and backups cleared within 90 days.
+    - `POST /delete-request` — the page's form, no sign-in. Only STORES a
+      request (`deletionRequests/{uuid}`, status `pending`) via the
+      service account; never deletes anything. Bot guards: hidden
+      `website` honeypot and a <2.5s-on-page check both "succeed"
+      silently without storing; body ≤4 KB; email validated.
+    - `POST /bunny-webhook?token=...` — called by Bunny, not the app;
+      authenticated by the `BUNNY_WEBHOOK_TOKEN` secret in the URL; sets
+      `videoReady` (see "Video ready" flow above).
+    - `POST /upload-image` — plain pass-through PUT to Bunny Storage, used
+      for profile photos, story images and chat photos/voice notes (see the profile/story note
+      further down in this section).
   - Confirm the current token-fetch code path in `video_call_screen.dart`
     (constant `kTokenServerUrl`, a plain top-level `const` imported with a
     `show` clause by other files; auth headers come from
@@ -1637,20 +1645,20 @@ increment(1)}` (story_screen.dart's `_sendReply` too). Reset:
   `showActivityNotification(...)` - channel `activity` "Comments &
   replies", one per post+sender (id from `act*<postId>\_<senderId>`),
   sender photo as `largeIcon`; tap → `pendingPost`ValueNotifier →
-  `MainNavigationScreen.\_openPendingPost`→`PostFromNotificationScreen` (commentId, replyKind). Diagnostics:`recordPushDebug`/`readPushDebug` (SharedPreferences`push_debug`, last 10) and `notificationsEnabled()`,
+ `MainNavigationScreen.\_openPendingPost`→`PostFromNotificationScreen`  (commentId, replyKind). Diagnostics:`recordPushDebug`/`readPushDebug`  (SharedPreferences`push_debug`, last 10) and `notificationsEnabled()`,
   shown in Wallet → Push notifications. main.dart: the background handler
   and `FirebaseMessaging.onMessage` (`\_onPushWhileProcessAlive`, shows it
   unless Fly is in the foreground) handle `type: 'activity'`. The app side
   is `sendActivityPush(receiverId, notificationId)`in
-  `call_push_service.dart`, called (unawaited) after each comment/reply
+ `call_push_service.dart`, called (unawaited) after each comment/reply
   notification `.add()`in`home_comments.dart`. **Friend notifications (4 Oct 2026, confirmed):**
   `showFriendNotification(kind, senderId, senderName, senderPhoto)`-
   channel`friend_requests`, one per person (id from `friend*<uid>`),
-  sender photo downloaded (4s timeout) as `largeIcon`, and for a request
-  two `AndroidNotificationAction`s `confirm`/`delete`
-  (`showsUserInterface: true`). Called from main.dart's background
-  handler for FCM `type` `friend_request`/`friend_accept`. Taps (and
-  button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action});`MainNavigationScreen.\_openPendingFriend`opens Friend Requests / the profile, or for a button runs`FriendService.accept/decline` first (snackbar; "no longer available"
+sender photo downloaded (4s timeout) as `largeIcon`, and for a request
+two `AndroidNotificationAction`s `confirm`/`delete`
+(`showsUserInterface: true`). Called from main.dart's background
+handler for FCM `type` `friend_request`/`friend_accept`. Taps (and
+button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action});`MainNavigationScreen.\_openPendingFriend`opens Friend Requests / the profile, or for a button runs`FriendService.accept/decline` first (snackbar; "no longer available"
   if it was already answered - the rules refuse it).
 
 ### Native Android (`android/app/src/main/`)
