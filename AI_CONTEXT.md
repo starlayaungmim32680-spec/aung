@@ -224,6 +224,9 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > lines). home_screen.dart is now ~3,150 lines: HomeScreen +
 > `_VideoPostItem`. Tested: Home → full screen, Shorts, profile feed,
 > saved, single video, back._
+> _14 Oct 2026 (confirmed in Fly Dev): `FullScreenVideoScreen` (Home →
+> tap a video) got a round ← back button top-left, same look as the
+> other feeds - it never had one (only the phone's back gesture)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1271,6 +1274,8 @@ new file under `screens/home/`starting with`part of
   `ShortsScreen` (+ `_FeedSlots`, `_ShortsShelfPage`, `_ShortsShelfCard`,
   `_FeedItem`), `UserVideoFeedScreen`, `SavedVideosFeedScreen`,
   `SingleVideoScreen` - the screens that page through `_VideoPostItem`s.
+  Each has a round ← `_backButton` top-left (FullScreenVideoScreen's
+  added 14 Oct 2026).
   Public ones are still imported via `home_screen.dart`. Moved unchanged.
   **Reply to a reply:** every `_ReplyTile` has a Reply button; the new
   reply stays in the same comment's `replies` (one level, like

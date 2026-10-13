@@ -46,59 +46,87 @@ class _FullScreenVideoScreenState extends State<FullScreenVideoScreen> {
     }
   }
 
+  // Round ← back button in the top-left corner (14 Oct 2026) - this
+  // screen had none, so the only way out was the phone's back gesture.
+  // Same look as the one on the profile / saved / single-video feeds.
+  Widget _backButton(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.4),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.arrow_back, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: PageView.builder(
-          controller: _pageController,
-          scrollDirection: Axis.vertical,
-          itemCount: widget.items.length,
-          onPageChanged: (index) {
-            final Set<String> keep = {widget.items[index].videoUrl};
-            if (index + 1 < widget.items.length) {
-              keep.add(widget.items[index + 1].videoUrl);
-              VideoPreloadCache.preload(widget.items[index + 1].videoUrl);
-            }
-            // Also start the one after that - keeps fast, repeated swipes
-            // from ever catching up to an unstarted download.
-            if (index + 2 < widget.items.length) {
-              keep.add(widget.items[index + 2].videoUrl);
-              VideoPreloadCache.preload(widget.items[index + 2].videoUrl);
-            }
-            if (index - 1 >= 0) {
-              keep.add(widget.items[index - 1].videoUrl);
-              VideoPreloadCache.preload(widget.items[index - 1].videoUrl);
-            }
-            VideoPreloadCache.evictExcept(keep);
-          },
-          itemBuilder: (context, index) {
-            final item = widget.items[index];
-            return _VideoPostItem(
-              key: ValueKey('fullscreen_${item.feedKey}'),
-              postId: item.postId,
-              userId: item.originalUserId,
-              videoUrl: item.videoUrl,
-              caption: item.caption,
-              userEmail: item.userEmail,
-              reactions: item.reactions,
-              videoType: item.videoType,
-              onVideoEnd: _goToNextVideo,
-              repostNote: item.isRepost ? item.note : null,
-              repostByName: item.isRepost ? item.sharedByName : null,
-              repostByUserId: item.isRepost ? item.sharedByUserId : null,
-              repostByPhoto: item.isRepost ? item.sharedByPhoto : null,
-              videoSpeed: item.videoSpeed,
-              filterType: item.filterType,
-              blurBackground: item.blurBackground,
-              textOverlays: item.textOverlays,
-              effectsBaked: item.effectsBaked,
-              // No onTapToExpand here - already fullscreen, so a tap does
-              // the normal play/pause toggle instead.
-            );
-          },
-        ),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: PageView.builder(
+              controller: _pageController,
+              scrollDirection: Axis.vertical,
+              itemCount: widget.items.length,
+              onPageChanged: (index) {
+                final Set<String> keep = {widget.items[index].videoUrl};
+                if (index + 1 < widget.items.length) {
+                  keep.add(widget.items[index + 1].videoUrl);
+                  VideoPreloadCache.preload(widget.items[index + 1].videoUrl);
+                }
+                // Also start the one after that - keeps fast, repeated swipes
+                // from ever catching up to an unstarted download.
+                if (index + 2 < widget.items.length) {
+                  keep.add(widget.items[index + 2].videoUrl);
+                  VideoPreloadCache.preload(widget.items[index + 2].videoUrl);
+                }
+                if (index - 1 >= 0) {
+                  keep.add(widget.items[index - 1].videoUrl);
+                  VideoPreloadCache.preload(widget.items[index - 1].videoUrl);
+                }
+                VideoPreloadCache.evictExcept(keep);
+              },
+              itemBuilder: (context, index) {
+                final item = widget.items[index];
+                return _VideoPostItem(
+                  key: ValueKey('fullscreen_${item.feedKey}'),
+                  postId: item.postId,
+                  userId: item.originalUserId,
+                  videoUrl: item.videoUrl,
+                  caption: item.caption,
+                  userEmail: item.userEmail,
+                  reactions: item.reactions,
+                  videoType: item.videoType,
+                  onVideoEnd: _goToNextVideo,
+                  repostNote: item.isRepost ? item.note : null,
+                  repostByName: item.isRepost ? item.sharedByName : null,
+                  repostByUserId: item.isRepost ? item.sharedByUserId : null,
+                  repostByPhoto: item.isRepost ? item.sharedByPhoto : null,
+                  videoSpeed: item.videoSpeed,
+                  filterType: item.filterType,
+                  blurBackground: item.blurBackground,
+                  textOverlays: item.textOverlays,
+                  effectsBaked: item.effectsBaked,
+                  // No onTapToExpand here - already fullscreen, so a tap does
+                  // the normal play/pause toggle instead.
+                );
+              },
+            ),
+          ),
+          _backButton(context),
+        ],
       ),
     );
   }
