@@ -1104,7 +1104,9 @@ async function handleActivityPush(body, env, caller) {
       return new Response('Nothing to notify about', { status: 403 });
     }
     const kind = stringField(notif, 'type');
-    if ((kind !== 'comment' && kind !== 'reply') ||
+    // comment_reaction (13 Oct 2026) = someone reacted to my comment/reply.
+    if ((kind !== 'comment' && kind !== 'reply' &&
+         kind !== 'comment_reaction') ||
         stringField(notif, 'fromId') !== caller.uid) {
       return new Response('Nothing to notify about', { status: 403 });
     }
@@ -1147,6 +1149,7 @@ async function handleActivityPush(body, env, caller) {
               text: stringField(notif, 'text').slice(0, 200),
               postId: stringField(notif, 'postId').slice(0, 128),
               commentId: stringField(notif, 'commentId').slice(0, 128),
+              commentText: stringField(notif, 'commentText').slice(0, 120),
             },
             android: { priority: 'high' },
             apns: {

@@ -64,6 +64,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       postId: d('postId'),
       commentId: d('commentId'),
       replyKind: d('replyKind'),
+      commentText: d('commentText'),
     );
     return;
   }
@@ -140,6 +141,7 @@ void _onPushWhileProcessAlive(RemoteMessage message) {
     postId: d('postId'),
     commentId: d('commentId'),
     replyKind: d('replyKind'),
+    commentText: d('commentText'),
   );
 }
 

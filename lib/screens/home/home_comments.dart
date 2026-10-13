@@ -448,6 +448,86 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       await ref.update({'reactions.${user.uid}': FieldValue.delete()});
     } else {
       await ref.update({'reactions.${user.uid}': type});
+      // A NEW reaction (not a swap of my emoji) tells the comment's
+      // author (13 Oct 2026). Not awaited - the heart must feel instant.
+      if (current == null) {
+        final Map<String, String> profile = await _myProfileFuture;
+        unawaited(_notifyCommentReaction(
+          ref: ref,
+          emoji: kReactions[type] ?? '❤️',
+          postId: widget.postId,
+          myId: user.uid,
+          displayName: profile['name']!,
+          photoUrl: profile['photo']!,
+        ));
+      }
+    }
+  }
+
+  // Comment / reply reaction notifications (13 Oct 2026), Facebook
+  // style: "X reacted 😂 to your comment: ...". Goes to the author of the
+  // comment or reply I reacted to - never to me, never between blocked
+  // people. Each comment notifies at most ONCE per app session, so
+  // tapping the heart on / off / on doesn't spam anyone (the 🔔 list also
+  // keeps only the newest row per person + comment). Static so it still
+  // runs after the sheet is closed.
+  static final Set<String> _reactionNotified = <String>{};
+
+  static Future<void> _notifyCommentReaction({
+    required DocumentReference ref,
+    required String emoji,
+    required String postId,
+    required String myId,
+    required String displayName,
+    required String photoUrl,
+  }) async {
+    if (!_reactionNotified.add(ref.path)) return;
+    try {
+      // The comment is on screen, so the cached copy is normally there.
+      DocumentSnapshot snap;
+      try {
+        snap = await ref.get(const GetOptions(source: Source.cache));
+      } catch (_) {
+        snap = await ref.get();
+      }
+      final Map<String, dynamic>? data = snap.data() as Map<String, dynamic>?;
+      if (data == null) return;
+      final String ownerId = (data['userId'] as String?) ?? '';
+      if (ownerId.isEmpty || ownerId == myId) return;
+      if (BlockService.instance.isHidden(ownerId)) return;
+
+      // A reply lives in comments/{commentId}/replies/{replyId}: the
+      // spotlight opens its thread's comment.
+      final bool isReplyDoc = ref.parent.id == 'replies';
+      final String commentId =
+          isReplyDoc ? (ref.parent.parent?.id ?? '') : ref.id;
+      String preview = ((data['text'] as String?) ?? '').trim();
+      if (preview.length > 80) preview = '${preview.substring(0, 80)}…';
+
+      final DocumentReference notifRef = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(ownerId)
+          .collection('notifications')
+          .add({
+        'type': 'comment_reaction',
+        // `text` = the emoji (like a video 'reaction'), `commentText` =
+        // what the comment said.
+        'text': emoji,
+        'commentText': preview,
+        'isReply': isReplyDoc,
+        'targetId': ref.id,
+        'fromId': myId,
+        'fromName': displayName,
+        'fromPhoto': photoUrl,
+        'postId': postId,
+        'commentId': commentId,
+        'seen': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      unawaited(
+          sendActivityPush(receiverId: ownerId, notificationId: notifRef.id));
+    } catch (_) {
+      // A missed notification shouldn't bother the person reacting.
     }
   }
 

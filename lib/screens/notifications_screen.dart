@@ -46,6 +46,14 @@ class NotificationsScreen extends StatelessWidget {
         return data['replyKind'] == 'video'
             ? 'replied to a comment on your video: $text$times'
             : 'replied to your comment: $text$times';
+      case 'comment_reaction':
+        // 13 Oct 2026 - someone reacted to my comment / reply.
+        final String said = (data['commentText'] as String?) ?? '';
+        final String what =
+            data['isReply'] == true ? 'your reply' : 'your comment';
+        return said.isEmpty
+            ? 'reacted $text to $what'
+            : 'reacted $text to $what: $said';
       case 'message':
         return 'sent you a message: $text';
       case 'follow':
@@ -67,6 +75,8 @@ class NotificationsScreen extends StatelessWidget {
         return Icons.mode_comment;
       case 'reply':
         return Icons.reply_rounded;
+      case 'comment_reaction':
+        return Icons.favorite;
       case 'message':
         return Icons.send;
       case 'follow':
@@ -88,6 +98,8 @@ class NotificationsScreen extends StatelessWidget {
         return const Color(0xFF3A8DFF);
       case 'reply':
         return const Color(0xFF9C4DFF);
+      case 'comment_reaction':
+        return const Color(0xFFFF4B6E);
       case 'message':
         return const Color(0xFF9C4DFF);
       case 'follow':
@@ -119,7 +131,10 @@ class NotificationsScreen extends StatelessWidget {
           ),
         ),
       );
-    } else if (type == 'comment' || type == 'reaction' || type == 'reply') {
+    } else if (type == 'comment' ||
+        type == 'reaction' ||
+        type == 'reply' ||
+        type == 'comment_reaction') {
       final String postId = (data['postId'] as String?) ?? '';
       if (postId.isEmpty) return;
       Navigator.push(
@@ -136,6 +151,7 @@ class NotificationsScreen extends StatelessWidget {
             text: (data['text'] as String?) ?? '',
             commentId: data['commentId'] as String?,
             replyKind: data['replyKind'] as String?,
+            commentText: data['commentText'] as String?,
           ),
           // Grows up out of the tapped row's area with a fade.
           transitionsBuilder: (_, animation, __, child) {
@@ -221,7 +237,10 @@ class NotificationsScreen extends StatelessWidget {
                 // Replies (10 Oct 2026): several from the same person in
                 // the same thread collapse into the newest one, with a
                 // "(+N more)" count, instead of a wall of rows.
+                // Comment reactions (13 Oct 2026): only the newest one per
+                // person + comment.
                 final Set<String> seenFriendKeys = {};
+                final Set<String> seenCommentReactions = {};
                 final Map<String, Map<String, dynamic>> replyRows = {};
                 final List<Map<String, dynamic>> docs = [];
                 for (final d in allDocs) {
@@ -232,6 +251,11 @@ class NotificationsScreen extends StatelessWidget {
                   if (type == 'friend_request' || type == 'friend_accept') {
                     // Newest first, so the first one kept wins.
                     if (!seenFriendKeys.add('$type|$fromId')) continue;
+                  } else if (type == 'comment_reaction') {
+                    if (!seenCommentReactions
+                        .add('$fromId|${data['targetId']}')) {
+                      continue;
+                    }
                   } else if (type == 'reply') {
                     final String key =
                         '$fromId|${data['postId']}|${data['commentId']}';

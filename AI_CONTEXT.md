@@ -203,6 +203,19 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > unchanged into `lib/screens/home/home_post_info.dart` (~620 lines).
 > home_screen.dart is now ~4,660 lines. Tested: owner photo/name →
 > profile, Follow, caption, #hashtag → grid, translate._
+> _13 Oct 2026 (confirmed on two phones in Fly Dev): **home split step
+> 4** - `PostFromNotificationScreen` moved unchanged into
+> `lib/screens/home/home_notification_post.dart` (home_screen.dart now
+> ~4,320 lines). And **comment reaction notifications**, Facebook style:
+> when someone gives a NEW reaction (❤️ tap or long-press emoji) to my
+> comment or reply, I get a `comment_reaction` notification ("X reacted
+> 😂 to your comment: …") in the 🔔 list AND as a phone push; tapping
+> opens the video with that comment's thread spotlighted. Anti-spam: only
+> a new reaction (not an emoji swap), once per comment per app session,
+> and the 🔔 list keeps only the newest row per person + comment. Worker
+> `/activity-push` now also accepts `comment_reaction` (+ `commentText`
+> in the FCM data) - deployed to **fly-dev-worker only**; prod rollout is
+> To-do 0a. No rules change._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -719,7 +732,8 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
       `fly-dev-worker` and prod `livekit-token-worker`)** — body `{receiverId,
 notificationId}` only. `handleActivityPush` reads
       `users/{receiverId}/notifications/{notificationId}` with the service
-      account and refuses unless `type` is `comment`/`reply`, `fromId` ==
+      account and refuses unless `type` is `comment`/`reply` (or, 13 Oct
+      2026, `comment_reaction` - fly-dev-worker only so far), `fromId` ==
       the VERIFIED caller and the doc is < 10 minutes old; takes the
       receiver's `fcmToken` from Firestore; sends FCM data `{type:
 'activity', kind, replyKind, senderId, senderName, senderPhoto, text,
@@ -1238,6 +1252,12 @@ new file under `screens/home/`starting with`part of
   tappable #hashtags + translate), `HashtagScreen` (public - other files
   still get it from `import 'home_screen.dart'`) and `_OwnerInfo` (owner
   photo / name / follow button). Moved unchanged.
+- `screens/home/home_notification_post.dart` — **(13 Oct 2026, home split
+  step 4)** `part of '../home_screen.dart'`: `PostFromNotificationScreen`
+  (public, still imported via `home_screen.dart`). Types: `comment`,
+  `reaction`, `reply`, and (13 Oct 2026) `comment_reaction` - treated
+  like a reply (comments open, `highlightCommentId` spotlight); extra
+  param `commentText` for its banner.
   **Reply to a reply:** every `_ReplyTile` has a Reply button; the new
   reply stays in the same comment's `replies` (one level, like
   Facebook/TikTok) with `replyToUserId` / `replyToName`, shown as a blue
@@ -1942,7 +1962,14 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 12 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 13 Oct 2026)
+
+0a. **Prod rollout of comment reaction notifications (13 Oct 2026):**
+works in Fly Dev. Paste `cloudflare/livekit_token_worker.js` into the
+PROD Worker `livekit-token-worker` (Edit code → Deploy, don't touch
+Secrets), then a clean prod build (§7 step 5), install on A and B, test:
+B ❤️ on A's comment → A gets "reacted ❤️ to your comment" (🔔 list and
+push).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
@@ -1974,8 +2001,9 @@ others only see it once encoded (Bunny webhook).
      (`screens/home/home_fx_widgets.dart`, ~790 lines out), **step 2 done
      10 Oct 2026** (`screens/home/home_comments.dart`, ~1,110 lines out),
      **step 3 done 13 Oct 2026** (`screens/home/home_post_info.dart`,
-     caption / hashtag screen / owner info, ~620 lines out); next pieces:
-     `PostFromNotificationScreen` (~340 lines), feed screens
+     caption / hashtag screen / owner info, ~620 lines out), **step 4
+     done 13 Oct 2026** (`screens/home/home_notification_post.dart`,
+     ~345 lines out); next pieces: feed screens
      (Shorts / UserVideoFeed / Saved / Single, ~1,200 lines), then
      `_VideoPostItem` (~2,600 lines, biggest - last) - one per step, test
      in Fly Dev each time;

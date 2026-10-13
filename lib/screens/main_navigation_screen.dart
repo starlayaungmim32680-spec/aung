@@ -599,6 +599,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           text: info['text'] ?? '',
           commentId: commentId.isEmpty ? null : commentId,
           replyKind: replyKind.isEmpty ? null : replyKind,
+          commentText: info['commentText'],
         ),
       ),
     );

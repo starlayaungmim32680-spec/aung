@@ -107,7 +107,7 @@ class NotificationService {
       final String userId = (data['userId'] as String?) ?? '';
       if (userId.isEmpty) return;
       final String kind = (data['kind'] as String?) ?? '';
-      if (kind == 'comment' || kind == 'reply') {
+      if (kind == 'comment' || kind == 'reply' || kind == 'comment_reaction') {
         final String postId = (data['postId'] as String?) ?? '';
         if (postId.isEmpty) return;
         pendingPost.value = {
@@ -119,6 +119,7 @@ class NotificationService {
           'text': (data['text'] as String?) ?? '',
           'commentId': (data['commentId'] as String?) ?? '',
           'replyKind': (data['replyKind'] as String?) ?? '',
+          'commentText': (data['commentText'] as String?) ?? '',
         };
         return;
       }
@@ -331,6 +332,7 @@ class NotificationService {
     required String postId,
     String commentId = '',
     String replyKind = '',
+    String commentText = '',
   }) async {
     if (postId.isEmpty) return;
     try {
@@ -341,7 +343,12 @@ class NotificationService {
         _pluginReady = true;
       }
       final String body;
-      if (kind == 'reply') {
+      if (kind == 'comment_reaction') {
+        // 13 Oct 2026: `text` is the emoji.
+        body = commentText.isEmpty
+            ? 'reacted $text to your comment'
+            : 'reacted $text to your comment: $commentText';
+      } else if (kind == 'reply') {
         body = replyKind == 'video'
             ? 'replied to a comment on your video: $text'
             : 'replied to your comment: $text';
@@ -388,6 +395,7 @@ class NotificationService {
           'text': text,
           'commentId': commentId,
           'replyKind': replyKind,
+          'commentText': commentText,
         }),
       );
       await recordPushDebug('shown: $kind from $senderName');
