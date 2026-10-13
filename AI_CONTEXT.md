@@ -216,6 +216,14 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > `/activity-push` now also accepts `comment_reaction` (+ `commentText`
 > in the FCM data). No rules change. **Prod rollout done the same
 > evening** (prod Worker deployed, prod build tested on A and B)._
+> _13 Oct 2026 (late, confirmed in Fly Dev): **home split step 5** - the
+> full-screen feeds (`FullScreenVideoScreen`, `ShortsScreen` + shelf
+> `_FeedSlots` / `_ShortsShelfPage` / `_ShortsShelfCard` / `_FeedItem`,
+> `UserVideoFeedScreen`, `SavedVideosFeedScreen`, `SingleVideoScreen`)
+> moved unchanged into `lib/screens/home/home_feeds.dart` (~1,170
+> lines). home_screen.dart is now ~3,150 lines: HomeScreen +
+> `_VideoPostItem`. Tested: Home → full screen, Shorts, profile feed,
+> saved, single video, back._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1258,6 +1266,12 @@ new file under `screens/home/`starting with`part of
   `reaction`, `reply`, and (13 Oct 2026) `comment_reaction` - treated
   like a reply (comments open, `highlightCommentId` spotlight); extra
   param `commentText` for its banner.
+- `screens/home/home_feeds.dart` — **(13 Oct 2026, home split step 5)**
+  `part of '../home_screen.dart'`: `FullScreenVideoScreen`,
+  `ShortsScreen` (+ `_FeedSlots`, `_ShortsShelfPage`, `_ShortsShelfCard`,
+  `_FeedItem`), `UserVideoFeedScreen`, `SavedVideosFeedScreen`,
+  `SingleVideoScreen` - the screens that page through `_VideoPostItem`s.
+  Public ones are still imported via `home_screen.dart`. Moved unchanged.
   **Reply to a reply:** every `_ReplyTile` has a Reply button; the new
   reply stays in the same comment's `replies` (one level, like
   Facebook/TikTok) with `replyToUserId` / `replyToName`, shown as a blue
@@ -1996,8 +2010,9 @@ others only see it once encoded (Bunny webhook).
      **step 3 done 13 Oct 2026** (`screens/home/home_post_info.dart`,
      caption / hashtag screen / owner info, ~620 lines out), **step 4
      done 13 Oct 2026** (`screens/home/home_notification_post.dart`,
-     ~345 lines out); next pieces: feed screens
-     (Shorts / UserVideoFeed / Saved / Single, ~1,200 lines), then
+     ~345 lines out), **step 5 done 13 Oct 2026**
+     (`screens/home/home_feeds.dart`, ~1,170 lines out; home_screen.dart
+     ~3,150 lines); next piece:
      `_VideoPostItem` (~2,600 lines, biggest - last) - one per step, test
      in Fly Dev each time;
      e) move coins server-side (Worker) before coins are ever sold.
