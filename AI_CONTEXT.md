@@ -214,8 +214,8 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > a new reaction (not an emoji swap), once per comment per app session,
 > and the 🔔 list keeps only the newest row per person + comment. Worker
 > `/activity-push` now also accepts `comment_reaction` (+ `commentText`
-> in the FCM data) - deployed to **fly-dev-worker only**; prod rollout is
-> To-do 0a. No rules change._
+> in the FCM data). No rules change. **Prod rollout done the same
+> evening** (prod Worker deployed, prod build tested on A and B)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -733,7 +733,7 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
 notificationId}` only. `handleActivityPush` reads
       `users/{receiverId}/notifications/{notificationId}` with the service
       account and refuses unless `type` is `comment`/`reply` (or, 13 Oct
-      2026, `comment_reaction` - fly-dev-worker only so far), `fromId` ==
+      2026, `comment_reaction` - both Workers), `fromId` ==
       the VERIFIED caller and the doc is < 10 minutes old; takes the
       receiver's `fcmToken` from Firestore; sends FCM data `{type:
 'activity', kind, replyKind, senderId, senderName, senderPhoto, text,
@@ -1963,13 +1963,6 @@ others only see it once encoded (Bunny webhook).
   services updated) before debugging code for "spinner only on one phone".
 
 ### To-do list (Ko's next steps, most urgent first — updated 13 Oct 2026)
-
-0a. **Prod rollout of comment reaction notifications (13 Oct 2026):**
-works in Fly Dev. Paste `cloudflare/livekit_token_worker.js` into the
-PROD Worker `livekit-token-worker` (Edit code → Deploy, don't touch
-Secrets), then a clean prod build (§7 step 5), install on A and B, test:
-B ❤️ on A's comment → A gets "reacted ❤️ to your comment" (🔔 list and
-push).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
