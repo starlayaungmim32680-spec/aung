@@ -236,6 +236,10 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > finger, and the post gets my 'like' if I hadn't reacted (never takes
 > a like back). Single-tap pause now waits ~0.3s for a possible second
 > tap (normal for double-tap)._
+> _15 Oct 2026 (late): **prod build** with all of the above (home split
+> steps 1-6, full-screen back button, double-tap like, comment reaction
+> notifications) installed and tested on A and B - all OK. No Worker /
+> rules change._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
