@@ -227,6 +227,15 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > _14 Oct 2026 (confirmed in Fly Dev): `FullScreenVideoScreen` (Home →
 > tap a video) got a round ← back button top-left, same look as the
 > other feeds - it never had one (only the phone's back gesture)._
+> _15 Oct 2026 (confirmed in Fly Dev): **home split step 6** -
+> `_VideoPostItem` + its State moved unchanged into
+> `lib/screens/home/home_video_post.dart` (~2,640 lines).
+> **home_screen.dart is now ~510 lines (HomeScreen only)**, down from
+> ~7,160. Plus **double-tap like** (TikTok style, never existed before):
+> double-tap the video → a big ❤️ (`_DoubleTapHeart`) pops at the
+> finger, and the post gets my 'like' if I hadn't reacted (never takes
+> a like back). Single-tap pause now waits ~0.3s for a possible second
+> tap (normal for double-tap)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1269,6 +1278,18 @@ new file under `screens/home/`starting with`part of
   `reaction`, `reply`, and (13 Oct 2026) `comment_reaction` - treated
   like a reply (comments open, `highlightCommentId` spotlight); extra
   param `commentText` for its banner.
+- `screens/home/home_video_post.dart` — **(15 Oct 2026, home split step
+  6)** `part of '../home_screen.dart'`: `_VideoPostItem` and
+  `_VideoPostItemState` - the video post every feed shows (player +
+  preload cache, tap / double-tap / long-press, like & reaction picker,
+  comments / share / save / repost / download, owner info + caption,
+  follow, report / block, text overlays and filters). Double-tap like
+  (15 Oct 2026): `onDoubleTapDown` stores `_doubleTapPos`,
+  `_onDoubleTapLike` adds a `_tapHearts` record and calls
+  `_setReaction('like')` only if I have no reaction; `_DoubleTapHeart`
+  (bottom of the file) is the 0.8s spring/fade heart. Next refactor
+  idea: split the State itself (share sheet, download, overlays) -
+  needs extensions or helper widgets, a part file can't split a class.
 - `screens/home/home_feeds.dart` — **(13 Oct 2026, home split step 5)**
   `part of '../home_screen.dart'`: `FullScreenVideoScreen`,
   `ShortsScreen` (+ `_FeedSlots`, `_ShortsShelfPage`, `_ShortsShelfCard`,
@@ -2017,9 +2038,10 @@ others only see it once encoded (Bunny webhook).
      done 13 Oct 2026** (`screens/home/home_notification_post.dart`,
      ~345 lines out), **step 5 done 13 Oct 2026**
      (`screens/home/home_feeds.dart`, ~1,170 lines out; home_screen.dart
-     ~3,150 lines); next piece:
-     `_VideoPostItem` (~2,600 lines, biggest - last) - one per step, test
-     in Fly Dev each time;
+     ~3,150 lines), **step 6 done 15 Oct 2026**
+     (`screens/home/home_video_post.dart`, `_VideoPostItem` ~2,640 lines;
+     home_screen.dart is now ~510 lines). home_screen.dart split is
+     DONE. Optional later: split `_VideoPostItemState` itself;
      e) move coins server-side (Worker) before coins are ever sold.
      Bunny was recharged 3 Oct 2026 (see §3) - keep an eye on the balance.
 2. ~~Delete the `APP_SHARED_SECRET` Worker secret~~ - **done 7 Oct 2026**
@@ -2129,7 +2151,10 @@ APK): `cd android; .\gradlew --stop; cd ..` →
 → `Remove-Item build -Recurse -Force` → `Test-Path build` must be
 `False` → `flutter clean` (no "Failed") → pub get → build (a real
 rebuild takes ~3-5 min). The string-check copy in
-`$env:TEMP\flyprod.zip` is a usable APK backup.
+`$env:TEMP\flyprod.zip` is a usable APK backup. If `Test-Path build`
+is still `True` right after killing Java, wait and retry:
+`Start-Sleep -Seconds 5; Remove-Item build -Recurse -Force` (the killed
+process needs a moment to let go of the files).
 A notification that never shows: open Wallet → Push notifications →
 Test notification / Refresh log first - it shows `shown:` or the exact
 `SHOW FAILED:` error (12 Oct 2026 it was `invalid_icon`, see §4 Native
