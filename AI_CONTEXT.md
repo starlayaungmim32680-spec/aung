@@ -260,6 +260,26 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > no code / Worker / rules change. It only affects NEW uploads (the 33
 > old videos are untouched). Upload-to-visible time on prod has NOT been
 > measured yet (see To-do 00)._
+> _16 Oct 2026 (late, Ko confirmed in Fly Dev - "အဆင်ပြေတယ်"; no
+> timings were reported): **Early-Play for feed posts - others see a
+> new video as soon as the upload finishes** (Ko's idea: nobody should
+> wait for Bunny's encoding). Before, a new post was hidden from everyone
+> but the uploader until `videoReady: true`. Now (a) `isVideoVisibleTo()`
+> in `video_upload_service.dart` shows every post except one with
+> `videoFailed: true` (hidden from others); a new `isStoryVideoVisibleTo()`
+> keeps the OLD rule for **stories** (`story_screen.dart` uses it - the
+> story viewer has no original-file fallback yet); (b) in
+> `home_video_post.dart`, when the HLS `playlist.m3u8` of a fresh post
+> (< 30 min old) fails to load, `_initializeVideo` immediately retries
+> ONCE with the original file `https://<cdn>/<videoId>/original`
+> (`_originalFileUrl()`, flags `_useOriginal` / `_triedOriginal`), and
+> only if that fails too shows "Processing video..." and retries every
+> 5s (each round tries HLS first, then the original). Needs the Bunny
+> library setting **Early-Play = ON** (+ Keep original files ON; it makes
+> the original files public) - turned on for **fly-dev only**; prod
+> `fly-videos` still has Early-Play OFF and the prod APK doesn't have
+> this code yet. No Worker / rules change. Not tested: how smoothly the
+> original (MP4, moov atom maybe at the end) starts on slow phones._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -528,10 +548,12 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     uses the same Firebase service account as `/call-push`, with the
     Datastore OAuth scope, via Firestore's REST API. - Race-proofing: the app creates the doc and **then** calls
     `syncVideoReady()`, which checks `videoStatus/{id}` and flips the
-    flag itself if encoding already finished first. - `isVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
-    hides a doc, and never from its own uploader. Applied to the **Home
-    feed** (both post streams in `home_screen.dart`) and the **Stories
-    bar**. Old docs without the field stay visible. - The uploader plays their fresh video **instantly from the local
+    flag itself if encoding already finished first. - `isStoryVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
+    hides a doc, and never from its own uploader. Used by the **Stories
+    bar**. Old docs without the field stay visible. Feed POSTS use
+    `isVideoVisibleTo`, which since 16 Oct 2026 hides only
+    `videoFailed: true` posts (viewers play the original file while
+    Bunny encodes - see the 16 Oct "Early-Play" note at the top). - The uploader plays their fresh video **instantly from the local
     file** via `LocalVideoCache` (`local_video_cache.dart`, keyed by
     videoUrl, in-memory only). If the app restarts before encoding ends,
     playback falls back to the network and `_VideoPostItem` shows a
@@ -2036,16 +2058,19 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 16 Oct 2026)
 
-00. **Measure Premium Encoding on prod** - the settings are applied on
-    both libraries (fly-dev and prod `fly-videos`, 16 Oct 2026, §3
-    Bunny). Still to do: upload a 15-30s video in the prod app on phone
-    A, note the "Posted" time, then see how many minutes until phone B
-    shows it (and until A stops showing "Processing video..." after a
-    restart); compare with the old free queue; check Billing →
-    Overview a day later for the Premium line. If it is still too slow:
-    try Early-Play (free, needs an app change because the app plays
-    `playlist.m3u8`). Optional later: TikTok-style background posting
-    (Post → back to Home at once with a "Posting… %" pill).
+00. **Early-Play rollout to prod** - Premium Encoding is on both
+    libraries (16 Oct 2026, §3 Bunny); Early-Play (others see a new
+    post at once, see the top note) works in **Fly Dev only**. To do:
+    (1) Bunny → Stream → `fly-videos` → Encoding → Early-Play ON;
+    (2) build `--flavor prod` and test on A and B (A posts, B opens Home
+    within 30 s: video must play, no "Processing"; A restarts: own video
+    plays; B again after 5-10 min); note how many seconds the original
+    takes to start; (3) check Billing → Overview a day later for the
+    Premium line. Possible follow-ups: the same original-file fallback
+    for **stories** (`story_screen.dart`); search indexing still waits
+    for the Bunny webhook (a new post appears in Search only once
+    encoded). Optional later: TikTok-style background posting (Post →
+    back to Home at once with a "Posting… %" pill).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new

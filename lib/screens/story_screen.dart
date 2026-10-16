@@ -439,7 +439,7 @@ class _StoriesBarState extends State<StoriesBar> {
             final Timestamp? exp = m['expiresAt'] as Timestamp?;
             if (exp != null && exp.toDate().isBefore(now)) continue;
             // A video story still being encoded is only shown to its poster.
-            if (!isVideoVisibleTo(m, myId)) continue;
+            if (!isStoryVideoVisibleTo(m, myId)) continue;
             byUser.putIfAbsent(uid, () => []).add(d);
           }
 

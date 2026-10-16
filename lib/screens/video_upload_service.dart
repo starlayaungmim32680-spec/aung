@@ -66,6 +66,17 @@ Future<void> syncVideoReady(DocumentReference ref, String bunnyVideoId) async {
 // `videoReady: false` hides it (older posts have no such field), and the
 // uploader always sees their own.
 bool isVideoVisibleTo(Map<String, dynamic> data, String? myUid) {
+  // 16 Oct 2026: feed POSTS are now visible to everybody as soon as the
+  // upload finishes. While Bunny is still encoding, viewers play the
+  // original file (Early-Play) - see home_video_post.dart. Only a video
+  // whose encoding FAILED stays hidden (except from its uploader).
+  if (data['videoFailed'] != true) return true;
+  return myUid != null && data['userId'] == myUid;
+}
+
+// Stories keep the old rule: a video story still being encoded is only
+// shown to its poster (the story viewer has no original-file fallback).
+bool isStoryVideoVisibleTo(Map<String, dynamic> data, String? myUid) {
   if (data['videoReady'] != false) return true;
   return myUid != null && data['userId'] == myUid;
 }

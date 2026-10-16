@@ -121,6 +121,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // instead of the "Couldn't load" error.
   bool _isProcessing = false;
   Timer? _processingRetryTimer;
+  // Early-Play (16 Oct 2026): while Bunny is still encoding a fresh upload
+  // its playlist.m3u8 doesn't exist yet, but the ORIGINAL file is already
+  // on the CDN (library setting "Early-Play" + "Keep original files").
+  // [_useOriginal] makes the next load play that file; [_triedOriginal]
+  // makes sure we only try it once per round before showing "Processing".
+  bool _useOriginal = false;
+  bool _triedOriginal = false;
   // Stall watchdog: sometimes (mostly the very first video after opening
   // the app, on a slow start) initialize() finished but the stream never
   // actually started - a black screen with no spinner. If playback was
@@ -373,8 +380,22 @@ class _VideoPostItemState extends State<_VideoPostItem>
   void _scheduleProcessingRetry() {
     _processingRetryTimer?.cancel();
     _processingRetryTimer = Timer(_processingRetryEvery, () {
-      if (mounted) _initializeVideo();
+      if (!mounted) return;
+      // New round: try the encoded stream first, then the original again.
+      _useOriginal = false;
+      _triedOriginal = false;
+      _initializeVideo();
     });
+  }
+
+  // https://host/<id>/playlist.m3u8  ->  https://host/<id>/original
+  // Only for Bunny Stream HLS urls; anything else returns null.
+  String? _originalFileUrl() {
+    final String url = widget.videoUrl;
+    if (!url.contains('b-cdn.net') || !url.endsWith('/playlist.m3u8')) {
+      return null;
+    }
+    return '${url.substring(0, url.length - 'playlist.m3u8'.length)}original';
   }
 
   // [startAt]: resume from this position (used when a stuck or torn-down
@@ -390,7 +411,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
       setState(() => _hasError = false);
     }
 
-    final String playUrl = playableVideoUrl(widget.videoUrl);
+    // Early-Play: after the encoded stream failed on a fresh upload, play
+    // the original file instead of waiting for Bunny (see _useOriginal).
+    final String? originalUrl = _useOriginal ? _originalFileUrl() : null;
+    final String playUrl = originalUrl ?? playableVideoUrl(widget.videoUrl);
 
     // If this video was already preloaded while the previous one was
     // playing, reuse that controller instead of starting a fresh network
@@ -501,10 +525,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
       controller?.dispose();
       if (!mounted) return;
 
-      // Freshly uploaded and Bunny is still encoding it - keep a calm
-      // "Processing" state and quietly retry until it's ready.
+      // Freshly uploaded and Bunny is still encoding it. First try the
+      // original file right away (Early-Play) so nobody has to wait.
       if (await _looksFreshlyUploaded()) {
         if (!mounted) return;
+        if (!_triedOriginal && _originalFileUrl() != null) {
+          _triedOriginal = true;
+          _useOriginal = true;
+          _initializeVideo(startAt: startAt, autoPlay: autoPlay);
+          return;
+        }
+        // The original didn't work either - keep a calm "Processing"
+        // state and quietly retry until it's ready.
         setState(() {
           _isInitialized = false;
           _hasError = false;
