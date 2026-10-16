@@ -253,6 +253,13 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > **360p/480p/720p only** (240p and 1080p removed), codec **H.264
 > only**. Cost: ~$0.025 per 30s post, ~$0.0125 per 15s story. Next:
 > same settings on the prod library `fly-videos` (756617) - see To-do._
+> _16 Oct 2026 (late): **the same Premium settings are now on the prod
+> library `fly-videos` (756617)** - checked from Ko's screenshots: Premium
+> tier, JIT / Early-Play / MP4 fallback OFF, Keep original files ON,
+> 360p/480p/720p only, H.264 only, estimated $0.05/min. Dashboard only,
+> no code / Worker / rules change. It only affects NEW uploads (the 33
+> old videos are untouched). Upload-to-visible time on prod has NOT been
+> measured yet (see To-do 00)._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2029,12 +2036,16 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 16 Oct 2026)
 
-00. **Premium Encoding on prod** - copy the fly-dev settings (16 Oct
-    2026, §3 Bunny) to the prod library `fly-videos` (756617): Premium
-    tier, JIT OFF, Early-Play OFF, MP4 fallback OFF, 360p/480p/720p,
-    H.264 only, Save. Then time a prod upload on A and B, and check
-    Billing a day later. Optional later: TikTok-style background
-    posting (Post → back to Home at once with a "Posting… %" pill).
+00. **Measure Premium Encoding on prod** - the settings are applied on
+    both libraries (fly-dev and prod `fly-videos`, 16 Oct 2026, §3
+    Bunny). Still to do: upload a 15-30s video in the prod app on phone
+    A, note the "Posted" time, then see how many minutes until phone B
+    shows it (and until A stops showing "Processing video..." after a
+    restart); compare with the old free queue; check Billing →
+    Overview a day later for the Premium line. If it is still too slow:
+    try Early-Play (free, needs an app change because the app plays
+    `playlist.m3u8`). Optional later: TikTok-style background posting
+    (Post → back to Home at once with a "Posting… %" pill).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
