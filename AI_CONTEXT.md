@@ -240,46 +240,21 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > steps 1-6, full-screen back button, double-tap like, comment reaction
 > notifications) installed and tested on A and B - all OK. No Worker /
 > rules change._
-> _16 Oct 2026 (confirmed in Fly Dev): **Bunny Premium Encoding on the
-> `fly-dev` library (771031)** - new videos were taking far too long to
-> show (uploader saw "Processing video..." after reopening the app; the
-> other phone saw nothing until Bunny's FREE shared queue got to it -
-> the webhook chain itself was fine). Dashboard-only change, no code /
-> Worker / rules change: Encoding tier **Premium** ($0.05 per input
-> minute of HD, billed in 10s steps), **Just-In-Time OFF** (Bunny says
-> JIT only works in the Bunny Player, not Fly's own ExoPlayer),
-> **Early-Play OFF** (free option, not tested yet), **MP4 fallback OFF**
-> (the app only plays HLS), Keep original files ON, resolutions
-> **360p/480p/720p only** (240p and 1080p removed), codec **H.264
-> only**. Cost: ~$0.025 per 30s post, ~$0.0125 per 15s story. Next:
-> same settings on the prod library `fly-videos` (756617) - see To-do._
-> _16 Oct 2026 (late): **the same Premium settings are now on the prod
-> library `fly-videos` (756617)** - checked from Ko's screenshots: Premium
-> tier, JIT / Early-Play / MP4 fallback OFF, Keep original files ON,
-> 360p/480p/720p only, H.264 only, estimated $0.05/min. Dashboard only,
-> no code / Worker / rules change. It only affects NEW uploads (the 33
-> old videos are untouched). Upload-to-visible time on prod has NOT been
-> measured yet (see To-do 00)._
-> _16 Oct 2026 (late, Ko confirmed in Fly Dev - "အဆင်ပြေတယ်"; no
-> timings were reported): **Early-Play for feed posts - others see a
-> new video as soon as the upload finishes** (Ko's idea: nobody should
-> wait for Bunny's encoding). Before, a new post was hidden from everyone
-> but the uploader until `videoReady: true`. Now (a) `isVideoVisibleTo()`
-> in `video_upload_service.dart` shows every post except one with
-> `videoFailed: true` (hidden from others); a new `isStoryVideoVisibleTo()`
-> keeps the OLD rule for **stories** (`story_screen.dart` uses it - the
-> story viewer has no original-file fallback yet); (b) in
-> `home_video_post.dart`, when the HLS `playlist.m3u8` of a fresh post
-> (< 30 min old) fails to load, `_initializeVideo` immediately retries
-> ONCE with the original file `https://<cdn>/<videoId>/original`
-> (`_originalFileUrl()`, flags `_useOriginal` / `_triedOriginal`), and
-> only if that fails too shows "Processing video..." and retries every
-> 5s (each round tries HLS first, then the original). Needs the Bunny
-> library setting **Early-Play = ON** (+ Keep original files ON; it makes
-> the original files public) - turned on for **fly-dev only**; prod
-> `fly-videos` still has Early-Play OFF and the prod APK doesn't have
-> this code yet. No Worker / rules change. Not tested: how smoothly the
-> original (MP4, moov atom maybe at the end) starts on slow phones._
+> _16-17 Oct 2026 (confirmed by Ko on Fly Dev and prod, no timings given):
+> **new videos show to everyone at once.** (1) Bunny **Premium Encoding**
+> on both libraries (`fly-dev` 771031, prod `fly-videos` 756617):
+> priority queue, ~$0.05 per HD input minute; JIT OFF (Bunny Player
+> only), MP4 fallback OFF, Keep original files ON, **Early-Play ON**
+> (makes originals public), 360p/480p/720p, H.264 only. (2) App
+> (commit `a853d02`): `isVideoVisibleTo()` in `video_upload_service.dart`
+> hides only posts with `videoFailed: true`; stories keep the old rule
+> via `isStoryVideoVisibleTo()` (`story_screen.dart`). In
+> `home_video_post.dart`, if the HLS `playlist.m3u8` of a fresh post
+> (< 30 min) fails, `_initializeVideo` retries ONCE with the original
+> file `https://<cdn>/<videoId>/original` (`_originalFileUrl()`,
+> `_useOriginal` / `_triedOriginal`); if that fails too it shows
+> "Processing video..." and retries every 5s. No Worker / rules change.
+> Not measured: how fast the original starts on weak phones. See To-do 00._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2058,19 +2033,17 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 16 Oct 2026)
 
-00. **Early-Play rollout to prod** - Premium Encoding is on both
-    libraries (16 Oct 2026, §3 Bunny); Early-Play (others see a new
-    post at once, see the top note) works in **Fly Dev only**. To do:
-    (1) Bunny → Stream → `fly-videos` → Encoding → Early-Play ON;
-    (2) build `--flavor prod` and test on A and B (A posts, B opens Home
-    within 30 s: video must play, no "Processing"; A restarts: own video
-    plays; B again after 5-10 min); note how many seconds the original
-    takes to start; (3) check Billing → Overview a day later for the
-    Premium line. Possible follow-ups: the same original-file fallback
-    for **stories** (`story_screen.dart`); search indexing still waits
-    for the Bunny webhook (a new post appears in Search only once
-    encoded). Optional later: TikTok-style background posting (Post →
-    back to Home at once with a "Posting… %" pill).
+00. **After Premium + Early-Play (both libraries, done 16-17 Oct
+    2026)** - still open: (1) check Billing → Overview a day or two
+    later for the Premium Encoding line (expected ~$0.05 per video
+    minute; the balance was $9.93 on 16 Oct); (2) the same
+    original-file fallback for **stories** (`story_screen.dart` still
+    hides a story from others until Bunny finishes encoding); (3)
+    search indexing still waits for the Bunny webhook (a new post shows
+    in Search only once encoded); (4) if the original is slow to start
+    on weak phones, look at the moov atom / `faststart`. Optional
+    later: TikTok-style background posting (Post → back to Home at
+    once with a "Posting… %" pill).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
