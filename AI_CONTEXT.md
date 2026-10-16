@@ -240,6 +240,19 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > steps 1-6, full-screen back button, double-tap like, comment reaction
 > notifications) installed and tested on A and B - all OK. No Worker /
 > rules change._
+> _16 Oct 2026 (confirmed in Fly Dev): **Bunny Premium Encoding on the
+> `fly-dev` library (771031)** - new videos were taking far too long to
+> show (uploader saw "Processing video..." after reopening the app; the
+> other phone saw nothing until Bunny's FREE shared queue got to it -
+> the webhook chain itself was fine). Dashboard-only change, no code /
+> Worker / rules change: Encoding tier **Premium** ($0.05 per input
+> minute of HD, billed in 10s steps), **Just-In-Time OFF** (Bunny says
+> JIT only works in the Bunny Player, not Fly's own ExoPlayer),
+> **Early-Play OFF** (free option, not tested yet), **MP4 fallback OFF**
+> (the app only plays HLS), Keep original files ON, resolutions
+> **360p/480p/720p only** (240p and 1080p removed), codec **H.264
+> only**. Cost: ~$0.025 per 30s post, ~$0.0125 per 15s story. Next:
+> same settings on the prod library `fly-videos` (756617) - see To-do._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -517,7 +530,15 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     playback falls back to the network and `_VideoPostItem` shows a
     **"Processing video..."** card that silently retries every 5s for
     Bunny (`.m3u8`) posts under 30 minutes old, instead of "Couldn't
-    load". - Confirmed working end-to-end on two phones on 26 Sep 2026. - Encoding speed tip given to Ko: in Bunny → Stream → library →
+    load". - Confirmed working end-to-end on two phones on 26 Sep 2026. - **Premium Encoding (16 Oct 2026, fly-dev first):** the free
+    encoding queue is shared and can be very slow at busy times, so new
+    videos stayed hidden for others far too long. Premium = priority
+    queue, $0.05/min for HD (max resolution sets the tier: SD ≤480p
+    $0.025/min; each extra codec multiplies the price). JIT must stay
+    OFF (Bunny Player only). Early-Play (free, plays the original file
+    before encoding, makes originals public) is the next thing to try
+    if Premium alone isn't fast enough - the app plays `playlist.m3u8`,
+    so it may need code changes. - Encoding speed tip given to Ko: in Bunny → Stream → library →
     Encoding, keep only **360p/480p/720p** (fewer renditions = faster
     encoding and less storage cost).
   - **Playback:** the stored `videoUrl` for a Bunny post is the HLS playlist,
@@ -2006,7 +2027,14 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 13 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 16 Oct 2026)
+
+00. **Premium Encoding on prod** - copy the fly-dev settings (16 Oct
+    2026, §3 Bunny) to the prod library `fly-videos` (756617): Premium
+    tier, JIT OFF, Early-Play OFF, MP4 fallback OFF, 360p/480p/720p,
+    H.264 only, Save. Then time a prod upload on A and B, and check
+    Billing a day later. Optional later: TikTok-style background
+    posting (Post → back to Home at once with a "Posting… %" pill).
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new
