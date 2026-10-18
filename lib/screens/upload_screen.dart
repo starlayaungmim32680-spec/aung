@@ -1,13 +1,9 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'text_overlay_style.dart';
@@ -15,13 +11,10 @@ import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'sound_moderation.dart';
-import 'video_upload_service.dart';
-import 'local_video_cache.dart';
+import 'post_upload_manager.dart';
 import 'content_filter.dart';
-import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
-import '../app_config.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -54,18 +47,10 @@ class UploadScreen extends StatefulWidget {
 }
 
 class _UploadScreenState extends State<UploadScreen> {
-  // Bunny Stream configuration. The Library ID and CDN hostname are not
-  // secret (they're just addresses), but the actual API key never lives
-  // here - see the Worker's /create-video endpoint, which is the only
-  // thing that ever touches it.
-  // Per flavor since 6 Oct 2026 (prod / dev library) - app_config.dart.
-  static const String _bunnyCdnHostname = AppConfig.bunnyStreamCdnHost;
-
   final TextEditingController _captionController = TextEditingController();
   Uint8List? _videoBytes;
-  // Kept alongside _videoBytes so _uploadPost() can run it through
-  // flutter_compress right before uploading (compression needs a real file
-  // path, not just bytes in memory).
+  // Handed to PostUploadManager on Post, which trims + compresses it
+  // before uploading (that needs a real file path, not just bytes).
   File? _videoFile;
   VideoPlayerController? _previewController;
   int? _trimStartSeconds;
@@ -73,11 +58,9 @@ class _UploadScreenState extends State<UploadScreen> {
   double _videoSpeed = 1.0;
   String _filterType = 'none';
   List<TextOverlayData> _textOverlays = [];
-  bool _isUploading = false;
   // True only during the short pause before the one-shot auto-retry (see
   // _uploadPost's catch block) - lets the progress UI say "retrying"
   // instead of the generic "Preparing..." during that specific moment.
-  bool _isRetrying = false;
   // When true (default), non-fullscreen-aspect videos get a blurred,
   // zoomed-in copy of themselves filling the empty space behind them
   // (matches how the video's own colors were already showing through).
@@ -86,7 +69,6 @@ class _UploadScreenState extends State<UploadScreen> {
   // per-upload rather than a fixed app-wide behavior.
   bool _blurBackground = true;
   // 0.0 - 1.0 while the video is being sent to Cloudinary
-  double _uploadProgress = 0;
   String? _errorMessage;
 
   // Which kind of video the user is posting: 'short' or 'long'.
@@ -356,6 +338,7 @@ class _UploadScreenState extends State<UploadScreen> {
   // Pulls the Cloudinary public id out of a delivery URL, e.g.
   // ".../upload/so_0,eo_15/v1784906524/scfmvz1oo1zs9tttppd3.mp4"
   // -> "scfmvz1oo1zs9tttppd3". That id is what an audio overlay needs.
+  // ignore: unused_element
   String _publicIdFromUrl(String url) {
     if (url.isEmpty) return '';
     final String path = url.split('?').first;
@@ -371,6 +354,7 @@ class _UploadScreenState extends State<UploadScreen> {
   // [startOffset, startOffset + videoDurationSeconds] window, so a song
   // longer than the video plays the picked part instead of always
   // starting at 0:00 - see sound_sync_sheet.dart.
+  // ignore: unused_element
   String _buildSoundUrl(
     String videoUrl,
     String soundPublicId, {
@@ -397,60 +381,39 @@ class _UploadScreenState extends State<UploadScreen> {
     return '${before}ac_none/$overlaySpec/fl_layer_apply/$after';
   }
 
-  // Base URL of the self-hosted moderation service (Flask on Render.com),
-  // which proxies to OpenAI's free, multilingual omni-moderation model.
-  static const String _moderationBaseUrl =
-      'https://fly-moderation.onrender.com';
-
-  // Calls the moderation service and returns whether the content was
-  // flagged. Fails "open" (returns false / not flagged) on any network
-  // error or timeout - e.g. the free Render instance waking up from a
-  // cold start can take up to ~50s - so a moderation-service outage never
-  // blocks uploads outright. The local ContentFilter word-list check still
-  // runs regardless as a first line of defense.
-  Future<bool> _isFlaggedByModerationServer(
-    String endpoint,
-    Map<String, dynamic> body,
-  ) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_moderationBaseUrl$endpoint'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 90));
-      if (response.statusCode != 200) return false;
-      final Map<String, dynamic> data = jsonDecode(response.body);
-      return data['flagged'] == true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  // [isAutoRetry] is only ever passed true by this function's own one-shot
-  // auto-retry (see the catch block below) - never set it when calling
-  // this from a button press.
-  Future<void> _uploadPost({bool isAutoRetry = false}) async {
-    if (_videoBytes == null) {
+  // Tapping Post (18 Oct 2026, TikTok-style background posting): only the
+  // quick checks run here, then the whole job (trim, compress, upload,
+  // moderation, Firestore) is handed to PostUploadManager and the person
+  // goes straight to Home - progress shows in the "Posting..." pill
+  // (post_upload_manager.dart) on every tab.
+  Future<void> _uploadPost() async {
+    if (_videoFile == null) {
       setState(() {
         _errorMessage = 'Please choose a video first';
       });
       return;
     }
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    if (FirebaseAuth.instance.currentUser == null) {
       setState(() {
         _errorMessage = 'You must be logged in to upload';
       });
       return;
     }
 
+    // One post at a time - the previous one is still going up (or failed
+    // and is waiting for Retry in the pill).
+    if (PostUploadManager.instance.isBusy) {
+      setState(() {
+        _errorMessage =
+            'Your previous video is still posting. Please wait until it finishes.';
+      });
+      return;
+    }
+
     // Block obviously inappropriate captions before spending any upload
-    // bandwidth. This is a fast, offline first line of defense - the local
-    // word-list is small and English/Burmese-only, so it won't catch every
-    // language or every Burmese slang term.
+    // bandwidth. This is a fast, offline first line of defense - the
+    // multilingual server check runs later, inside PostUploadManager.
     if (ContentFilter.containsBlockedContent(_captionController.text)) {
       setState(() {
         _errorMessage =
@@ -460,17 +423,9 @@ class _UploadScreenState extends State<UploadScreen> {
     }
 
     // Borrowed Sound was implemented as a Cloudinary URL transform (see
-    // _buildSoundUrl below) applied after upload - Bunny Stream has no
-    // equivalent yet, so for now a video using it is blocked here with a
-    // clear message rather than silently posting with its original audio.
-    //
-    // Trim is NOT gated here (unlike Borrowed Sound, which is optional):
-    // every video, from either the camera or the gallery, is routed
-    // through TrimEditorScreen with no way to skip it (see
-    // _pickAndTrimVideo above), so gating on it here would block every
-    // single upload. Trim is instead handled by physically cutting the
-    // video file to the selected range before compression (see below) -
-    // no gate needed for it.
+    // _buildSoundUrl below) - Bunny Stream has no equivalent yet, so a
+    // video using it is blocked here with a clear message rather than
+    // silently posting with its original audio.
     final bool usedBorrowedSound =
         _selectedSoundId != null && _selectedSoundId!.isNotEmpty;
     if (usedBorrowedSound) {
@@ -481,14 +436,9 @@ class _UploadScreenState extends State<UploadScreen> {
       return;
     }
 
-    // No point even trying (and no point burning battery/time waiting on
-    // a timeout) if there's plainly no connection at all - fail fast with
-    // a friendly message instead. A "weak" connection is still worth
-    // attempting - it'll just be slower, and the auto-retry below plus
-    // the Post button (which keeps the picked video/caption exactly as
-    // they are) cover a mid-upload drop.
-    if (!isAutoRetry &&
-        NetworkService.instance.status.value == NetworkStatus.offline) {
+    // No point even starting if there is plainly no connection at all.
+    // A "weak" connection is still worth attempting.
+    if (NetworkService.instance.status.value == NetworkStatus.offline) {
       setState(() {
         _errorMessage =
             "No internet connection. Please check your connection and tap Post to try again.";
@@ -496,352 +446,47 @@ class _UploadScreenState extends State<UploadScreen> {
       return;
     }
 
-    // Second line of defense for the caption: OpenAI's multilingual
-    // moderation model, which understands far more languages and slang
-    // (including Burmese) than the local word-list ever can. Checked here,
-    // before any upload starts, so a flagged caption never wastes upload
-    // bandwidth.
-    if (_captionController.text.trim().isNotEmpty) {
-      setState(() {
-        _isUploading = true;
-        _uploadProgress = 0;
-        _errorMessage = null;
-      });
-      final bool captionFlagged = await _isFlaggedByModerationServer(
-        '/moderate/text',
-        {'text': _captionController.text.trim()},
-      );
-      if (captionFlagged) {
-        if (mounted) {
-          setState(() {
-            _isUploading = false;
-            _errorMessage =
-                'Your caption contains inappropriate language. Please edit it before uploading.';
-          });
-        }
-        return;
-      }
-    }
+    final PostJob job = PostJob(
+      videoFile: _videoFile!,
+      trimStartSeconds: _trimStartSeconds,
+      trimEndSeconds: _trimEndSeconds,
+      caption: _captionController.text.trim(),
+      videoType: _videoType ?? 'short',
+      videoSpeed: _videoSpeed,
+      filterType: _filterType,
+      blurBackground: _blurBackground,
+      textOverlays: _textOverlays.map((o) => o.toMap()).toList(),
+      shareSound: _shareSound,
+      replyToPostId: widget.replyToPostId,
+      replyToOwnerId: widget.replyToOwnerId,
+      replyToOwnerName: widget.replyToOwnerName,
+    );
+    if (!PostUploadManager.instance.start(job)) return;
 
+    // The job owns the video file now - reset the form (the file itself is
+    // NOT deleted) and go to Home, where the pill shows the progress.
+    await _previewController?.dispose();
+    if (!mounted) return;
     setState(() {
-      _isUploading = true;
-      _uploadProgress = 0;
+      _videoType = null;
+      _videoBytes = null;
+      _videoFile = null;
+      _previewController = null;
+      _trimStartSeconds = null;
+      _trimEndSeconds = null;
+      _videoSpeed = 1.0;
+      _filterType = 'none';
+      _textOverlays = [];
+      _captionController.clear();
       _errorMessage = null;
+      _shareSound = false;
+      _selectedSoundId = null;
+      _selectedSoundTitle = null;
+      _selectedSoundOwnerName = null;
+      _selectedSoundSourceUrl = null;
+      _selectedSoundStartOffset = 0;
     });
-
-    // Physically cut the video down to the selected trim range, if one was
-    // picked, before anything else - this used to be a Cloudinary URL
-    // transform applied AFTER a full-length upload (so the untrimmed video
-    // was uploaded every time regardless); doing the real cut here first
-    // means less data to compress and upload, and it's what actually makes
-    // "Trim" do something now that Bunny has no server-side URL-transform
-    // equivalent. Uses platform-native MediaExtractor+MediaMuxer (Android)
-    // / AVFoundation (iOS) via video_trimmer_2 - deliberately not
-    // flutter_native_video_trimmer (tried first), which lost the video's
-    // rotation metadata during its Media3-based trim, making trimmed
-    // videos render tiny/wrong-aspect-ratio in playback; video_trimmer_2's
-    // 0.1.3 release specifically fixed rotation-metadata handling.
-    // Deliberately not FFmpeg either way - the actively-maintained
-    // FFmpeg-for-Flutter forks are GPL-licensed, a real licensing risk for
-    // a closed-source commercial app.
-    Uint8List uploadBytes = _videoBytes!;
-    File? uploadFile = _videoFile;
-    final bool hasRealTrimRange = _trimStartSeconds != null &&
-        _trimEndSeconds != null &&
-        _trimEndSeconds! > _trimStartSeconds!;
-    if (uploadFile != null && hasRealTrimRange) {
-      try {
-        final Trimmer trimmer = Trimmer();
-        final File trimmedVideo = await trimmer.trimVideo(
-          file: uploadFile,
-          startMs: _trimStartSeconds! * 1000,
-          endMs: _trimEndSeconds! * 1000,
-        );
-        // From here on everything (compression, upload) works from this
-        // trimmed FILE - uploadBytes is only the no-file fallback below.
-        // If trimming turned a camera video the wrong way round (see
-        // video_upload_service.dart), keep the untrimmed original instead.
-        uploadFile = await keepVideoOrientation(
-          reference: uploadFile,
-          candidate: trimmedVideo,
-          step: 'trim',
-        );
-      } catch (e) {
-        // Keep going with the untrimmed file - a trim failure shouldn't
-        // stop someone from posting; it just means the full video goes up
-        // instead of the selected range, same as the previous behavior.
-      }
-    }
-
-    // Shrink the video before it ever leaves the phone - phones routinely
-    // shoot at bitrates/resolutions far higher than a short vertical clip
-    // needs, and every extra megabyte here costs upload data for the
-    // person posting, storage on Bunny, and delivery bandwidth for every
-    // single view afterwards. Shown as "Preparing..." in the UI (see the
-    // progress section below) since _uploadProgress is still 0 at this
-    // point. Compresses the FINAL file (after trim) and falls back to the
-    // original if compression fails or doesn't help, so a bad video/format
-    // never blocks posting - see video_upload_service.dart.
-    if (uploadFile != null) {
-      uploadFile = await compressVideoForUpload(uploadFile);
-    }
-
-    try {
-      // Safety net for the rare case there's no on-disk file at all (only
-      // ever expected if _videoFile was somehow never set) - the sanity
-      // check just below needs a real file to call .length() on.
-      if (uploadFile == null) {
-        uploadFile = File(
-            '${Directory.systemTemp.path}/fly_upload_${DateTime.now().millisecondsSinceEpoch}.mp4');
-        await uploadFile.writeAsBytes(uploadBytes);
-      }
-
-      // Empty-file check, size limit, size-based timeout, real abort on
-      // timeout, and the Worker call itself all live in
-      // video_upload_service.dart (shared with video stories).
-      final String uploadedLocalPath = uploadFile.path;
-      final String bunnyVideoId = await uploadVideoToBunny(
-        file: uploadFile,
-        title: 'Fly video',
-        onProgress: (p) {
-          if (mounted) setState(() => _uploadProgress = p);
-        },
-      );
-
-      // Bunny transcodes to an adaptive-bitrate HLS ladder automatically -
-      // video_player's underlying ExoPlayer/AVPlayer picks whatever
-      // rendition actually fits the connection in real time, so (unlike
-      // Cloudinary's plain-file delivery) no manual network-based URL
-      // swapping is needed here the way media_utils.dart's
-      // playableVideoUrl() does for older Cloudinary posts.
-      String videoUrl =
-          'https://$_bunnyCdnHostname/$bunnyVideoId/playlist.m3u8';
-
-      // Multilingual video content check via the OpenAI-backed moderation
-      // service (fly-moderation on Render) - this catches inappropriate
-      // video content the local caption word-list can't, in any language.
-      // Runs after the Bunny upload since it needs the hosted video's
-      // URL to sample frames from.
-      if (mounted) {
-        setState(() => _uploadProgress = 1);
-      }
-      final bool videoFlagged = await _isFlaggedByModerationServer(
-        '/moderate/video',
-        {'video_url': videoUrl},
-      );
-      if (videoFlagged) {
-        if (mounted) {
-          setState(() {
-            _isUploading = false;
-            _errorMessage =
-                'This video was flagged as inappropriate and could not be posted.';
-          });
-        }
-        return;
-      }
-
-      // Look up the uploader's display name so the sound can be
-      // credited to them ("Original sound - Aung") wherever it's reused.
-      String ownerName = user.email?.split('@').first ?? 'User';
-      try {
-        final profile = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
-        final profileData = profile.data();
-        final String? displayName = profileData?['displayName'] as String?;
-        if (displayName != null && displayName.trim().isNotEmpty) {
-          ownerName = displayName.trim();
-        }
-      } catch (_) {
-        // Keep the fallback name
-      }
-
-      final postRef = FirebaseFirestore.instance.collection('posts').doc();
-
-      final String? borrowedSoundId = _selectedSoundId;
-      final bool usingBorrowedSound =
-          borrowedSoundId != null && borrowedSoundId.isNotEmpty;
-
-      String soundId;
-      String soundTitle;
-      String soundOwnerName;
-
-      if (usingBorrowedSound) {
-        // Swap this video's audio for the borrowed sound, and credit the
-        // sound to whoever it originally came from.
-        final String soundPublicId =
-            _publicIdFromUrl(_selectedSoundSourceUrl ?? '');
-        videoUrl = _buildSoundUrl(
-          videoUrl,
-          soundPublicId,
-          startOffset: _selectedSoundStartOffset,
-          videoDurationSeconds: _effectiveVideoDurationSeconds,
-        );
-
-        soundId = borrowedSoundId;
-        soundTitle = _selectedSoundTitle ?? 'Original sound';
-        soundOwnerName = _selectedSoundOwnerName ?? '';
-
-        // Keeps the sound's "N videos" / trending count accurate - see
-        // sounds_library_screen.dart, which sorts by this field.
-        FirebaseFirestore.instance
-            .collection('sounds')
-            .doc(borrowedSoundId)
-            .set({'usageCount': FieldValue.increment(1)},
-                SetOptions(merge: true));
-      } else if (!_shareSound) {
-        // The uploader didn't confirm they own this audio, so it stays
-        // private to this post: no sound doc, no "♪" link in the feed.
-        soundId = '';
-        soundTitle = 'Original sound';
-        soundOwnerName = ownerName;
-      } else {
-        // A fresh upload also becomes a reusable sound of its own. The
-        // sound doc shares the post's id so the two are easy to match up.
-        soundId = postRef.id;
-        soundTitle = 'Original sound';
-        soundOwnerName = ownerName;
-
-        await FirebaseFirestore.instance
-            .collection('sounds')
-            .doc(postRef.id)
-            .set({
-          'ownerId': user.uid,
-          'ownerName': ownerName,
-          'title': 'Original sound',
-          // The video this audio comes from - reusing the sound means
-          // taking the audio track off this URL.
-          'sourceUrl': videoUrl,
-          'sourcePostId': postRef.id,
-          // Own creation doesn't count as a "use" of itself - starts at 0
-          // and only counts videos that later borrow it.
-          'usageCount': 0,
-          'createdAt': FieldValue.serverTimestamp(),
-          ...newSoundModerationFields(),
-        });
-      }
-
-      final String captionText = _captionController.text.trim();
-      // Lowercased so hashtag lookups are case-insensitive; the caption
-      // itself (with original casing) is still stored separately above.
-      final List<String> hashtags = RegExp(r'#([\p{L}\p{N}_]+)', unicode: true)
-          .allMatches(captionText)
-          .map((m) => m.group(1)!.toLowerCase())
-          .toSet()
-          .toList();
-
-      await postRef.set({
-        'userId': user.uid,
-        'userEmail': user.email,
-        'videoUrl': videoUrl,
-        'caption': captionText,
-        'hashtags': hashtags,
-        // 'short' = full-screen vertical, 'long' = landscape (YouTube style)
-        'videoType': _videoType ?? 'short',
-        'videoSpeed': _videoSpeed,
-        'filterType': _filterType,
-        'blurBackground': _blurBackground,
-        'textOverlays': _textOverlays.map((o) => o.toMap()).toList(),
-        'soundId': soundId,
-        'soundTitle': soundTitle,
-        'soundOwnerName': soundOwnerName,
-        // Hidden from everyone but the uploader until Bunny finishes
-        // encoding (see video_upload_service.dart / the Worker webhook).
-        ...newVideoReadinessFields(bunnyVideoId),
-        if (widget.replyToPostId != null) ...{
-          'replyToPostId': widget.replyToPostId,
-          'replyToOwnerId': widget.replyToOwnerId,
-          'replyToOwnerName': widget.replyToOwnerName,
-        },
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      // The uploader watches their new video instantly from the file on
-      // this phone - no waiting for Bunny's encoding.
-      LocalVideoCache.register(videoUrl, uploadedLocalPath);
-      unawaited(syncVideoReady(postRef, bunnyVideoId));
-
-      if (mounted) {
-        await _previewController?.dispose();
-        setState(() {
-          _isUploading = false;
-          _uploadProgress = 0;
-          _videoType = null;
-          _videoBytes = null;
-          _videoFile = null;
-          _previewController = null;
-          _trimStartSeconds = null;
-          _trimEndSeconds = null;
-          _videoSpeed = 1.0;
-          _filterType = 'none';
-          _textOverlays = [];
-          _captionController.clear();
-          _selectedSoundId = null;
-          _selectedSoundTitle = null;
-          _selectedSoundOwnerName = null;
-          _selectedSoundSourceUrl = null;
-          _selectedSoundStartOffset = 0;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Posted successfully!')),
-        );
-        // Jump straight to the Home tab to see the new post, instead of
-        // leaving the person on the Upload screen to find it themselves.
-        navigateToHomeSignal.value++;
-      }
-    } catch (e) {
-      final bool isNetworkIssue = _isNetworkError(e);
-      // One quiet automatic retry for a connectivity blip - covers the
-      // common case (a brief dip that's already resolved by the time
-      // this fires) without silently re-sending a large video file over
-      // and over on a connection that's genuinely down.
-      if (isNetworkIssue && !isAutoRetry) {
-        if (mounted) {
-          setState(() {
-            _uploadProgress = 0;
-            _errorMessage = null;
-            _isRetrying = true;
-          });
-        }
-        await Future.delayed(const Duration(seconds: 3));
-        if (mounted) {
-          setState(() => _isRetrying = false);
-          await _uploadPost(isAutoRetry: true);
-        }
-        return;
-      }
-      if (mounted) {
-        setState(() {
-          _isUploading = false;
-          _uploadProgress = 0;
-          // A plain connectivity failure gets a message that points at
-          // the actual cause instead of a raw exception string - the
-          // video and caption are untouched, so tapping Post again (or
-          // this function's own auto-retry above) just resumes from
-          // scratch with everything already filled in.
-          _errorMessage = isNetworkIssue
-              ? "Couldn't reach the internet. Check your connection and tap Post to try again."
-              : (e is VideoUploadException ? e.message : 'Upload failed: $e');
-        });
-      }
-    }
-  }
-
-  // True for a plain connectivity failure (dropped/absent connection, DNS
-  // failure, or a server that didn't respond in time) - as opposed to
-  // something the server explicitly rejected (moderation, a malformed
-  // request), which retrying the exact same request would never fix.
-  bool _isNetworkError(Object e) {
-    if (e is VideoUploadException) return e.isNetworkIssue;
-    if (e is SocketException || e is TimeoutException) return true;
-    if (e is http.ClientException) return true;
-    final String s = e.toString();
-    return s.contains('SocketException') ||
-        s.contains('Failed host lookup') ||
-        s.contains('Connection closed') ||
-        s.contains('Connection reset') ||
-        s.contains('TimeoutException');
+    navigateToHomeSignal.value++;
   }
 
   @override
@@ -854,7 +499,7 @@ class _UploadScreenState extends State<UploadScreen> {
         leading: _videoType != null
             ? IconButton(
                 icon: const Icon(Icons.arrow_back, color: Colors.white),
-                onPressed: _isUploading ? null : _resetToChooser,
+                onPressed: _resetToChooser,
               )
             : null,
       ),
@@ -898,11 +543,11 @@ class _UploadScreenState extends State<UploadScreen> {
                     ),
                   ),
                   TextButton(
-                    onPressed: _isUploading ? null : _pickSound,
+                    onPressed: _pickSound,
                     child: const Text('Change'),
                   ),
                   IconButton(
-                    onPressed: _isUploading ? null : _clearSelectedSound,
+                    onPressed: _clearSelectedSound,
                     icon: const Icon(Icons.close,
                         color: Colors.white54, size: 18),
                     tooltip: 'Remove sound',
@@ -916,7 +561,7 @@ class _UploadScreenState extends State<UploadScreen> {
             Material(
               color: const Color(0xFF1E1E1E),
               child: InkWell(
-                onTap: _isUploading ? null : _pickSound,
+                onTap: _pickSound,
                 child: Container(
                   width: double.infinity,
                   padding:
@@ -989,7 +634,7 @@ class _UploadScreenState extends State<UploadScreen> {
     required List<Color> colors,
   }) {
     return GestureDetector(
-      onTap: _isUploading ? null : () => _chooseType(type),
+      onTap: () => _chooseType(type),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
@@ -1082,7 +727,7 @@ class _UploadScreenState extends State<UploadScreen> {
                 ),
                 const Spacer(),
                 GestureDetector(
-                  onTap: _isUploading ? null : _resetToChooser,
+                  onTap: _resetToChooser,
                   child: const Text(
                     'Change',
                     style: TextStyle(color: Colors.grey, fontSize: 13),
@@ -1093,7 +738,7 @@ class _UploadScreenState extends State<UploadScreen> {
           ),
           const SizedBox(height: 16),
           GestureDetector(
-            onTap: _isUploading ? null : _pickAndTrimVideo,
+            onTap: _pickAndTrimVideo,
             child: Container(
               height: previewHeight,
               width: double.infinity,
@@ -1216,7 +861,6 @@ class _UploadScreenState extends State<UploadScreen> {
             SoundRightsCheckbox(
               value: _shareSound,
               onChanged: (v) {
-                if (_isUploading) return;
                 setState(() => _shareSound = v);
               },
             ),
@@ -1228,58 +872,24 @@ class _UploadScreenState extends State<UploadScreen> {
             ),
           ],
           const SizedBox(height: 20),
-          if (_isUploading)
-            Column(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: LinearProgressIndicator(
-                    // Null until the first chunk goes out, so the bar
-                    // animates instead of sitting at a dead 0%.
-                    value: _uploadProgress > 0 ? _uploadProgress : null,
-                    minHeight: 8,
-                    backgroundColor: Colors.white12,
-                    valueColor:
-                        const AlwaysStoppedAnimation<Color>(Colors.redAccent),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _isRetrying
-                      ? 'Connection issue - retrying...'
-                      : _uploadProgress > 0
-                          ? 'Uploading... ${(_uploadProgress * 100).toStringAsFixed(0)}%'
-                          : 'Preparing...',
-                  style: const TextStyle(color: Colors.grey),
-                ),
-                if (_uploadProgress >= 1) ...[
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Finishing up...',
-                    style: TextStyle(color: Colors.white38, fontSize: 12),
-                  ),
-                ],
-              ],
-            )
-          else
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _uploadPost,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                child: Text(
-                  _errorMessage != null ? 'Retry Upload' : 'Post',
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold),
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton(
+              onPressed: _uploadPost,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
+              child: Text(
+                _errorMessage != null ? 'Retry Upload' : 'Post',
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
             ),
+          ),
         ],
       ),
     );

@@ -302,6 +302,35 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > `_VideoPostItem` now use `_FeedDelayedSpinner` (0.9 s delay, defined
 > at the bottom of `home_video_post.dart`), so a normal start only shows
 > the thumbnail. No Worker / rules change._
+> _18 Oct 2026 (confirmed by Ko on Fly Dev, night): **TikTok-style
+> background posting.** Tapping Post no longer keeps Ko on the Upload
+> screen. `upload_screen.dart` `_uploadPost()` now only does the quick
+> checks (video chosen, logged in, nothing else still posting, offline
+> `ContentFilter` word list, borrowed-sound block, not offline), builds a
+> `PostJob`, hands it to `PostUploadManager.instance.start(job)`
+> (**new file `screens/post_upload_manager.dart`**), resets the form and
+> pings `navigateToHomeSignal`. The manager (app-wide singleton) runs the
+> whole old pipeline: caption moderation (`/moderate/text`) -> trim ->
+> compress -> `uploadVideoToBunny` -> video moderation -> sound doc (only
+> when "share sound") -> `posts` doc -> `LocalVideoCache.register` +
+> `syncVideoReady`. Its `state` (`ValueNotifier<PostUploadState?>`) feeds
+> `PostUploadPill`, drawn at the top of every tab by `_TopBars` in
+> `main_navigation_screen.dart`: "Preparing..." -> "Posting... N%" ->
+> "Finishing up..." -> "Posted - tap to view" (5 s; tap scrolls the feed to
+> the top) or a red error with Retry (network/server errors) and a close
+> button (moderation refusals have no Retry). One quiet auto-retry after 3 s
+> on a connectivity error, as before. `PostJob` remembers `postDocId`,
+> `bunnyVideoId` and `uploadedLocalPath`, so a Retry never uploads the
+> video twice or creates a second post doc. Only ONE post at a time
+> (`PostUploadManager.isBusy`); a second Post says "Your previous video is
+> still posting". The presence foreground service keeps the process alive
+> if the app goes to the background (not tested on many phones). Borrowed
+> sound is still blocked; `_buildSoundUrl`/`_publicIdFromUrl` stay in
+> upload_screen.dart (`unused_element` ignored) and `_selectedSoundSourceUrl`
+> / `_selectedSoundStartOffset` are now write-only (analyze `unused_field`
+> warnings, harmless). Possible polish: remove the unneeded
+> `flutter/foundation.dart` import in post_upload_manager.dart, show a
+> thumbnail in the pill, allow a queue of posts. No Worker / rules change._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1491,6 +1520,10 @@ position)` — Android drops the video surface in the background and a
   (Cloudinary still-frame URL, or Bunny's sibling `thumbnail.jpg` path — see
   §3). Keep pure utilities here rather than in a screen file; don't add
   widgets to this file.
+- `screens/post_upload_manager.dart` — background posting (18 Oct 2026):
+  `PostJob`, `PostUploadManager` singleton (trim, compress, upload,
+  moderation, Firestore write) and the `PostUploadPill` drawn by
+  `main_navigation_screen.dart`.
 - `screens/upload_screen.dart` — upload flow. First a chooser (📱 Short =
   full-screen vertical / ▶️ Video = landscape), then pick + trim + effects +
   caption + upload to **Bunny Stream** (see §3 for the exact mechanism and
@@ -1507,9 +1540,10 @@ position)` — Android drops the video surface in the background and a
   (see §3 for compression, size-based timeout, 95 MB cap). Network-aware:
   fails fast with a friendly message if offline before starting, does one
   quiet auto-retry (3s delay) on a network error
-  (`VideoUploadException.isNetworkIssue`) before giving up, and relabels the
-  button "Retry Upload" after a failure — the picked video/caption state is
-  preserved either way. Writes `bunnyVideoId`/`videoReady: false`, registers
+  (`VideoUploadException.isNetworkIssue`) before giving up. Since 18 Oct 2026
+  the Post button only runs the quick checks and hands the job to
+  `post_upload_manager.dart` (background posting + "Posting... %" pill, see
+  the 18 Oct note at the top); it no longer shows a progress bar here. Writes `bunnyVideoId`/`videoReady: false`, registers
   the local file with `LocalVideoCache`, and shows the "Let others use my
   sound" rights checkbox (only when no borrowed sound is picked).
 - `screens/trim_editor_screen.dart` — video trim UI (video_editor). Every
@@ -2088,9 +2122,8 @@ others only see it once encoded (Bunny webhook).
     (3)
     search indexing still waits for the Bunny webhook (a new post shows
     in Search only once encoded); (4) if the original is slow to start
-    on weak phones, look at the moov atom / `faststart`. Optional
-    later: TikTok-style background posting (Post → back to Home at
-    once with a "Posting… %" pill).
+    on weak phones, look at the moov atom / `faststart`. (Background
+    posting with the "Posting... %" pill: done 18 Oct 2026.)
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new

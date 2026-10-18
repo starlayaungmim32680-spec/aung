@@ -16,6 +16,7 @@ import 'video_call_screen.dart';
 import 'home_screen.dart';
 import 'chat_screen.dart';
 import 'upload_screen.dart';
+import 'post_upload_manager.dart';
 import 'profile_screen.dart';
 import 'live_screen.dart';
 import 'gifting.dart';
@@ -1106,6 +1107,8 @@ class _TopBars extends StatelessWidget {
         children: [
           _NetworkStatusBanner(),
           _MinimizedCallBar(),
+          // "Posting... 42%" pill of the background upload (18 Oct 2026).
+          PostUploadPill(),
         ],
       ),
     );
