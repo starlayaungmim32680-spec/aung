@@ -40,7 +40,7 @@ class _VideoPostItem extends StatefulWidget {
   // in FullScreenVideoScreen (see below), where the header/stories bar no
   // longer eats into the video's height. Left null inside that fullscreen
   // screen itself, so tapping there behaves normally (play/pause).
-  final VoidCallback? onTapToExpand;
+  final Future<dynamic> Function()? onTapToExpand;
   // Opened from a notification (PostFromNotificationScreen, 1 Oct 2026):
   // open the comments right away (spotlighting [highlightCommentFrom]'s
   // comment), and/or burst [burstEmojiOnStart] over the video.
@@ -678,10 +678,45 @@ class _VideoPostItemState extends State<_VideoPostItem>
       return;
     }
     if (widget.onTapToExpand != null) {
-      widget.onTapToExpand!();
+      _expandToFullScreen();
       return;
     }
     _togglePlayPause();
+  }
+
+  // 18 Oct 2026: tapping a Home video opens the same video full-screen.
+  // The full-screen copy used to open a brand-new player (a network
+  // start = spinner) while this one was already playing. Now this
+  // already-playing player is HANDED OVER (VideoPreloadCache.adopt ->
+  // the full-screen item claims it), so it carries on from the same
+  // second with no spinner. This item then starts a fresh player for
+  // itself in the background so it is ready when the person comes back.
+  bool _expanding = false;
+  Future<void> _expandToFullScreen() async {
+    if (_expanding) return;
+    _expanding = true;
+    try {
+      final c = _controller;
+      if (c != null && c.value.isInitialized && !c.value.hasError) {
+        _stallTimer?.cancel();
+        c.removeListener(_onVideoProgress);
+        VideoPreloadCache.adopt(widget.videoUrl, c);
+        setState(() {
+          _controller = null;
+          _isInitialized = false;
+        });
+        // After the full-screen item has claimed it, prepare a new player
+        // for the way back (a no-op if the hand-over has not happened).
+        Future.delayed(const Duration(milliseconds: 800), () {
+          VideoPreloadCache.preload(widget.videoUrl);
+        });
+      }
+      await widget.onTapToExpand!();
+      if (!mounted) return;
+      if (_controller == null) _initializeVideo();
+    } finally {
+      _expanding = false;
+    }
   }
 
   // Skips forward/backward by [seconds]; keeps the controls visible
@@ -1668,16 +1703,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         ),
                       )
                     else
-                      const Center(
-                        child: SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
-                        ),
-                      ),
+                      // Only after a short wait: a hand-over from Home to
+                      // full-screen (or a quick start) never flashes it.
+                      const _FeedDelayedSpinner(),
                   ],
                 ),
 
@@ -2779,6 +2807,51 @@ class _DoubleTapHeartState extends State<_DoubleTapHeart>
           ),
         );
       },
+    );
+  }
+}
+
+// The feed's loading spinner, shown only after a short delay so a start
+// that takes a moment (or a player hand-over between screens) doesn't
+// flash a spinner for a split second.
+class _FeedDelayedSpinner extends StatefulWidget {
+  const _FeedDelayedSpinner();
+
+  @override
+  State<_FeedDelayedSpinner> createState() => _FeedDelayedSpinnerState();
+}
+
+class _FeedDelayedSpinnerState extends State<_FeedDelayedSpinner> {
+  static const Duration _delay = Duration(milliseconds: 900);
+  Timer? _timer;
+  bool _show = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(_delay, () {
+      if (mounted) setState(() => _show = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_show) return const SizedBox.shrink();
+    return const Center(
+      child: SizedBox(
+        width: 28,
+        height: 28,
+        child: CircularProgressIndicator(
+          color: Colors.white,
+          strokeWidth: 2.5,
+        ),
+      ),
     );
   }
 }

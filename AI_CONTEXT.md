@@ -277,7 +277,31 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > otherwise Android refuses to update the installed app. If a build
 > seems not to contain a new change, run `flutter clean` and `flutter
 > pub get` first (a stale build cache cost us a whole afternoon on
-> 18 Oct) and check the APK size changed._
+> 18 Oct). **Prove the APK has the change before installing it**: copy
+> it to a .zip, expand it, and search `lib\arm64-v8a\libapp.so` for a
+> string that only the new code has (read the file as Latin-1 and use
+> `IndexOf`). The APK size is NOT a reliable check (two different builds
+> had exactly the same size). If `flutter clean` prints "Failed to
+> remove build", old files survive: close Android Studio / adb, run
+> `cmd /c "rmdir /s /q build"`, then clean again. Never reuse the file
+> name `app-dev-release.apk` when sending APKs to the phones (Drive /
+> Downloads mix old and new) - copy to `FlyDev-bn<number>.apk` first._
+> _18 Oct 2026 (confirmed by Ko on Fly Dev, evening): **tapping a Home
+> video opens it full-screen with no white spinner.** (1) In
+> `home_video_post.dart`, `_expandToFullScreen()` hands the playing
+> controller to `VideoPreloadCache.adopt(url, controller)`; the
+> full-screen `_VideoPostItem` claims it in `_initializeVideo` (measured
+> ~41 ms, continues from the same second, no new network start). The
+> Home item then clears its controller, calls
+> `VideoPreloadCache.preload(url)` ~800 ms later and re-initializes
+> after the full-screen route is popped (about 0.4 s on return).
+> `onTapToExpand` is now a `Future<dynamic> Function()?` so the item can
+> await the pop. (2) The white spinner Ko saw was `_FirstFrameCover`
+> (`home_fx_widgets.dart`), which shows it while a video has not moved
+> past 0:00 or is buffering. It and the "loading" spinner in
+> `_VideoPostItem` now use `_FeedDelayedSpinner` (0.9 s delay, defined
+> at the bottom of `home_video_post.dart`), so a normal start only shows
+> the thumbnail. No Worker / rules change._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky

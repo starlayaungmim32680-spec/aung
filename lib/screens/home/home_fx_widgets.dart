@@ -150,17 +150,9 @@ class _FirstFrameCover extends StatelessWidget {
                 errorWidget: (_, __, ___) =>
                     const ColoredBox(color: Colors.black),
               ),
-            if (showSpinner)
-              const Center(
-                child: SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: CircularProgressIndicator(
-                    color: Colors.white70,
-                    strokeWidth: 2.5,
-                  ),
-                ),
-              ),
+            // Only after a short wait (see _FeedDelayedSpinner): the first
+            // second of a start / a hand-over just shows the thumbnail.
+            if (showSpinner) const _FeedDelayedSpinner(),
           ],
         );
       },

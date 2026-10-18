@@ -47,6 +47,16 @@ class VideoPreloadCache {
     }
   }
 
+  /// Hands an already-initialized, playing controller to the cache so the
+  /// next screen that shows [url] can [claim] it and continue seamlessly
+  /// (used when a Home video is opened full-screen). Ownership moves to
+  /// the cache / the claimer; the giver must not use or dispose it.
+  static void adopt(String url, VideoPlayerController controller) {
+    final VideoPlayerController? old = _ready[url];
+    if (old != null && !identical(old, controller)) old.dispose();
+    _ready[url] = controller;
+  }
+
   /// Takes ownership of a preloaded controller for [url], if one is ready.
   /// Removes it from the cache (the caller is now responsible for playing
   /// and eventually disposing it) so it's never double-used or evicted out
