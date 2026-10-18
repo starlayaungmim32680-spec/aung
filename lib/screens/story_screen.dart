@@ -18,6 +18,7 @@ import 'sound_screen.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
 import 'local_video_cache.dart';
+import 'story_file_prefetch.dart';
 import 'text_overlay_style.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
@@ -408,6 +409,7 @@ class _StoriesBarState extends State<StoriesBar> {
   @override
   void dispose() {
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    StoryVideoPrefetch.clear();
     super.dispose();
   }
 
@@ -420,6 +422,35 @@ class _StoriesBarState extends State<StoriesBar> {
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
     final Set<String> hiddenIds = BlockService.instance.hidden.value;
 
+    return SizedBox(
+      height: 182,
+      child: Stack(children: [
+        Positioned.fill(child: _storiesList(myId, hiddenIds)),
+        // Dev builds only: what the background story download is doing.
+        if (AppConfig.isDev)
+          Positioned(
+            left: 6,
+            right: 6,
+            bottom: 0,
+            child: IgnorePointer(
+              child: ValueListenableBuilder<String>(
+                valueListenable: StoryFilePrefetch.status,
+                builder: (_, String v, __) => Text(
+                  'build storylocal-2 | $v',
+                  style: const TextStyle(
+                    color: Colors.yellowAccent,
+                    fontSize: 10,
+                    backgroundColor: Color(0xCC000000),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _storiesList(String? myId, Set<String> hiddenIds) {
     return SizedBox(
       height: 182,
       child: StreamBuilder<QuerySnapshot>(
@@ -438,8 +469,9 @@ class _StoriesBarState extends State<StoriesBar> {
             // drop stories that have expired since.
             final Timestamp? exp = m['expiresAt'] as Timestamp?;
             if (exp != null && exp.toDate().isBefore(now)) continue;
-            // A video story still being encoded is only shown to its poster.
-            if (!isStoryVideoVisibleTo(m, myId)) continue;
+            // Only a video story whose encoding FAILED is hidden from
+            // others (Early-Play: the rest play the original file).
+            if (!isVideoVisibleTo(m, myId)) continue;
             byUser.putIfAbsent(uid, () => []).add(d);
           }
 
@@ -450,6 +482,42 @@ class _StoriesBarState extends State<StoriesBar> {
               if (b == myId) return 1;
               return 0;
             });
+
+          // Open the first video of the first few people now, so tapping
+          // their story starts without a spinner. (The viewer plays each
+          // person's oldest story first.)
+          final List<Map<String, dynamic>> toWarm = [];
+          for (final String u in userIds.take(3)) {
+            final Map<String, dynamic> first =
+                byUser[u]!.last.data() as Map<String, dynamic>;
+            if (first['mediaType'] == 'video') toWarm.add(first);
+          }
+          // Also download the video FILES of the first people's stories, so
+          // they play like a local file (see story_file_prefetch.dart).
+          final List<String> toDownload = [
+            for (final String u in userIds.take(6))
+              for (final QueryDocumentSnapshot st
+                  in byUser[u]!.reversed.take(3))
+                if ((st.data() as Map<String, dynamic>)['mediaType'] == 'video')
+                  ((st.data() as Map<String, dynamic>)['mediaUrl']
+                          as String?) ??
+                      '',
+          ];
+          if (toDownload.isNotEmpty) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              for (final String u in toDownload) {
+                StoryFilePrefetch.prefetch(u);
+              }
+            });
+          }
+          if (toWarm.isNotEmpty) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              for (final Map<String, dynamic> m in toWarm) {
+                StoryVideoPrefetch.warm(
+                    (m['mediaUrl'] as String?) ?? '', m['videoReady'] == false);
+              }
+            });
+          }
 
           return ListView(
             scrollDirection: Axis.horizontal,
@@ -1021,6 +1089,86 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   }
 }
 
+// Opens and initializes a player for a story video. Order of attempts:
+//  - the poster's own local file (instant);
+//  - a video Bunny has NOT finished encoding yet (videoReady == false):
+//    the original file first - its HLS playlist doesn't exist yet, so
+//    trying it first only adds a wait before the fallback;
+//  - otherwise HLS first, original file as the fallback.
+// Dev-build diagnostics: how each story url was opened last time.
+final Map<String, String> kStoryOpenNotes = {};
+
+Future<VideoPlayerController> openStoryVideoPlayer(
+    String url, bool notEncodedYet) async {
+  final File? localFile = LocalVideoCache.fileFor(url);
+  if (localFile != null) {
+    kStoryOpenNotes[url] = 'local file';
+    final VideoPlayerController c = VideoPlayerController.file(localFile);
+    try {
+      await c.initialize();
+      return c;
+    } catch (_) {
+      await c.dispose();
+      rethrow;
+    }
+  }
+  final String? originalUrl = bunnyOriginalFileUrl(url);
+  final List<String> candidates = [
+    if (notEncodedYet && originalUrl != null) originalUrl,
+    url,
+    if (!notEncodedYet && originalUrl != null) originalUrl,
+  ];
+  Object error = StateError('no playable url');
+  for (final String candidate in candidates) {
+    final VideoPlayerController c =
+        VideoPlayerController.networkUrl(Uri.parse(candidate));
+    final Stopwatch sw = Stopwatch()..start();
+    try {
+      await c.initialize();
+      kStoryOpenNotes[url] =
+          '${candidate == url ? 'HLS' : 'original'} init ${sw.elapsedMilliseconds}ms';
+      return c;
+    } catch (e) {
+      kStoryOpenNotes[url] =
+          '${candidate == url ? 'HLS' : 'original'} FAILED after ${sw.elapsedMilliseconds}ms';
+      error = e;
+      await c.dispose();
+    }
+  }
+  throw error;
+}
+
+// Story videos opened BEFORE the viewer is (while the story bar is on
+// screen), so tapping a person's story starts at once instead of after a
+// spinner. Few on purpose: every opened player holds a video decoder.
+class StoryVideoPrefetch {
+  static const int _max = 3;
+  static final Map<String, Future<VideoPlayerController>> _ready = {};
+
+  static void warm(String url, bool notEncodedYet) {
+    if (url.isEmpty || _ready.containsKey(url)) return;
+    if (LocalVideoCache.fileFor(url) != null) return; // already instant
+    while (_ready.length >= _max) {
+      final String oldest = _ready.keys.first;
+      _ready.remove(oldest)!.then((c) => c.dispose(), onError: (_) {});
+    }
+    final Future<VideoPlayerController> f =
+        openStoryVideoPlayer(url, notEncodedYet);
+    f.ignore();
+    _ready[url] = f;
+  }
+
+  // Hands over (and forgets) a warmed player, or null.
+  static Future<VideoPlayerController>? take(String url) => _ready.remove(url);
+
+  static void clear() {
+    for (final Future<VideoPlayerController> f in _ready.values) {
+      f.then((c) => c.dispose(), onError: (_) {});
+    }
+    _ready.clear();
+  }
+}
+
 // All the stories of ONE person (one page of the viewer above).
 class _UserStoriesPage extends StatefulWidget {
   final List<QueryDocumentSnapshot> stories;
@@ -1062,6 +1210,9 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
   // Bumped on every _loadCurrent so a slow load for a story the viewer has
   // already moved past never starts playing over the current one.
   int _loadSeq = 0;
+
+  // Dev builds only: how the current story video was opened.
+  String _dbg = '';
 
   // Has this page loaded its current story yet? (Pages next to the one on
   // screen are built during a swipe but only load once they're active.)
@@ -1206,15 +1357,72 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
     if (mounted) setState(() {});
   }
 
+  // Story videos opened ahead of time, by url (at most one: the next story).
+  final Map<String, Future<VideoPlayerController>> _preloads = {};
+
+  Future<VideoPlayerController> _openStoryVideo(
+          String url, bool notEncodedYet) =>
+      openStoryVideoPlayer(url, notEncodedYet);
+
+  // While the current story plays, get the next one ready so it starts at
+  // once (like Facebook) instead of after a spinner.
+  void _preloadNext() {
+    final int n = _index + 1;
+    if (n >= widget.stories.length) return;
+    final Map<String, dynamic> d =
+        widget.stories[n].data() as Map<String, dynamic>;
+    if (d['mediaType'] != 'video') return;
+    final String u = d['mediaUrl'] as String? ?? '';
+    if (u.isEmpty || _preloads.containsKey(u)) return;
+    _disposePreloads();
+    final Future<VideoPlayerController> f =
+        _openStoryVideo(u, d['videoReady'] == false);
+    f.ignore();
+    _preloads[u] = f;
+  }
+
+  void _disposePreloads() {
+    for (final Future<VideoPlayerController> f in _preloads.values) {
+      f.then((c) => c.dispose(), onError: (_) {});
+    }
+    _preloads.clear();
+  }
+
   Future<void> _loadCurrent() async {
     final int seq = ++_loadSeq;
+    // A video story starts opening FIRST, so its network work runs while the
+    // cleanup of the previous story below is still going on.
+    Future<VideoPlayerController>? earlyOpening;
+    final Stopwatch loadWatch = Stopwatch()..start();
+    String openSource = 'MISS (opened on tap)';
+    {
+      final Map<String, dynamic> d = _current;
+      final String u = d['mediaUrl'] ?? '';
+      if (d['mediaType'] == 'video' && u.isNotEmpty) {
+        final Future<VideoPlayerController>? fromNext = _preloads.remove(u);
+        final Future<VideoPlayerController>? fromBar =
+            fromNext == null ? StoryVideoPrefetch.take(u) : null;
+        if (fromNext != null) openSource = 'next-story preload HIT';
+        if (fromBar != null) openSource = 'story-bar prefetch HIT';
+        earlyOpening =
+            fromNext ?? fromBar ?? _openStoryVideo(u, d['videoReady'] == false);
+        earlyOpening.ignore();
+      }
+    }
+    if (AppConfig.isDev) {
+      _dbg = '$openSource | loading...';
+      if (mounted) setState(() {});
+    }
     _progress.stop();
     _progress.reset();
     await _music.stop();
     final VideoPlayerController? old = _video;
     _video = null;
     await old?.dispose();
-    if (!mounted || seq != _loadSeq) return;
+    if (!mounted || seq != _loadSeq) {
+      earlyOpening?.then((c) => c.dispose(), onError: (_) {});
+      return;
+    }
     _subscribeReactions();
 
     final data = _current;
@@ -1233,15 +1441,20 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
     if (type == 'video' && url.isNotEmpty) {
       // The poster's own just-uploaded story plays from the local file -
       // instant, and works before Bunny has finished encoding it.
-      final File? localFile = LocalVideoCache.fileFor(url);
-      final controller = localFile != null
-          ? VideoPlayerController.file(localFile)
-          : VideoPlayerController.networkUrl(Uri.parse(url));
+      // Opened at the top of this method (or earlier: see _preloadNext and
+      // StoryVideoPrefetch), so it is usually ready by now.
+      final Future<VideoPlayerController> opening =
+          earlyOpening ?? _openStoryVideo(url, data['videoReady'] == false);
+      VideoPlayerController controller;
       try {
-        await controller.initialize();
+        controller = await opening;
       } catch (_) {
-        await controller.dispose();
         if (!mounted || seq != _loadSeq) return;
+        if (AppConfig.isDev) {
+          _dbg =
+              '$openSource | FAILED after ${loadWatch.elapsedMilliseconds}ms | '
+              '${kStoryOpenNotes[url] ?? '?'}';
+        }
         // Unplayable video - still let the story time out and advance.
         setState(() {});
         _progress.duration = _imageDuration;
@@ -1251,6 +1464,10 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
       if (!mounted || seq != _loadSeq) {
         await controller.dispose();
         return;
+      }
+      if (AppConfig.isDev) {
+        _dbg = '$openSource | waited ${loadWatch.elapsedMilliseconds}ms | '
+            '${kStoryOpenNotes[url] ?? '?'}';
       }
       final double speed = (data['videoSpeed'] as num?)?.toDouble() ?? 1.0;
       await controller.setPlaybackSpeed(speed);
@@ -1286,6 +1503,7 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
       if (_canPlay) controller.play();
       setState(() => _video = controller);
       if (_canPlay) _progress.forward();
+      _preloadNext();
     } else {
       if (!mounted) return;
       setState(() {});
@@ -1631,6 +1849,7 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
     _reactionSub?.cancel();
     _progress.dispose();
     _video?.dispose();
+    _disposePreloads();
     _music.dispose();
     _replyController.dispose();
     _replyFocus.dispose();
@@ -1691,10 +1910,9 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
             fit: BoxFit.contain,
             errorWidget: (_, __, ___) => const SizedBox.shrink(),
           ),
-        if (widget.isActive)
-          const Center(
-            child: CircularProgressIndicator(color: Colors.white),
-          ),
+        // Like Facebook / TikTok: no spinner for a quick start - it only
+        // shows when loading really takes a while.
+        if (widget.isActive) const _DelayedSpinner(),
       ],
     );
   }
@@ -1906,6 +2124,22 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
                 if (type == 'video')
                   for (final overlay in textOverlays)
                     _positionedOverlayText(overlay),
+                if (AppConfig.isDev && _dbg.isNotEmpty)
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    top: 96,
+                    child: IgnorePointer(
+                      child: Text(
+                        _dbg,
+                        style: const TextStyle(
+                          color: Colors.yellowAccent,
+                          fontSize: 11,
+                          backgroundColor: Color(0xAA000000),
+                        ),
+                      ),
+                    ),
+                  ),
                 // Soft dark fades so the header and reply box stay readable.
                 const IgnorePointer(
                   child: DecoratedBox(
@@ -2231,6 +2465,43 @@ class _FloatingReactionWidgetState extends State<_FloatingReactionWidget>
         );
       },
       child: Text(widget.data.emoji, style: const TextStyle(fontSize: 34)),
+    );
+  }
+}
+
+// A loading spinner that only appears after [delay] (a story that starts
+// within that time never shows one).
+class _DelayedSpinner extends StatefulWidget {
+  const _DelayedSpinner();
+
+  @override
+  State<_DelayedSpinner> createState() => _DelayedSpinnerState();
+}
+
+class _DelayedSpinnerState extends State<_DelayedSpinner> {
+  static const Duration delay = Duration(milliseconds: 1200);
+  Timer? _timer;
+  bool _show = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(delay, () {
+      if (mounted) setState(() => _show = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_show) return const SizedBox.shrink();
+    return const Center(
+      child: CircularProgressIndicator(color: Colors.white),
     );
   }
 }

@@ -62,23 +62,25 @@ Future<void> syncVideoReady(DocumentReference ref, String bunnyVideoId) async {
   }
 }
 
-// Whether a post/story should be shown to [myUid]. Only an explicit
-// `videoReady: false` hides it (older posts have no such field), and the
-// uploader always sees their own.
+// Whether a post/story should be shown to [myUid].
+// 16-18 Oct 2026 (Early-Play): posts AND stories are visible to everybody
+// as soon as the upload finishes. While Bunny is still encoding, viewers
+// play the original file instead - see home_video_post.dart (posts) and
+// story_screen.dart (stories). Only a video whose encoding FAILED stays
+// hidden (except from its uploader).
 bool isVideoVisibleTo(Map<String, dynamic> data, String? myUid) {
-  // 16 Oct 2026: feed POSTS are now visible to everybody as soon as the
-  // upload finishes. While Bunny is still encoding, viewers play the
-  // original file (Early-Play) - see home_video_post.dart. Only a video
-  // whose encoding FAILED stays hidden (except from its uploader).
   if (data['videoFailed'] != true) return true;
   return myUid != null && data['userId'] == myUid;
 }
 
-// Stories keep the old rule: a video story still being encoded is only
-// shown to its poster (the story viewer has no original-file fallback).
-bool isStoryVideoVisibleTo(Map<String, dynamic> data, String? myUid) {
-  if (data['videoReady'] != false) return true;
-  return myUid != null && data['userId'] == myUid;
+// Bunny Early-Play: the original uploaded file of a Stream video, e.g.
+// https://host/<id>/playlist.m3u8  ->  https://host/<id>/original
+// Returns null for anything that isn't a Bunny HLS url. It only works
+// while the library has "Early-Play" and "Keep original files" ON.
+String? bunnyOriginalFileUrl(String hlsUrl) {
+  const String tail = '/playlist.m3u8';
+  if (!hlsUrl.contains('b-cdn.net') || !hlsUrl.endsWith(tail)) return null;
+  return '${hlsUrl.substring(0, hlsUrl.length - tail.length)}/original';
 }
 
 class VideoUploadException implements Exception {
