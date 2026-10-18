@@ -247,14 +247,37 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > only), MP4 fallback OFF, Keep original files ON, **Early-Play ON**
 > (makes originals public), 360p/480p/720p, H.264 only. (2) App
 > (commit `a853d02`): `isVideoVisibleTo()` in `video_upload_service.dart`
-> hides only posts with `videoFailed: true`; stories keep the old rule
-> via `isStoryVideoVisibleTo()` (`story_screen.dart`). In
+> hides only posts with `videoFailed: true` (stories use it too since
+> 18 Oct, see the note below). In
 > `home_video_post.dart`, if the HLS `playlist.m3u8` of a fresh post
 > (< 30 min) fails, `_initializeVideo` retries ONCE with the original
 > file `https://<cdn>/<videoId>/original` (`_originalFileUrl()`,
 > `_useOriginal` / `_triedOriginal`); if that fails too it shows
 > "Processing video..." and retries every 5s. No Worker / rules change.
 > Not measured: how fast the original starts on weak phones. See To-do 00._
+> _18 Oct 2026 (confirmed by Ko on Fly Dev, phones A and B): **stories
+> start instantly for viewers, no spinner.** (1) Stories use
+> `isVideoVisibleTo()` like posts (the old `isStoryVideoVisibleTo()` is
+> gone), so a fresh video story shows to everyone at once.
+> (2) `openStoryVideoPlayer(url, notEncodedYet)` in `story_screen.dart`:
+> local file first, then the Bunny original file (first while
+> `videoReady == false`) / HLS. (3) `StoryVideoPrefetch` (same file)
+> warms up to 3 players for the first stories while the Home story bar
+> is on screen. (4) NEW `story_file_prefetch.dart`: `StoryFilePrefetch`
+> downloads the original file (`.../<guid>/original`, max 2 at once,
+> 60 MB each, newest 30 kept, nothing older than a day, retry after
+> 30 s) into `<temp>/story_cache/<guid>.mp4` and registers it in
+> `LocalVideoCache`, so the viewer plays it like the poster's local
+> file. Started from the story bar for up to 6 people x 3 newest video
+> stories. (5) The story viewer shows its loading spinner only after
+> 1200 ms (`_DelayedSpinner`). No Worker / rules change.
+> **Build rule:** `pubspec.yaml` has `version: 1.0.0+1`, so every build
+> must pass `--build-number` (e.g. `$bn = Get-Date -Format "MMddHHmm"`,
+> `flutter build apk --release --flavor dev --build-number=$bn`),
+> otherwise Android refuses to update the installed app. If a build
+> seems not to contain a new change, run `flutter clean` and `flutter
+> pub get` first (a stale build cache cost us a whole afternoon on
+> 18 Oct) and check the APK size changed._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -523,12 +546,11 @@ status, updatedAt}` and sets `videoReady: true` on any post/story
     uses the same Firebase service account as `/call-push`, with the
     Datastore OAuth scope, via Firestore's REST API. - Race-proofing: the app creates the doc and **then** calls
     `syncVideoReady()`, which checks `videoStatus/{id}` and flips the
-    flag itself if encoding already finished first. - `isStoryVideoVisibleTo(data, myUid)`: only an explicit `videoReady: false`
-    hides a doc, and never from its own uploader. Used by the **Stories
-    bar**. Old docs without the field stay visible. Feed POSTS use
-    `isVideoVisibleTo`, which since 16 Oct 2026 hides only
-    `videoFailed: true` posts (viewers play the original file while
-    Bunny encodes - see the 16 Oct "Early-Play" note at the top). - The uploader plays their fresh video **instantly from the local
+    flag itself if encoding already finished first. - `isVideoVisibleTo(data, myUid)`: since 16 Oct 2026 (posts) and 18 Oct
+    2026 (stories, Stories bar) it hides only `videoFailed: true`, and
+    never from its own uploader (viewers play the original file while
+    Bunny encodes - see the Early-Play and 18 Oct notes at the top).
+    Old docs without the field stay visible. - The uploader plays their fresh video **instantly from the local
     file** via `LocalVideoCache` (`local_video_cache.dart`, keyed by
     videoUrl, in-memory only). If the app restarts before encoding ends,
     playback falls back to the network and `_VideoPostItem` shows a
@@ -2031,14 +2053,15 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 16 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 18 Oct 2026)
 
 00. **After Premium + Early-Play (both libraries, done 16-17 Oct
     2026)** - still open: (1) check Billing → Overview a day or two
     later for the Premium Encoding line (expected ~$0.05 per video
-    minute; the balance was $9.93 on 16 Oct); (2) the same
-    original-file fallback for **stories** (`story_screen.dart` still
-    hides a story from others until Bunny finishes encoding); (3)
+    minute; the balance was $9.93 on 16 Oct); (2) done 18 Oct
+    (stories now play the original file and start instantly - idea if it
+    is ever slow again: compress story uploads smaller, e.g. ~720p);
+    (3)
     search indexing still waits for the Bunny webhook (a new post shows
     in Search only once encoded); (4) if the original is slow to start
     on weak phones, look at the moov atom / `faststart`. Optional

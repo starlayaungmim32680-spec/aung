@@ -424,29 +424,7 @@ class _StoriesBarState extends State<StoriesBar> {
 
     return SizedBox(
       height: 182,
-      child: Stack(children: [
-        Positioned.fill(child: _storiesList(myId, hiddenIds)),
-        // Dev builds only: what the background story download is doing.
-        if (AppConfig.isDev)
-          Positioned(
-            left: 6,
-            right: 6,
-            bottom: 0,
-            child: IgnorePointer(
-              child: ValueListenableBuilder<String>(
-                valueListenable: StoryFilePrefetch.status,
-                builder: (_, String v, __) => Text(
-                  'build storylocal-2 | $v',
-                  style: const TextStyle(
-                    color: Colors.yellowAccent,
-                    fontSize: 10,
-                    backgroundColor: Color(0xCC000000),
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ]),
+      child: _storiesList(myId, hiddenIds),
     );
   }
 
@@ -1095,14 +1073,11 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
 //    the original file first - its HLS playlist doesn't exist yet, so
 //    trying it first only adds a wait before the fallback;
 //  - otherwise HLS first, original file as the fallback.
-// Dev-build diagnostics: how each story url was opened last time.
-final Map<String, String> kStoryOpenNotes = {};
 
 Future<VideoPlayerController> openStoryVideoPlayer(
     String url, bool notEncodedYet) async {
   final File? localFile = LocalVideoCache.fileFor(url);
   if (localFile != null) {
-    kStoryOpenNotes[url] = 'local file';
     final VideoPlayerController c = VideoPlayerController.file(localFile);
     try {
       await c.initialize();
@@ -1122,15 +1097,10 @@ Future<VideoPlayerController> openStoryVideoPlayer(
   for (final String candidate in candidates) {
     final VideoPlayerController c =
         VideoPlayerController.networkUrl(Uri.parse(candidate));
-    final Stopwatch sw = Stopwatch()..start();
     try {
       await c.initialize();
-      kStoryOpenNotes[url] =
-          '${candidate == url ? 'HLS' : 'original'} init ${sw.elapsedMilliseconds}ms';
       return c;
     } catch (e) {
-      kStoryOpenNotes[url] =
-          '${candidate == url ? 'HLS' : 'original'} FAILED after ${sw.elapsedMilliseconds}ms';
       error = e;
       await c.dispose();
     }
@@ -1212,7 +1182,6 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
   int _loadSeq = 0;
 
   // Dev builds only: how the current story video was opened.
-  String _dbg = '';
 
   // Has this page loaded its current story yet? (Pages next to the one on
   // screen are built during a swipe but only load once they're active.)
@@ -1393,8 +1362,6 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
     // A video story starts opening FIRST, so its network work runs while the
     // cleanup of the previous story below is still going on.
     Future<VideoPlayerController>? earlyOpening;
-    final Stopwatch loadWatch = Stopwatch()..start();
-    String openSource = 'MISS (opened on tap)';
     {
       final Map<String, dynamic> d = _current;
       final String u = d['mediaUrl'] ?? '';
@@ -1402,16 +1369,10 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
         final Future<VideoPlayerController>? fromNext = _preloads.remove(u);
         final Future<VideoPlayerController>? fromBar =
             fromNext == null ? StoryVideoPrefetch.take(u) : null;
-        if (fromNext != null) openSource = 'next-story preload HIT';
-        if (fromBar != null) openSource = 'story-bar prefetch HIT';
         earlyOpening =
             fromNext ?? fromBar ?? _openStoryVideo(u, d['videoReady'] == false);
         earlyOpening.ignore();
       }
-    }
-    if (AppConfig.isDev) {
-      _dbg = '$openSource | loading...';
-      if (mounted) setState(() {});
     }
     _progress.stop();
     _progress.reset();
@@ -1450,11 +1411,6 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
         controller = await opening;
       } catch (_) {
         if (!mounted || seq != _loadSeq) return;
-        if (AppConfig.isDev) {
-          _dbg =
-              '$openSource | FAILED after ${loadWatch.elapsedMilliseconds}ms | '
-              '${kStoryOpenNotes[url] ?? '?'}';
-        }
         // Unplayable video - still let the story time out and advance.
         setState(() {});
         _progress.duration = _imageDuration;
@@ -1464,10 +1420,6 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
       if (!mounted || seq != _loadSeq) {
         await controller.dispose();
         return;
-      }
-      if (AppConfig.isDev) {
-        _dbg = '$openSource | waited ${loadWatch.elapsedMilliseconds}ms | '
-            '${kStoryOpenNotes[url] ?? '?'}';
       }
       final double speed = (data['videoSpeed'] as num?)?.toDouble() ?? 1.0;
       await controller.setPlaybackSpeed(speed);
@@ -2124,22 +2076,6 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
                 if (type == 'video')
                   for (final overlay in textOverlays)
                     _positionedOverlayText(overlay),
-                if (AppConfig.isDev && _dbg.isNotEmpty)
-                  Positioned(
-                    left: 8,
-                    right: 8,
-                    top: 96,
-                    child: IgnorePointer(
-                      child: Text(
-                        _dbg,
-                        style: const TextStyle(
-                          color: Colors.yellowAccent,
-                          fontSize: 11,
-                          backgroundColor: Color(0xAA000000),
-                        ),
-                      ),
-                    ),
-                  ),
                 // Soft dark fades so the header and reply box stay readable.
                 const IgnorePointer(
                   child: DecoratedBox(

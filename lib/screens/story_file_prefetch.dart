@@ -33,15 +33,6 @@ class StoryFilePrefetch {
   static final Map<String, DateTime> _failedAt = {};
   static int _active = 0;
 
-  // Dev builds show this under the Home story bar (see story_screen.dart).
-  static final ValueNotifier<String> status =
-      ValueNotifier<String>('prefetch: idle');
-  static int _okCount = 0;
-  static int _failCount = 0;
-  static void _report(String last) {
-    status.value = 'prefetch ok:$_okCount fail:$_failCount | $last';
-  }
-
   // Asks for [hlsUrl]'s video file to be fetched in the background.
   static void prefetch(String hlsUrl) {
     if (hlsUrl.isEmpty) return;
@@ -53,7 +44,6 @@ class StoryFilePrefetch {
     }
     if (bunnyOriginalFileUrl(hlsUrl) == null) return;
     _queue.add(hlsUrl);
-    _report('queued ${_queue.length}');
     _pump();
   }
 
@@ -88,8 +78,6 @@ class StoryFilePrefetch {
       // Already downloaded earlier (even in a previous app session).
       if (await target.exists() && await target.length() > 0) {
         LocalVideoCache.register(hlsUrl, target.path);
-        _okCount++;
-        _report('already on disk');
         return;
       }
 
@@ -99,8 +87,6 @@ class StoryFilePrefetch {
           .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
         _failedAt[hlsUrl] = DateTime.now();
-        _failCount++;
-        _report('HTTP ${response.statusCode}');
         return;
       }
       final int? expected = response.contentLength;
@@ -124,21 +110,15 @@ class StoryFilePrefetch {
       }
       if (written <= 0 || (expected != null && written != expected)) {
         _failedAt[hlsUrl] = DateTime.now();
-        _failCount++;
-        _report('size mismatch got $written expected $expected');
         await part.delete();
         return;
       }
       await part.rename(target.path);
       part = null;
       LocalVideoCache.register(hlsUrl, target.path);
-      _okCount++;
-      _report('saved ${(written / 1024).round()} KB');
       unawaited(_trim(dir));
     } catch (e) {
       _failedAt[hlsUrl] = DateTime.now();
-      _failCount++;
-      _report('ERROR $e');
       debugPrint('[story_prefetch] $hlsUrl failed: $e');
       try {
         if (part != null && await part.exists()) await part.delete();
