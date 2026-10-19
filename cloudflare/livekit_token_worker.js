@@ -1197,6 +1197,774 @@ async function handleActivityPush(body, env, caller) {
 // (the free plan allows 50 D1 queries per request). The trigram tokenizer
 // finds text anywhere in a word ("ung" -> "Aung") for queries of 3+
 // characters; 1-2 characters use a plain prefix match instead.
+// ---------------------------------------------------------------------
+// Myanmar text tools for Search (19 Oct 2026)
+// ---------------------------------------------------------------------
+// Many phones in Myanmar still type "Zawgyi" - a font hack that stores the
+// SAME Burmese words with DIFFERENT code points than Unicode. Search used
+// to compare raw text, so a post typed in Zawgyi was invisible to a phone
+// typing Unicode (and the other way round). Everything that goes INTO the
+// search index, and every search word, now passes through here first:
+//   1. detect Zawgyi, convert it to Unicode (Google's Myanmar Tools);
+//   2. tidy the text (lower case, no zero-width characters, the vowel /
+//      medial marks of a syllable in one fixed order - people type them in
+//      different orders and Unicode shows them the same).
+// Firestore keeps the text exactly as typed; only D1 (search) is normalized.
+//
+// The Zawgyi detector and the Zawgyi -> Unicode rules below are from
+// Google's "Myanmar Tools" (https://github.com/googlei18n/myanmar-tools,
+// npm `myanmar-tools` 1.2.0), Copyright 2017 Google LLC, Apache License 2.0
+// (http://www.apache.org/licenses/LICENSE-2.0). The rule table and the
+// base64 model are copied unchanged; the small runner code is ported from
+// their TypeScript to plain JavaScript.
+
+// ---- Zawgyi -> Unicode rules (generated, unchanged) ----
+// TRANSLITERATION RULES
+// Input path: genconvert/input/my-t-my-s0-zawgyi.txt
+function getAllRulesZ2U() {
+  var rules0 = [
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u1064'),
+      s: '\u1004\u103A\u1039$1\u103B',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u1064'),
+      s: '\u1004\u103A\u1039$1',
+    },
+    {
+      p: RegExp('^' + '\u1064'),
+      s: '\u1004\u103A\u1039',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u108B'),
+      s: '\u1004\u103A\u1039$1\u102D',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u108C'),
+      s: '\u1004\u103A\u1039$1\u102E',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u108D'),
+      s: '\u1004\u103A\u1039$1\u1036',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u1033\u108B'),
+      s: '\u1004\u103A\u1039$1\u103B\u102D\u102F',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u108B'),
+      s: '\u1004\u103A\u1039$1\u103B\u102D',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u108C'),
+      s: '\u1004\u103A\u1039$1\u103B\u102E',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u108D'),
+      s: '\u1004\u103A\u1039$1\u103B\u1036',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])\u103A\u108E'),
+      s: '$1\u103B\u102D\u1036',
+    },
+    {
+      p: RegExp('^' + '\u108B'),
+      s: '\u1004\u103A\u1039\u102D',
+    },
+    {
+      p: RegExp('^' + '\u108C'),
+      s: '\u1004\u103A\u1039\u102E',
+    },
+    {
+      p: RegExp('^' + '\u108D'),
+      s: '\u1004\u103A\u1039\u1036',
+    },
+    {
+      p: RegExp('^' + '\u106A'),
+      s: '\u1009',
+    },
+    {
+      p: RegExp('^' + '\u106B'),
+      s: '\u100A',
+    },
+    {
+      p: RegExp('^' + '\u108F'),
+      s: '\u1014',
+    },
+    {
+      p: RegExp('^' + '\u1090'),
+      s: '\u101B',
+    },
+    {
+      p: RegExp('^' + '\u1086'),
+      s: '\u103F',
+    },
+    {
+      p: RegExp('^' + '[\u103A\u107D]'),
+      s: '\u103B',
+    },
+    {
+      p: RegExp('^' + '([\u103B\u107E-\u1084])+'),
+      s: '\u103C',
+    },
+    {
+      p: RegExp('^' + '\u103C*\u108A'),
+      s: '\u103D\u103E',
+    },
+    {
+      p: RegExp('^' + '\u103C'),
+      s: '\u103D',
+    },
+    {
+      p: RegExp('^' + '[\u103D\u1087]'),
+      s: '\u103E',
+    },
+    {
+      p: RegExp('^' + '\u1088'),
+      s: '\u103E\u102F',
+    },
+    {
+      p: RegExp('^' + '\u1089'),
+      s: '\u103E\u1030',
+    },
+    {
+      p: RegExp('^' + '\u1033'),
+      s: '\u102F',
+    },
+    {
+      p: RegExp('^' + '\u1034'),
+      s: '\u1030',
+    },
+    {
+      p: RegExp('^' + '\u1039'),
+      s: '\u103A',
+    },
+    {
+      p: RegExp('^' + '[\u1094\u1095]'),
+      s: '\u1037',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1039'),
+      s: '\u1009\u103A',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1061'),
+      s: '\u1009\u1039\u1001',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1062'),
+      s: '\u1009\u1039\u1002',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1065'),
+      s: '\u1009\u1039\u1005',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1068'),
+      s: '\u1009\u1039\u1007',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1076'),
+      s: '\u1009\u1039\u1013',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1078'),
+      s: '\u1009\u1039\u1015',
+    },
+    {
+      p: RegExp('^' + '\u1025\u107A'),
+      s: '\u1009\u1039\u1017',
+    },
+    {
+      p: RegExp('^' + '\u1025\u1079'),
+      s: '\u1009\u1039\u1016',
+    },
+    {
+      p: RegExp('^' + '\u105A'),
+      s: '\u102B\u103A',
+    },
+    {
+      p: RegExp('^' + '\u1060'),
+      s: '\u1039\u1000',
+    },
+    {
+      p: RegExp('^' + '\u1061'),
+      s: '\u1039\u1001',
+    },
+    {
+      p: RegExp('^' + '\u1062'),
+      s: '\u1039\u1002',
+    },
+    {
+      p: RegExp('^' + '\u1063'),
+      s: '\u1039\u1003',
+    },
+    {
+      p: RegExp('^' + '\u1065'),
+      s: '\u1039\u1005',
+    },
+    {
+      p: RegExp('^' + '[\u1066\u1067]'),
+      s: '\u1039\u1006',
+    },
+    {
+      p: RegExp('^' + '\u1068'),
+      s: '\u1039\u1007',
+    },
+    {
+      p: RegExp('^' + '\u1069'),
+      s: '\u1039\u1008',
+    },
+    {
+      p: RegExp('^' + '\u106C'),
+      s: '\u1039\u100B',
+    },
+    {
+      p: RegExp('^' + '\u106D'),
+      s: '\u1039\u100C',
+    },
+    {
+      p: RegExp('^' + '\u1070'),
+      s: '\u1039\u100F',
+    },
+    {
+      p: RegExp('^' + '[\u1071\u1072]'),
+      s: '\u1039\u1010',
+    },
+    {
+      p: RegExp('^' + '\u1096'),
+      s: '\u1039\u1010\u103D',
+    },
+    {
+      p: RegExp('^' + '[\u1073\u1074]'),
+      s: '\u1039\u1011',
+    },
+    {
+      p: RegExp('^' + '\u1075'),
+      s: '\u1039\u1012',
+    },
+    {
+      p: RegExp('^' + '\u1076'),
+      s: '\u1039\u1013',
+    },
+    {
+      p: RegExp('^' + '\u1077'),
+      s: '\u1039\u1014',
+    },
+    {
+      p: RegExp('^' + '\u1078'),
+      s: '\u1039\u1015',
+    },
+    {
+      p: RegExp('^' + '\u1079'),
+      s: '\u1039\u1016',
+    },
+    {
+      p: RegExp('^' + '\u107A'),
+      s: '\u1039\u1017',
+    },
+    {
+      p: RegExp('^' + '[\u107B\u1093]'),
+      s: '\u1039\u1018',
+    },
+    {
+      p: RegExp('^' + '\u107C'),
+      s: '\u1039\u1019',
+    },
+    {
+      p: RegExp('^' + '\u1085'),
+      s: '\u1039\u101C',
+    },
+    {
+      p: RegExp('^' + '\u108E'),
+      s: '\u102D\u1036',
+    },
+    {
+      p: RegExp('^' + '\u106E'),
+      s: '\u100D\u1039\u100D',
+    },
+    {
+      p: RegExp('^' + '\u106F'),
+      s: '\u100D\u1039\u100E',
+    },
+    {
+      p: RegExp('^' + '\u1091'),
+      s: '\u100F\u1039\u100D',
+    },
+    {
+      p: RegExp('^' + '\u1092'),
+      s: '\u100B\u1039\u100C',
+    },
+    {
+      p: RegExp('^' + '\u1097'),
+      s: '\u100B\u1039\u100B',
+    },
+    {
+      p: RegExp('^' + '\u104E'),
+      s: '\u104E\u1004\u103A\u1038',
+    },
+  ];
+  var rules1 = [
+    {
+      p: RegExp('^' + '\u1040([^\u1040-\u1049])'),
+      s: '\u101D$1',
+      matchOnStart: 'true',
+    },
+    {
+      p: RegExp('^' + '\u1044([^\u1040-\u1049])'),
+      s: '\u104E$1',
+      matchOnStart: 'true',
+      revisit: 0,
+    },
+    {
+      p: RegExp('^' + '([^\u1040-\u1049])\u1040$'),
+      s: '$1\u101D',
+    },
+    {
+      p: RegExp('^' + '([^\u1040-\u1049])\u1044$'),
+      s: '$1\u104E',
+    },
+    {
+      p: RegExp('^' + '([\u102B-\u103F])\u1040([^\u1040-\u1049])'),
+      s: '$1\u101D$2',
+    },
+    {
+      p: RegExp('^' + '([\u102B-\u103F])\u1044([^\u1040-\u1049])'),
+      s: '$1\u104E$2',
+    },
+  ];
+  var rules2 = [
+    {
+      p: RegExp('^' + '([ \u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF])\u1037'),
+      s: '\u1037$1',
+    },
+    {
+      p: RegExp('^' + '([ \u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF]+)([\u102B-\u1030\u1032-\u103B\u103D\u103E])'),
+      s: '$2',
+    },
+    {
+      p: RegExp('^' + '\u1037+'),
+      s: '\u1037',
+    },
+    {
+      p: RegExp('^' + '\u1031+\u1004\u103A\u1039([\u1000-\u1021])'),
+      s: '\u1004\u103A\u1039$1\u1031',
+    },
+    {
+      p: RegExp('^' + '\u1031+\u1037+([\u1000-\u1021])'),
+      s: '$1\u1031\u1037',
+    },
+    {
+      p: RegExp('^' + '\u1031+\u103C([\u1000-\u1021])'),
+      s: '$1\u103C\u1031',
+    },
+    {
+      p: RegExp('^' + '\u1031+([\u1000-\u1021])([\u103B\u103D\u103E]+)'),
+      s: '$1$2\u1031',
+    },
+    {
+      p: RegExp('^' + '\u1031+([\u1000-\u102A])'),
+      s: '$1\u1031',
+    },
+  ];
+  var rules3 = [
+    {
+      p: RegExp('^' + '\u103B\u103A'),
+      s: '\u103A\u103B',
+    },
+    {
+      p: RegExp('^' + '\u1025\u102E'),
+      s: '\u1026',
+    },
+    {
+      p: RegExp('^' + '\u103A\u1037'),
+      s: '\u1037\u103A',
+    },
+    {
+      p: RegExp('^' + '\u1036([\u103B-\u103E]*)([\u102B-\u1030\u1032]+)'),
+      s: '$1$2\u1036',
+    },
+    {
+      p: RegExp('^' + '([\u102B\u102C\u102F\u1030])([\u102D\u102E\u1032])'),
+      s: '$2$1',
+    },
+    {
+      p: RegExp('^' + '\u103C([\u1000-\u1021])'),
+      s: '$1\u103C',
+    },
+  ];
+  var rules4 = [
+    {
+      p: RegExp('^' + '([\u103B-\u103E])\u1039([\u1000-\u1021])'),
+      s: '\u1039$2$1',
+    },
+    {
+      p: RegExp('^' + '\u103C\u103A\u1039([\u1000-\u1021])'),
+      s: '\u103A\u1039$1\u103C',
+    },
+    {
+      p: RegExp('^' + '\u1036([\u103B-\u103E]+)'),
+      s: '$1\u1036',
+    },
+  ];
+  var rules5 = [
+    {
+      p: RegExp('^' + '([\u103C-\u103E]+)\u103B'),
+      s: '\u103B$1',
+    },
+    {
+      p: RegExp('^' + '([\u103D\u103E]+)\u103C'),
+      s: '\u103C$1',
+    },
+    {
+      p: RegExp('^' + '\u103E\u103D'),
+      s: '\u103D\u103E',
+    },
+    {
+      p: RegExp('^' + '([\u1031]+)([\u102B-\u1030\u1032]*)\u1039([\u1000-\u1021])'),
+      s: '\u1039$3$1$2',
+    },
+    {
+      p: RegExp('^' + '([\u102B-\u1030\u1032]+)\u1039([\u1000-\u1021])'),
+      s: '\u1039$2$1',
+    },
+    {
+      p: RegExp('^' + '([\u103B-\u103E]*)([\u1031]+)([\u103B-\u103E]*)'),
+      s: '$1$3$2',
+    },
+    {
+      p: RegExp('^' + '\u1037([\u102D-\u1030\u1032\u1036\u103B-\u103E]+)'),
+      s: '$1\u1037',
+    },
+    {
+      p: RegExp('^' + '([\u102B-\u1030\u1032]+)([\u103B-\u103E]+)'),
+      s: '$2$1',
+    },
+    {
+      p: RegExp('^' + '([\u1000-\u1021])([\u102B-\u1032\u1036\u103B-\u103E])\u103A([\u1000-\u1021])'),
+      s: '$1\u103A$2$3',
+    },
+  ];
+  var rules6 = [
+    {
+      p: RegExp('^' + '\u1005\u103B'),
+      s: '\u1008',
+    },
+    {
+      p: RegExp('^' + '([\u102B-\u1032])([\u103B-\u103E])'),
+      s: '$2$1',
+    },
+    {
+      p: RegExp('^' + '([\u103C-\u103E])\u103B'),
+      s: '\u103B$1',
+    },
+    {
+      p: RegExp('^' + '([\u103D\u103E])\u103C'),
+      s: '\u103C$1',
+    },
+    {
+      p: RegExp('^' + '\u103E\u103D'),
+      s: '\u103D\u103E',
+    },
+    {
+      p: RegExp('^' + '\u1038([\u000136u\u102B-\u1030\u1032\u1037\u103A-\u103F])'),
+      s: '$1\u1038',
+    },
+    {
+      p: RegExp('^' + '\u1036\u102F'),
+      s: '\u102F\u1036',
+    },
+  ];
+  var rules7 = [
+    {
+      p: RegExp('^' + '\u102D\u102D+'),
+      s: '\u102D',
+    },
+    {
+      p: RegExp('^' + '\u102E\u102E+'),
+      s: '\u102E',
+    },
+    {
+      p: RegExp('^' + '\u102F\u102F+'),
+      s: '\u102F',
+    },
+    {
+      p: RegExp('^' + '\u1030\u1030+'),
+      s: '\u1030',
+    },
+    {
+      p: RegExp('^' + '\u1032\u1032+'),
+      s: '\u1032',
+    },
+    {
+      p: RegExp('^' + '\u1036\u1036+'),
+      s: '\u1036',
+    },
+    {
+      p: RegExp('^' + '\u1037\u1037+'),
+      s: '\u1037',
+    },
+    {
+      p: RegExp('^' + '\u1039\u1039+'),
+      s: '\u1039',
+    },
+    {
+      p: RegExp('^' + '\u103A\u103A+'),
+      s: '\u103A',
+    },
+    {
+      p: RegExp('^' + '\u103B\u103B+'),
+      s: '\u103B',
+    },
+    {
+      p: RegExp('^' + '\u103C\u103C+'),
+      s: '\u103C',
+    },
+    {
+      p: RegExp('^' + '\u103D\u103D+'),
+      s: '\u103D',
+    },
+    {
+      p: RegExp('^' + '\u103E\u103E+'),
+      s: '\u103E',
+    },
+    {
+      p: RegExp('^' + '\u102F[\u1030\u103A]'),
+      s: '\u102F',
+    },
+    {
+      p: RegExp('^' + '\u102D\u102E'),
+      s: '\u102E',
+    },
+    {
+      p: RegExp('^' + '([ \u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF])+([\u102B-\u1032\u1036-\u103E])'),
+      s: '$2',
+    },
+    {
+      p: RegExp('^' + '\u200B+'),
+      s: '',
+      matchOnStart: 'true',
+    },
+    {
+      p: RegExp('^' + '\u200B+$'),
+      s: '',
+    },
+    {
+      p: RegExp('^' + '[ \u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF]*\u200B[ \u00A0\u1680\u2000-\u200D\u202F\u205F\u2060\u3000\uFEFF]*'),
+      s: '\u200B',
+    },
+  ];
+  return [rules0, rules1, rules2, rules3, rules4, rules5, rules6, rules7];
+}
+// END OF TRANSLITERATION RULES
+
+
+function mmRunPhase(rules, inString) {
+  let outString = '';
+  let midString = inString;
+  let startOfString = true;
+  while (midString.length > 0) {
+    let foundRule = false;
+    for (const rule of rules) {
+      if (rule.matchOnStart == null || startOfString) {
+        const m = midString.match(rule.p);
+        if (m != null) {
+          foundRule = true;
+          const rightPartSize = midString.length - m[0].length;
+          midString = midString.replace(rule.p, rule.s);
+          const newStart = midString.length - rightPartSize;
+          if (rule.revisit == null) {
+            outString += midString.substring(0, newStart);
+            midString = midString.substring(newStart);
+          }
+        }
+      }
+    }
+    if (!foundRule) {
+      outString += midString[0];
+      midString = midString.substring(1);
+    }
+    startOfString = false;
+  }
+  return outString;
+}
+
+let mmZ2URules = null;
+function zawgyiToUnicode(text) {
+  if (!mmZ2URules) mmZ2URules = getAllRulesZ2U();
+  let out = String(text);
+  for (const rules of mmZ2URules) out = mmRunPhase(rules, out);
+  return out;
+}
+
+// ---- Zawgyi detector (Markov model, port of zawgyi_detector.ts) ----
+const MM_MODEL_B64 = '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AAU/knYwAAa/Gt8wAAc9OtwAAAk/t0j4AAu/q5s4ABC+uD2gABFAOD7MABJACAECABNACAECABQ/6y9AABVAdRuaABY/iyU4ABc9OtwAABm+NcjgABo/vPmMABxANF2IAB2+uD2wAB5AK9HCAB9AHGKMACA/PR/QACK/kQdQACY9OtwAACc9OtwAACg/t0j4ACxAvFxCAC0+1cBQAC4/qTR0AC8/ssSKADBAK9HCADI/ylyQADRAIfQkADU9OtwAADdADDmoADi/qp9+ADlAyspAADrBB3O9ADtBDOjjADw9OtwAAD3ATtFOAD4/r2fWAD9ApENPAEBASL8UAEE9OtwAAFFAFkj+AFpANF2IAHU9OtwAAH7AAioiAH++uD2gAIHAXNtYAIs9OtwAACO/l7HYAABAK+jWAAE/wu+MAAO+++MwAAW9sShAAAY+2UDgAAq+++MwAAw+TgIAAA2+++MwABE/QsOAABM+2UDgABS+++MwABU/sJ5sABY/G00QABi+++MwABo+2UDgABs+TgIAABy/R5cgAB2+++MwAB69sShAAB++++MwACi+++MwACy+++MwAC1ALTqqAC4+ahCAAC8/ZPKYADC9sShAADJAMQhCADM+TgIAADTAJJH4ADc/sJ5sADo/2CoDADs/pl+UADy+++MwAEA+TgIAAEK+++MwACW+wWfQAAA+4mIAAAG+wWfIAAI+oXxgAAM/OIrAAAY+oXxgAAc+oXxgAAg/OIrAAA4+oXxgABE/2dEwABI/OIrAABM+oXxgABU/lxdWABY/kCuoABc/nagcABg/OIrAABo/67TqABs+oXxgABw/OIrAAB4+oXxgACBABtu8ACI+oXxgACe/iRMAACw/OIrAAC2+gx16AC5Af3gPAC9AGUUeADA/nagcADJALaarADdAAUokADnAiUXIADy/iRMAAEA/yLmkAEG/SIB4AEK/iRMAAHW/iRMAAHe//lwEAIa/vPlIACHADiFmAAA/HMfgAAE+sDXgAAa/w4nAAAe/w4nAAAi/w4nAAAq/w4nAAAu/VaFoAA6/w4nAAA+/w4nAABHAF/8AABO/w4nAABU+1idQABY++XpgABi/w4nAABo+NVuAABy+26mwAB09p4UAAB6/w4nAAB++26mwACC+EL1AACK/j6N4AC1AMozaAC5AOQlpAC8+1idQADBAkL6i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ABS/DaVwABU/QiXAABY/IZewABc/AdyIABhAGYn6ABlAFLTcABq9my+AABs+A6KAABw+jV+YAB290UCAAB4/sdJIAB89/BtAACA/roQwACJAH6OKACe/gEZ8ACxApOL6AC2/NDPcAC4/YyQIAC8/y4uWADC/OfL0ADFAN56EADK/vddJADO9IZaAADRAEsvAADY/2lroADc//nAUADhAIey+ADnAeku4ADpAJTUiADtA1yRIADzA1rJEAD3AIrnkAD5AM30eAEBAfe4uAEG/GMBwAFFAC0H+AFM/2lroAFlAX9mkAFpASQXgAF1AgEWBAGK/GMBwAHXAnCsxAHbAh+o+AHfApNFpAHm/gEaAAIbAtbLqAIfAIrnkAA/ABirkABpAf60iAB5AH+uNAB+/s5y8AC5AHUfUAC8/PKHoADBAE9zMADFABfhqADI/mYg0ADa+m/WgAD5APW6kAFk/j65YAHNAiOrCAHS/s5y8AHo/inSwAHy/NcdgABS/btIIAAA/odWkAAE/u4U4AAK+dX/AAAO+dX/AAAW+dX/AAAZAKaPfAAi+dX/AAAq+dX/AABA/W964ABFAb/OIABNAHfi3ABQ/4zhiABU/0OdAABpAVgBlABs/ksIgABy+dX/AAB4/8z26AB8/+o6yACA/W964AEA/odWkABQ+XfogAAA/OkP8AAG9OrzAAAK+8+cgAAs/aPCgABG/7mviABK+8+cgABW/YcAgABa+8+cgABq/yZkeABs/aPCgABw/aPCgAB2/lbLUAB+/n/GuACA/aPCgACK//X9mADLAH3ERADy/YcAgAEI/aPCgAHa+8+cgAIa+8+cgACM/Q7J4AAA/qXq4AAE/iIpdAAK+qxhgAANAREosAAU/upJIAAZAKLg6AAg/lb+EAApAF+2mAAxAF+2mABA/7niQABE/mfH4ABM/32UMABW/HzG4ABY/BmPkABhACaWqABlAcKayABo/cl8YABs+xRiAABxAmdb8AB1AI5jOAB4/7niQAB8/1yJAACE/upJIACI9kgMAACc/upJIAC3AF79SADBAiFmyADFACaWqADLAEezYADi/WFGoADrAxlRkAEBAPYvyAFy+qxhgAF++qxhgAH2+qxhgAA0/GaQYAAA/2XFgAAFADWoOAAY/pYsYABVADWoOABo/pYsYABw/2XFgAB+9vnAAACA/2XFg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';
+
+const MM_STD_CP0 = 0x1000, MM_STD_CP1 = 0x103f;
+const MM_AFT_CP0 = 0x104a, MM_AFT_CP1 = 0x109f;
+const MM_EXA_CP0 = 0xaa60, MM_EXA_CP1 = 0xaa7f;
+const MM_EXB_CP0 = 0xa9e0, MM_EXB_CP1 = 0xa9ff;
+const MM_SPC_CP0 = 0x2000, MM_SPC_CP1 = 0x200b;
+const MM_STD_OFFSET = 1;
+const MM_AFT_OFFSET = MM_STD_OFFSET + MM_STD_CP1 - MM_STD_CP0 + 1;
+const MM_EXA_OFFSET = MM_AFT_OFFSET + MM_AFT_CP1 - MM_AFT_CP0 + 1;
+const MM_EXB_OFFSET = MM_EXA_OFFSET + MM_EXA_CP1 - MM_EXA_CP0 + 1;
+const MM_SPC_OFFSET = MM_EXB_OFFSET + MM_EXB_CP1 - MM_EXB_CP0 + 1;
+
+function mmStateForCodePoint(cp, ssv) {
+  if (MM_STD_CP0 <= cp && cp <= MM_STD_CP1) return cp - MM_STD_CP0 + MM_STD_OFFSET;
+  if (MM_AFT_CP0 <= cp && cp <= MM_AFT_CP1) return cp - MM_AFT_CP0 + MM_AFT_OFFSET;
+  if (MM_EXA_CP0 <= cp && cp <= MM_EXA_CP1) return cp - MM_EXA_CP0 + MM_EXA_OFFSET;
+  if (MM_EXB_CP0 <= cp && cp <= MM_EXB_CP1) return cp - MM_EXB_CP0 + MM_EXB_OFFSET;
+  if (ssv === 0 && MM_SPC_CP0 <= cp && cp <= MM_SPC_CP1) {
+    return cp - MM_SPC_CP0 + MM_SPC_OFFSET;
+  }
+  return 0;
+}
+
+let mmModel = null;
+function mmLoadModel() {
+  const binary = atob(MM_MODEL_B64);
+  const buffer = new ArrayBuffer(binary.length);
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const stream = new DataView(buffer, 0);
+  let offset = 8; // magic number
+  const version = stream.getUint32(offset);
+  offset += 4;
+  let ssv = 0;
+  if (version === 2) {
+    ssv = stream.getUint32(offset);
+    offset += 4;
+  } else if (version !== 1) {
+    throw new Error('Zawgyi model: unexpected version ' + version);
+  }
+  offset += 12; // Markov magic number + version
+  const size = stream.getInt16(offset);
+  offset += 2;
+  const diffs = [];
+  for (let i1 = 0; i1 < size; i1++) {
+    diffs[i1] = [];
+    let entries = stream.getInt16(offset);
+    offset += 2;
+    let fallback = 0.0;
+    if (entries !== 0) {
+      fallback = stream.getFloat32(offset);
+      offset += 4;
+    }
+    let next = -1;
+    for (let i2 = 0; i2 < size; i2++) {
+      if (entries > 0 && next < i2) {
+        next = stream.getInt16(offset);
+        offset += 2;
+        entries--;
+      }
+      if (next === i2) {
+        diffs[i1][i2] = stream.getFloat32(offset);
+        offset += 4;
+      } else {
+        diffs[i1][i2] = fallback;
+      }
+    }
+  }
+  return { ssv, diffs };
+}
+
+// Probability (0..1) that [text] is Zawgyi rather than Unicode, or
+// -Infinity when it has no Myanmar characters at all.
+function zawgyiProbability(text) {
+  if (!mmModel) mmModel = mmLoadModel();
+  const input = String(text);
+  let prev = 0;
+  let total = 0.0;
+  let seen = false;
+  for (let i = 0; i <= input.length; i++) {
+    const curr = i === input.length
+      ? 0
+      : mmStateForCodePoint(input.charCodeAt(i), mmModel.ssv);
+    if (prev !== 0 || curr !== 0) {
+      total += mmModel.diffs[prev][curr];
+      seen = true;
+    }
+    prev = curr;
+  }
+  if (!seen) return Number.NEGATIVE_INFINITY;
+  return 1.0 / (1.0 + Math.exp(total));
+}
+
+// ---- Search normalization ----
+// Rank of each Myanmar vowel / medial / tone mark inside a syllable (the
+// order Unicode recommends). Keyboards produce them in different orders
+// that look identical, so they are sorted into one order before indexing.
+const MM_MARK_RANK = {
+  '\u103b': 10, '\u103c': 11, '\u103d': 12, '\u103e': 13,
+  '\u1031': 20,
+  '\u102d': 30, '\u102e': 30, '\u1032': 30,
+  '\u102f': 40, '\u1030': 40,
+  '\u102b': 50, '\u102c': 50,
+  '\u1036': 60, '\u1037': 70, '\u103a': 80, '\u1038': 90,
+};
+
+function mmSortMarks(run) {
+  return Array.from(run)
+    .map((c, i) => [c, i])
+    .sort((a, b) => (MM_MARK_RANK[a[0]] - MM_MARK_RANK[b[0]]) || (a[1] - b[1]))
+    .map((x) => x[0])
+    .join('');
+}
+
+// Same text, one spelling of the invisible details. Does NOT convert Zawgyi.
+function mmTidy(text) {
+  return String(text || '')
+    .normalize('NFC')
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+    .toLowerCase()
+    .replace(/[\u102b-\u1038\u103a-\u103e]+/g, mmSortMarks)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// For text that is saved into the search index: Zawgyi is converted.
+function searchNormalizeIndex(text) {
+  const raw = String(text || '');
+  if (!raw) return '';
+  const p = zawgyiProbability(raw);
+  return mmTidy(p >= 0.5 ? zawgyiToUnicode(raw) : raw);
+}
+
+// For something a person TYPES into Search: short words are hard to tell
+// apart, so when the detector is not sure both readings are searched.
+function searchQueryVariants(text) {
+  const raw = String(text || '');
+  const p = zawgyiProbability(raw);
+  const asTyped = mmTidy(raw);
+  if (p === Number.NEGATIVE_INFINITY || p <= 0.1) return [asTyped];
+  const converted = mmTidy(zawgyiToUnicode(raw));
+  if (p >= 0.9) return [converted];
+  return converted && converted !== asTyped ? [asTyped, converted] : [asTyped];
+}
+
+// One spelling for places that need a single word (Trending).
+function searchCanonicalTerm(text) {
+  const raw = String(text || '');
+  const p = zawgyiProbability(raw);
+  return mmTidy(p >= 0.5 ? zawgyiToUnicode(raw) : raw);
+}
+
+// Every distinct 3-character piece of every word that has 3+ characters
+// (what the FTS "trigram" index stores). Typos only break the pieces that
+// touch the wrong letter, so the rest still match.
+function mmTrigrams(text) {
+  const out = new Set();
+  for (const word of String(text || '').split(' ')) {
+    const chars = Array.from(word);
+    for (let i = 0; i + 3 <= chars.length; i++) {
+      out.add(chars.slice(i, i + 3).join(''));
+    }
+  }
+  return Array.from(out);
+}
+
 let searchSchemaReady = false;
 
 async function ensureSearchSchema(env) {
@@ -1277,7 +2045,9 @@ function docIdFromName(name) {
 }
 
 function searchUserStatement(env, uid, fields) {
-  const name = fsString(fields, 'displayName').trim().slice(0, 80);
+  // Saved in the normalized spelling (Zawgyi -> Unicode, lower case...);
+  // Firestore keeps the name as typed.
+  const name = searchNormalizeIndex(fsString(fields, 'displayName')).slice(0, 80);
   // Only writes when the name really changed (rows written cost quota).
   return env.SEARCH_DB.prepare(
     `INSERT INTO users (uid, name, updated_at) VALUES (?1, ?2, ?3)
@@ -1288,11 +2058,12 @@ function searchUserStatement(env, uid, fields) {
 }
 
 function searchPostStatement(env, postId, fields) {
-  const caption = fsString(fields, 'caption').slice(0, 500);
-  const tags = fsStringArray(fields, 'hashtags')
-    .map((t) => t.replace(/^#/, '').toLowerCase())
-    .join(' ')
-    .slice(0, 300);
+  const caption = searchNormalizeIndex(fsString(fields, 'caption').slice(0, 500));
+  const tags = searchNormalizeIndex(
+    fsStringArray(fields, 'hashtags')
+      .map((t) => t.replace(/^#/, ''))
+      .join(' '),
+  ).slice(0, 300);
   return env.SEARCH_DB.prepare(
     `INSERT INTO posts (post_id, owner_id, caption, tags, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1343,6 +2114,48 @@ function cleanSearchText(value) {
   return raw.replace(/[^\p{L}\p{N}\p{M}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Search (19 Oct 2026, "Stage 1"):
+//  - the typed words are normalized like the index (Zawgyi -> Unicode...);
+//  - 3+ characters: fuzzy. The words are cut into 3-character pieces, FTS5
+//    finds posts/names that contain ANY piece, and the Worker keeps those
+//    that contain enough of them (so one wrong letter still finds the
+//    post) and puts the best matches first;
+//  - 1-2 characters: names / hashtags that start with it, and captions
+//    that contain it (newest SEARCH_SHORT_SCAN_POSTS posts only).
+// Cost note: an OR query reads many index rows. Fine while Fly is small;
+// when it grows, move search to Meilisearch/Typesense (see AI_CONTEXT).
+const SEARCH_MAX_GRAMS = 24;
+const SEARCH_CANDIDATES = 80;
+const SEARCH_RESULTS = 20;
+const SEARCH_SHORT_SCAN_POSTS = 3000;
+
+// How many of [n] pieces a result must contain to count as a match.
+function searchNeeded(n) {
+  if (n <= 2) return n;
+  if (n === 3) return 2;
+  return Math.ceil(n * 0.5);
+}
+
+// Ranks candidate rows [{id, text, at}] for query [v] and its [grams].
+function searchRank(rows, v, grams) {
+  const need = searchNeeded(grams.length);
+  const scored = [];
+  for (const r of rows) {
+    const text = r.text;
+    let hits = 0;
+    for (const g of grams) if (text.includes(g)) hits++;
+    if (hits < need) continue;
+    const score = hits + (text.includes(v) ? grams.length + 1 : 0)
+      + (text.startsWith(v) ? 1 : 0);
+    scored.push({ id: r.id, score, at: r.at });
+  }
+  return scored;
+}
+
+function searchEscapeLike(text) {
+  return text.replace(/[\\%_]/g, '\\$&');
+}
+
 async function handleSearch(body, env) {
   if (!env.SEARCH_DB) return jsonResponse({ error: 'search not set up' }, 503);
   const q = cleanSearchText(body.q);
@@ -1351,38 +2164,62 @@ async function handleSearch(body, env) {
   try {
     await ensureSearchSchema(env);
     const db = env.SEARCH_DB;
-    let userRows;
-    let postRows;
-    if ([...q].length >= 3) {
-      const phrase = ftsPhrase(q);
-      [userRows, postRows] = await db.batch([
-        db.prepare(
-          `SELECT u.uid AS id FROM users_fts f JOIN users u ON u.rowid = f.rowid
-           WHERE users_fts MATCH ?1 ORDER BY f.rank LIMIT 20`,
-        ).bind(`name : ${phrase}`),
-        db.prepare(
-          `SELECT p.post_id AS id FROM posts_fts f JOIN posts p ON p.rowid = f.rowid
-           WHERE posts_fts MATCH ?1 ORDER BY p.created_at DESC LIMIT 20`,
-        ).bind(phrase),
-      ]);
-    } else {
-      // 1-2 characters: names / hashtags that START with it.
-      [userRows, postRows] = await db.batch([
-        db.prepare(
-          `SELECT uid AS id FROM users WHERE name LIKE ?1 ESCAPE '\\'
-           ORDER BY name COLLATE NOCASE LIMIT 20`,
-        ).bind(`${q.replace(/[\\%_]/g, '\\$&')}%`),
-        db.prepare(
-          `SELECT post_id AS id FROM posts
-           WHERE (' ' || tags) LIKE ?1 ESCAPE '\\'
-           ORDER BY created_at DESC LIMIT 20`,
-        ).bind(`% ${q.toLowerCase().replace(/[\\%_]/g, '\\$&')}%`),
-      ]);
+    const variants = [...new Set(searchQueryVariants(q).filter((x) => x))];
+    const userScores = new Map();
+    const postScores = new Map();
+    const keep = (map, list) => {
+      for (const r of list) {
+        const old = map.get(r.id);
+        if (!old || r.score > old.score) map.set(r.id, r);
+      }
+    };
+
+    for (const v of variants) {
+      if ([...v].length >= 3) {
+        const grams = mmTrigrams(v).slice(0, SEARCH_MAX_GRAMS);
+        if (!grams.length) continue;
+        const match = grams.map(ftsPhrase).join(' OR ');
+        const [userRows, postRows] = await db.batch([
+          db.prepare(
+            `SELECT u.uid AS id, u.name AS text, u.updated_at AS at
+             FROM users_fts f JOIN users u ON u.rowid = f.rowid
+             WHERE users_fts MATCH ?1 ORDER BY f.rank LIMIT ?2`,
+          ).bind(match, SEARCH_CANDIDATES),
+          db.prepare(
+            `SELECT p.post_id AS id, (p.caption || ' ' || p.tags) AS text,
+                    p.created_at AS at
+             FROM posts_fts f JOIN posts p ON p.rowid = f.rowid
+             WHERE posts_fts MATCH ?1 ORDER BY f.rank LIMIT ?2`,
+          ).bind(match, SEARCH_CANDIDATES),
+        ]);
+        keep(userScores, searchRank(userRows.results || [], v, grams));
+        keep(postScores, searchRank(postRows.results || [], v, grams));
+      } else {
+        const like = searchEscapeLike(v);
+        const [userRows, postRows] = await db.batch([
+          db.prepare(
+            `SELECT uid AS id FROM users WHERE name LIKE ?1 ESCAPE '\\'
+             ORDER BY name COLLATE NOCASE LIMIT ?2`,
+          ).bind(`${like}%`, SEARCH_RESULTS),
+          db.prepare(
+            `SELECT post_id AS id, created_at AS at FROM (
+               SELECT post_id, caption, tags, created_at FROM posts
+               ORDER BY created_at DESC LIMIT ?3)
+             WHERE (' ' || tags) LIKE ?1 ESCAPE '\\'
+                OR caption LIKE ?2 ESCAPE '\\'
+             ORDER BY created_at DESC LIMIT ?4`,
+          ).bind(`% ${like}%`, `%${like}%`, SEARCH_SHORT_SCAN_POSTS, SEARCH_RESULTS),
+        ]);
+        keep(userScores, (userRows.results || []).map((r) => ({ id: r.id, score: 1, at: 0 })));
+        keep(postScores, (postRows.results || []).map((r) => ({ id: r.id, score: 1, at: r.at })));
+      }
     }
-    return jsonResponse({
-      users: (userRows.results || []).map((r) => r.id),
-      posts: (postRows.results || []).map((r) => r.id),
-    });
+
+    const top = (map) => [...map.values()]
+      .sort((a, b) => (b.score - a.score) || (b.at - a.at))
+      .slice(0, SEARCH_RESULTS)
+      .map((r) => r.id);
+    return jsonResponse({ users: top(userScores), posts: top(postScores) });
   } catch (err) {
     return jsonResponse({ error: `search failed: ${err.message}` }, 500);
   }
@@ -1464,7 +2301,7 @@ async function handleSearchLog(body, env, caller) {
   if (!caller || !isSafeUid(caller.uid)) {
     return jsonResponse({ error: 'sign-in required' }, 401);
   }
-  const term = cleanSearchText(body.q).toLowerCase().slice(0, 40);
+  const term = searchCanonicalTerm(cleanSearchText(body.q)).slice(0, 40);
   if ([...term].length < 2) return jsonResponse({ logged: false });
 
   try {

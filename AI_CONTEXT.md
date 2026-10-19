@@ -352,6 +352,33 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > Unicode keyboard and vice versa) - if Ko reports Burmese searches that
 > fail between two phones, the fix would be converting Zawgyi -> Unicode
 > before indexing and before searching._
+> _20 Oct 2026 (confirmed by Ko on Fly Dev, two phones): **Search "Stage 1"
+> - Burmese Zawgyi/Unicode + typo tolerance, all inside the Worker (no new
+> server).** `cloudflare/livekit_token_worker.js` now has a "Myanmar text
+> tools" section: Google's Myanmar Tools (Apache-2.0, `myanmar-tools` 1.2.0
+> - Zawgyi detector model + Z2U rules copied unchanged, runner ported to
+> plain JS, notice kept in the file). `searchNormalizeIndex()` (Zawgyi ->
+> Unicode when the detector says >= 0.5, NFC, strip zero-width, lower case,
+> medial/vowel marks in one fixed order) is applied to caption, hashtags
+> and user names BEFORE they are saved in D1 (Firestore keeps the text as
+> typed); `searchQueryVariants()` does the same to the typed query (when
+> the detector is unsure, both readings are searched); `/search-log` uses
+> `searchCanonicalTerm()` so Zawgyi and Unicode count as ONE Trending word
+> (Trending shows the Unicode spelling - a Zawgyi phone sees it as boxes
+> /garbage; known gap). `handleSearch`: 3+ characters = FTS5 OR of the
+> query's 3-character pieces (max 24, 80 candidates by rank), then the
+> Worker keeps rows that contain enough pieces (`searchNeeded`: n<=2 all,
+> 3 -> 2, else half) and sorts by hits + exact-substring bonus, then
+> newest; 1-2 characters = name prefix + hashtag prefix + caption
+> contains (newest 3000 posts only). Client unchanged (still gets IDs).
+> **After deploying this Worker, re-run `/search-backfill` (users, then
+> posts) on that Worker so OLD rows are normalized;** new posts/names are
+> normalized automatically. Tested with Node + SQLite (Google's mmgov
+> Zawgyi->Unicode data 66/66; Zawgyi<->Unicode both ways; typos). SCALING
+> LIMIT: an OR query reads many index rows (D1 rows-read cost) and short
+> queries scan 3000 posts - fine while Fly is small; when users/posts grow
+> a lot, move search to Meilisearch/Typesense (Stage 2) and later
+> embeddings (Stage 3). Worker changed -> deploy BOTH Workers._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -898,6 +925,9 @@ postId, commentId}` (text from the doc, trimmed). Has
       `POST /search {q}` → `{users:[uid], posts:[postId]}` (max 20 each;
       3+ chars = FTS phrase match anywhere in the text, 1-2 chars = name /
       tag prefix LIKE; punctuation stripped, so `#travel` → `travel`).
+      (Superseded 20 Oct 2026: fuzzy OR-of-trigrams + Zawgyi->Unicode
+      normalization, short queries also search captions - see the 20 Oct
+      note at the top.)
       `POST /search-sync-me` reads the caller's `users/{uid}` from
       Firestore itself and upserts their name; if the doc is gone
       (account deleted - profile_screen.dart calls it right before
@@ -2141,8 +2171,9 @@ others only see it once encoded (Bunny webhook).
     (stories now play the original file and start instantly - idea if it
     is ever slow again: compress story uploads smaller, e.g. ~720p);
     (3)
-    done 19 Oct 2026 (new posts are indexed in Search at once; open:
-    Zawgyi vs Unicode Burmese matching, see the 19 Oct note); (4) if the original is slow to start
+    done 19 Oct 2026 (new posts are indexed in Search at once) and 20 Oct
+    2026 (Zawgyi/Unicode + typo-tolerant Burmese search, Stage 1; later:
+    Meilisearch/Typesense when Fly grows, see the 20 Oct note); (4) if the original is slow to start
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 
