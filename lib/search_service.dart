@@ -12,8 +12,9 @@
 // Keeping D1 up to date:
 //   - users: syncMe() on every app start (MainNavigationScreen) - the Worker
 //     reads my users/{uid} doc itself and only writes when the name changed;
-//   - posts: the Worker's Bunny webhook indexes a post when its video
-//     becomes ready;
+//   - posts: indexed at once by indexPost() right after posting
+//     (/search-index-post, 19 Oct 2026); the Bunny webhook also indexes a
+//     post when its video becomes ready (a safety net);
 //   - old data: the one-time /search-backfill page (see the Worker).
 //
 // Trending on Fly (4 Oct 2026): logSearch() tells the Worker (/search-log)
@@ -32,6 +33,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'block_service.dart';
 import 'screens/video_call_screen.dart' show kTokenServerUrl;
+import 'screens/video_upload_service.dart' show isVideoVisibleTo;
 import 'screens/worker_auth.dart';
 
 class SearchResults {
@@ -72,6 +74,28 @@ class SearchService {
     } catch (_) {
       // Try again next time the app starts.
       _syncedThisRun = false;
+    }
+  }
+
+  /// Makes my brand-new post searchable at once (19 Oct 2026) instead of
+  /// waiting for Bunny's webhook. Best-effort, one retry; the webhook
+  /// indexes it later anyway if this fails.
+  static Future<void> indexPost(String postId) async {
+    for (int attempt = 0; attempt < 2; attempt++) {
+      try {
+        final res = await http
+            .post(
+              Uri.parse('$kTokenServerUrl/search-index-post'),
+              headers: {
+                ...await workerAuthHeaders(),
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({'postId': postId}),
+            )
+            .timeout(const Duration(seconds: 15));
+        if (res.statusCode == 200) return;
+      } catch (_) {}
+      await Future.delayed(const Duration(seconds: 3));
     }
   }
 
@@ -200,11 +224,10 @@ class SearchService {
       final data = d.data() ?? const {};
       final String owner = (data['userId'] as String?) ?? '';
       if (BlockService.instance.isHidden(owner)) return false;
-      if (data['videoFailed'] == true) return false;
-      // Others only see a video once it's encoded (old posts have no
-      // flag and count as ready) - same rule as the Home feed.
-      if (data['videoReady'] == false && owner != myId) return false;
-      return true;
+      // Same rule as the Home feed (Early-Play, 16-18 Oct 2026): a video
+      // is visible as soon as it is posted; only a failed encode is hidden
+      // (except from its uploader).
+      return isVideoVisibleTo(data, myId);
     }).toList();
     return SearchResults(users: users, posts: posts);
   }

@@ -22,11 +22,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_trimmer_2/video_trimmer_2.dart';
 import '../app_config.dart';
+import '../search_service.dart';
 import 'home_screen.dart' show homeFeedScrollToTopSignal;
 import 'local_video_cache.dart';
 import 'sound_moderation.dart';
@@ -339,6 +339,8 @@ class PostUploadManager {
     final String? localPath = job.uploadedLocalPath;
     if (localPath != null) LocalVideoCache.register(videoUrl, localPath);
     unawaited(syncVideoReady(postRef, bunnyVideoId));
+    // Searchable straight away (not only after Bunny's webhook).
+    unawaited(SearchService.indexPost(postRef.id));
   }
 
   // Base URL of the self-hosted moderation service (Flask on Render.com).

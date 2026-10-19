@@ -331,6 +331,27 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > warnings, harmless). Possible polish: remove the unneeded
 > `flutter/foundation.dart` import in post_upload_manager.dart, show a
 > thumbnail in the pill, allow a queue of posts. No Worker / rules change._
+> _19 Oct 2026 (confirmed by Ko on Fly Dev, phones A and B): **new posts
+> are searchable at once.** Before, a post only entered Search (D1) when
+> Bunny's webhook said the video was encoded, and `search_service.dart`
+> still hid `videoReady == false` posts from other people (an old rule that
+> Early-Play had made wrong). Now `PostUploadManager` calls
+> `SearchService.indexPost(postId)` right after the `posts` doc is written
+> -> Worker **`POST /search-index-post {postId}`** (new route; the Worker
+> reads `posts/{postId}` from Firestore itself, indexes it only if the
+> verified caller is its `userId` owner and the video has not failed, via
+> `searchUpsertPost`). The Bunny webhook still indexes too (safety net;
+> the upsert only writes when caption/tags changed). Search results are now
+> filtered with `isVideoVisibleTo` like the Home feed. **Worker changed ->
+> deploy BOTH Workers** (`fly-dev-worker` and `livekit-token-worker`).
+> Burmese: the D1 trigram index finds any Unicode Burmese text of 3+
+> characters (tested with SQLite; Ko confirmed `အောင်နိုင်` finds the post
+> on the phone that posted it). Known limits: a 1-2 character query only
+> matches name / hashtag PREFIXES, never caption text; and Zawgyi-encoded
+> text does not match Unicode text (a post typed in Zawgyi is not found by a
+> Unicode keyboard and vice versa) - if Ko reports Burmese searches that
+> fail between two phones, the fix would be converting Zawgyi -> Unicode
+> before indexing and before searching._
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2120,8 +2141,8 @@ others only see it once encoded (Bunny webhook).
     (stories now play the original file and start instantly - idea if it
     is ever slow again: compress story uploads smaller, e.g. ~720p);
     (3)
-    search indexing still waits for the Bunny webhook (a new post shows
-    in Search only once encoded); (4) if the original is slow to start
+    done 19 Oct 2026 (new posts are indexed in Search at once; open:
+    Zawgyi vs Unicode Burmese matching, see the 19 Oct note); (4) if the original is slow to start
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 

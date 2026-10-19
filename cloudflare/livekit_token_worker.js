@@ -58,6 +58,15 @@
 //                         it removes the user AND all their posts from D1.
 //                         Posts get indexed by /bunny-webhook when their
 //                         video becomes ready.
+//  POST /search-index-post - (19 Oct 2026) the app calls this right after a
+//                         new post is saved, so it is searchable at once
+//                         (not only after Bunny's webhook). Body {postId}.
+//                         The Worker reads posts/{postId} from Firestore
+//                         ITSELF, and only indexes it if the verified caller
+//                         is its owner and the video has not failed - so
+//                         nobody can index made-up text or someone else's
+//                         post. The webhook still indexes too (harmless:
+//                         the upsert only writes when the text changed).
 //  POST /search-log      - (4 Oct 2026) "Trending on Fly". Body {q}. The
 //                         app calls it when someone really searches (presses
 //                         search, taps a recent/trending item, opens a video
@@ -212,6 +221,9 @@ export default {
     }
     if (path === '/search-sync-me') {
       return handleSearchSyncMe(env, caller);
+    }
+    if (path === '/search-index-post') {
+      return handleSearchIndexPost(body, env, caller);
     }
     if (path === '/search-log') {
       return handleSearchLog(body, env, caller);
@@ -1399,6 +1411,32 @@ async function handleSearchSyncMe(env, caller) {
     return jsonResponse({ ok: true, changed: result.meta?.changes || 0 });
   } catch (err) {
     return jsonResponse({ error: `sync failed: ${err.message}` }, 500);
+  }
+}
+
+// POST /search-index-post {postId} (19 Oct 2026): index my brand-new post
+// right away. Everything indexed comes from the Firestore doc itself.
+async function handleSearchIndexPost(body, env, caller) {
+  if (!env.SEARCH_DB) return jsonResponse({ skipped: 'search not set up' });
+  if (!caller || !isSafeUid(caller.uid)) {
+    return jsonResponse({ error: 'sign-in required' }, 401);
+  }
+  const postId = body && body.postId;
+  if (!isSafeUid(postId)) return jsonResponse({ error: 'bad post id' }, 400);
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const fields = await firestoreGetFields(env, dbToken, `posts/${postId}`);
+    if (fields === null) return jsonResponse({ skipped: 'no such post' });
+    if (stringField(fields, 'userId') !== caller.uid) {
+      return jsonResponse({ error: 'not your post' }, 403);
+    }
+    const failed = fields.videoFailed && fields.videoFailed.booleanValue === true;
+    if (failed) return jsonResponse({ skipped: 'video failed' });
+    await ensureSearchSchema(env);
+    await searchUpsertPost(env, postId, fields);
+    return jsonResponse({ ok: true });
+  } catch (err) {
+    return jsonResponse({ error: `index failed: ${err.message}` }, 500);
   }
 }
 
