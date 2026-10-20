@@ -2194,9 +2194,13 @@ others only see it once encoded (Bunny webhook).
 ### To-do list (Ko's next steps, most urgent first — updated 18 Oct 2026)
 
 00. **After Premium + Early-Play (both libraries, done 16-17 Oct
-    2026)** - still open: (1) check Billing → Overview a day or two
-    later for the Premium Encoding line (expected ~$0.05 per video
-    minute; the balance was $9.93 on 16 Oct); (2) done 18 Oct
+    2026)** - still open: (1) done 21 Oct 2026: Bunny Billing checked - balance $9.30 (was
+    $9.93 on 16 Oct; one $10 top-up on 3 Oct, no auto-recharge), October
+    usage $0.70 = Stream add-ons (Premium Encoding) $0.58 + CDN $0.10 (18 GB,
+    all Asia & Oceania) + Storage $0.02. Encoding is the cost that grows
+    with uploads (~$0.05 per video minute): 100 new 30-second videos a
+    day would be ~$2.5/day - re-check Billing monthly, and if it hurts,
+    Premium Encoding can be turned off in the Stream library settings; (2) done 18 Oct
     (stories now play the original file and start instantly - idea if it
     is ever slow again: compress story uploads smaller, e.g. ~720p);
     (3)
