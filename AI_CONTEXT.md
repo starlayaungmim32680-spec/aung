@@ -380,6 +380,24 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > a lot, move search to Meilisearch/Typesense (Stage 2) and later
 > embeddings (Stage 3). Worker changed -> deploy BOTH Workers._
 >
+> _20 Oct 2026 (confirmed by Ko on his phone, prod Worker): **Privacy
+> Policy page.** New public Worker route `GET /privacy` (alias
+> `/privacy-policy`), English only, same Fly gradient/glass style as
+> `/delete-account`; HTML lives in the Worker as `PRIVACY_PAGE_HTML` (a
+> `String.raw` template - keep it free of backticks and `${`). Live URL:
+> `https://livekit-token-worker.chakaboycom.workers.dev/privacy` - this is
+> the link for Play Console -> App content -> Privacy policy. Content was
+> written from the code: Email/Password login, birth date checked in the app
+> only (13+, never saved), content/messages/calls/activity, camera/mic only
+> when recording/calling/live, FCM token, online status, no precise
+> location/contacts/ad ID, no selling data; providers Firebase, Bunny.net,
+> Cloudflare (Workers + D1 search index), LiveKit; deletion within 30 days,
+> backups 90 days (links to `/delete-account`); 13+ only; contact email
+> `chakaboycom@gmail.com` (Ko's choice; note the in-app Copyright screen
+> uses a different address, `kCopyrightContactEmail`). Update the page (and
+> its "Last updated" date) whenever the app starts collecting something new
+> (location, ads, analytics...). Not linked inside the app yet._
+>
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -970,6 +988,8 @@ postId, commentId}` (text from the doc, trimmed). Has
       — this is the link for Play Console → App content → Data safety
       (data deletion questions). The page promises deletion within 30
       days and backups cleared within 90 days.
+    - `GET /privacy` (20 Oct 2026, confirmed) — public Privacy Policy page
+      (English), see the 20 Oct note at the top; `PRIVACY_PAGE_HTML`.
     - `POST /delete-request` — the page's form, no sign-in. Only STORES a
       request (`deletionRequests/{uuid}`, status `pending`) via the
       service account; never deletes anything. Bot guards: hidden

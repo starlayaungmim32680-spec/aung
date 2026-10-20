@@ -98,6 +98,7 @@
 //                         Bunny Storage zone (profile photos, story
 //                         images - not video, so Bunny Stream doesn't
 //                         apply). Also a raw-body route, not JSON.
+//  GET  /privacy         - (Oct 2026) public Privacy Policy page (English)
 //  GET  /delete-account  - (Oct 2026) public web page where people can
 //                         ask for their Fly account to be deleted without
 //                         the app - Google Play requires this link (put it
@@ -156,6 +157,18 @@ export default {
     // person may not have the app any more). Routed before everything else.
     if (request.method === 'GET' && url.pathname === '/delete-account') {
       return new Response(DELETE_ACCOUNT_PAGE_HTML, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
+    // Public Privacy Policy (Oct 2026): link for Play Console + the app.
+    if (request.method === 'GET' &&
+        (url.pathname === '/privacy' || url.pathname === '/privacy-policy')) {
+      return new Response(PRIVACY_PAGE_HTML, {
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'public, max-age=300',
@@ -2745,6 +2758,151 @@ const DELETE_ACCOUNT_PAGE_HTML = String.raw`<!doctype html>
   }
 })();
 </script>
+</body>
+</html>
+`;
+
+// The public Privacy Policy (GET /privacy), English only. Keep it free
+// of backticks and ${ (String.raw template).
+const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fly Privacy Policy</title>
+<meta name="description" content="How Fly collects, uses and protects your information.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --pink: #FF4B6E; --purple: #9C4DFF; --blue: #3A8DFF;
+    --bg: #07060b; --card: rgba(255,255,255,0.06); --line: rgba(255,255,255,0.12);
+    --text: #f4f2fa; --muted: #a8a3b8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh; color: var(--text); background: var(--bg);
+    font-family: Poppins, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.7; overflow-x: hidden;
+  }
+  .glow { position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(40% 35% at 20% 15%, rgba(255,75,110,.35), transparent 70%),
+      radial-gradient(40% 35% at 85% 25%, rgba(156,77,255,.35), transparent 70%),
+      radial-gradient(45% 40% at 50% 95%, rgba(58,141,255,.30), transparent 70%);
+    filter: blur(10px); }
+  .wrap { position: relative; z-index: 1; max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+  .logo { font-weight: 800; font-size: 28px; letter-spacing: 1px;
+    background: linear-gradient(90deg, var(--pink), var(--purple), var(--blue));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h1 { font-size: 28px; margin: 14px 0 4px; }
+  .sub, .mini { color: var(--muted); }
+  .sub { margin: 0 0 14px; } .mini { font-size: 13px; }
+  .tabs { display: flex; gap: 10px; margin: 10px 0 4px; }
+  .tabs a { color: var(--text); text-decoration: none; border: 1px solid var(--line);
+    background: var(--card); border-radius: 999px; padding: 6px 16px; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
+    margin-top: 16px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 4px; color: var(--pink); }
+  p { margin: 8px 0; } ul { margin: 6px 0; padding-left: 20px; } li { margin: 4px 0; }
+  a { color: var(--blue); }
+  .lang { margin-top: 36px; padding-top: 6px; border-top: 1px solid var(--line); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <div class="logo">Fly</div>
+  <h1>Privacy Policy</h1>
+  <p class="sub">Last updated: 20 October 2026</p>
+  
+  <section>
+  <div class="card">
+    <h2>About Fly</h2>
+    <p>Fly is a short-video social app: you can watch and post videos and stories, chat and call friends, and go live. This policy explains what information Fly collects, why, who helps us handle it, and the choices you have. By using Fly you agree to this policy.</p>
+  </div>
+
+  <div class="card">
+    <h2>Information we collect</h2>
+    <h3>Information you give us</h3>
+    <ul>
+      <li><b>Account:</b> your email address and password (the password is handled by Firebase Authentication; we cannot read it), your display name and profile photo.</li>
+      <li><b>Date of birth:</b> asked at sign-up only to check that you are 13 or older. It is checked on your phone and is <b>not saved</b>.</li>
+      <li><b>Content you create:</b> videos, stories, captions, hashtags, comments, reactions, sounds you share, and your "Sky Note".</li>
+      <li><b>Messages and calls:</b> text messages, photos and voice notes you send in chats, and the audio and video of calls and live streams while they happen.</li>
+      <li><b>Activity in the app:</b> who you follow, friends, blocked accounts, saved videos, views, coins and gifts, what you search for (your recent searches are kept privately on your account), and reports you send us.</li>
+    </ul>
+    <h3>Information from your phone</h3>
+    <ul>
+      <li><b>Camera and microphone</b>, only when you record a video, make a call or go live.</li>
+      <li><b>Photos / files</b> you choose to upload.</li>
+      <li><b>Notification token</b> (Firebase Cloud Messaging) so we can send you notifications such as messages, calls and friend requests.</li>
+      <li><b>Online status:</b> whether you are online and when you were last active.</li>
+    </ul>
+    <p>We do not collect your precise location, contacts or advertising ID.</p>
+  </div>
+
+  <div class="card">
+    <h2>How we use information</h2>
+    <ul>
+      <li>To run Fly: sign you in, show your profile and videos, deliver messages and calls, and show you the Home feed.</li>
+      <li>To make search work: names, captions and hashtags are copied into a search index (in a normalised form, for example Zawgyi converted to Unicode) so people can find them.</li>
+      <li>To send notifications you have allowed.</li>
+      <li>To keep Fly safe: handling reports, blocking, copyright takedowns and abuse.</li>
+      <li>To fix problems and improve the app.</li>
+    </ul>
+    <p>We do <b>not</b> sell your personal information.</p>
+  </div>
+
+  <div class="card">
+    <h2>Who helps us (service providers)</h2>
+    <p>We use these companies to run Fly. They process data only to provide their service to us.</p>
+    <ul>
+      <li><b>Google Firebase</b> - sign-in, the database (Firestore) and notifications.</li>
+      <li><b>Bunny.net</b> - storing and streaming videos, stories and images.</li>
+      <li><b>Cloudflare</b> - our server (Workers) and the search index (D1).</li>
+      <li><b>LiveKit</b> - real-time audio/video for calls and live streams.</li>
+    </ul>
+    <p>Your profile, videos and comments are visible to other Fly users according to how the feature works (for example, posts are public; messages are only between you and the other person). We may also share information when the law requires it, or to protect the safety of Fly and its users.</p>
+  </div>
+
+  <div class="card">
+    <h2>Keeping and deleting your data</h2>
+    <p>We keep your information while your account exists. You can delete your account inside the app (Profile → ⋮ → Delete account) or without the app at <a href="/delete-account">this page</a>. We delete your account and its data within 30 days, and backup copies are cleared within 90 days. Messages you sent may remain in the other person's chat. Records we must keep for safety or legal reasons (for example, reports of abuse) may be kept as long as required.</p>
+  </div>
+
+  <div class="card">
+    <h2>Your choices</h2>
+    <ul>
+      <li>Edit your name and photo in Profile; delete your own posts, stories and comments.</li>
+      <li>Block or report accounts and content.</li>
+      <li>Turn off camera, microphone or notification permission in your phone's settings at any time (some features will stop working).</li>
+      <li>Ask us to access, correct or delete your information by contacting us below.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Children</h2>
+    <p>Fly is for people aged <b>13 and over</b>. We do not knowingly collect information from children under 13. If you think a child under 13 has an account, contact us and we will delete it.</p>
+  </div>
+
+  <div class="card">
+    <h2>Security and changes</h2>
+    <p>We use trusted providers, encrypted connections (HTTPS) and access rules to protect your information, but no system is perfectly secure. Your data may be processed on servers outside your country. We may update this policy; when we do, we change the date at the top, and for big changes we will tell you in the app.</p>
+  </div>
+
+  <div class="card">
+    <h2>Contact us</h2>
+    <p>Questions or requests about your privacy: <a href="mailto:chakaboycom@gmail.com">chakaboycom@gmail.com</a></p>
+  </div>
+  </section>
+
+
+  <footer>Fly · Privacy Policy</footer>
+</div>
 </body>
 </html>
 `;
