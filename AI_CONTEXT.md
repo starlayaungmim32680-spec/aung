@@ -398,6 +398,15 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > its "Last updated" date) whenever the app starts collecting something new
 > (location, ads, analytics...). Not linked inside the app yet._
 >
+> _21 Oct 2026 (confirmed by Ko on Fly Dev): **`FriendService.instance
+> .start()` now also runs in `MainNavigationScreen.initState`** (next to
+> `BlockService.start()`), so my friends / incoming requests load as soon as
+> the app opens instead of when the first screen that needs them appears.
+> The other `start()` calls (profile, Messages, chat, story viewer) stay -
+> it is safe to call many times. App-only change, no Worker / rules change.
+> Still open from the Friends leftovers: the Worker's `/call-push` and
+> `/chat-push` don't check friendship (rules already block it - cleanup)._
+>
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -2205,9 +2214,8 @@ others only see it once encoded (Bunny webhook).
    friend to keep chatting" banner. Friend request / accept phone
    notifications are done too (Worker `/friend-push`). Still open: the Worker's
    `/call-push` and `/chat-push` don't check friendship (the rules already
-   block the call doc / message - cleanup, not urgent); move
-   `FriendService.start()` into `main_navigation_screen.dart` next to
-   `BlockService.start()`. (Unread-in-bold, the bottom-bar unread badge
+   block the call doc / message - cleanup, not urgent); (done 21 Oct 2026: `FriendService.start()` now also starts in
+   `main_navigation_screen.dart` next to `BlockService.start()`.) (Unread-in-bold, the bottom-bar unread badge
    and delete-account cleanup of friends / requests / search history are
    done, 4 Oct 2026.) Still left behind on delete (needs a server, e.g.
    Cloud Functions now that we're on Blaze): Bunny files, comments /

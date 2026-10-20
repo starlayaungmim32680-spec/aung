@@ -130,6 +130,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     BlockService.instance.start();
     // Blocked people's chats don't count towards the unread badge.
     BlockService.instance.hidden.addListener(_recomputeUnread);
+    // Friends + incoming friend requests (Messages list, chat gating,
+    // profile buttons). Started once here, right after sign-in, instead of
+    // waiting for the first screen that needs it (it is safe to call again
+    // from those screens).
+    FriendService.instance.start();
     // Keep my name findable in search (Cloudflare D1, see
     // search_service.dart). Once per app run, best-effort.
     SearchService.syncMe();
