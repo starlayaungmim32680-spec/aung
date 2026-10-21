@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'main_navigation_screen.dart';
+import 'terms_consent.dart';
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -23,6 +24,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
   // minimum age (Fly requires 13+, given live streaming, chat, and gifting
   // with other users). Collected here rather than assumed.
   DateTime? _birthDate;
+  // Google Play: people must agree to the posting rules before using Fly,
+  // and it can't be pre-ticked or skipped (22 Oct 2026, terms_consent.dart).
+  bool _agreedToTerms = false;
 
   Future<void> _pickBirthDate() async {
     final DateTime now = DateTime.now();
@@ -110,6 +114,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
       return;
     }
 
+    if (!_agreedToTerms) {
+      setState(() {
+        _errorMessage =
+            'Please agree to the Terms of Use and Community Guidelines';
+      });
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -123,9 +135,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
       );
       final uid = credential.user?.uid;
       if (uid != null) {
-        await FirebaseFirestore.instance.collection('users').doc(uid).set(
-            {'dateOfBirth': _birthDate!.toIso8601String()},
-            SetOptions(merge: true));
+        // The birth date is only checked above and is NOT saved (as the
+        // Privacy Policy says) - only that the Terms were accepted.
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .set(termsAcceptedFields(), SetOptions(merge: true));
       }
       if (mounted) _goToHome();
     } on FirebaseAuthException catch (e) {
@@ -143,6 +158,61 @@ class _SignUpScreenState extends State<SignUpScreen> {
         });
       }
     }
+  }
+
+  // "I agree to the Terms of Use and Community Guidelines, and I've read
+  // the Privacy Policy" - each name opens its web page.
+  Widget _termsCheckbox() {
+    Widget link(String label, String url) => GestureDetector(
+          onTap: () => openFlyWebPage(context, url),
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFF3A8DFF),
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+    const TextStyle plain = TextStyle(color: Colors.grey, fontSize: 13);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 28,
+          height: 28,
+          child: Checkbox(
+            value: _agreedToTerms,
+            activeColor: const Color(0xFFFF4B6E),
+            side: const BorderSide(color: Colors.grey),
+            onChanged: _isLoading
+                ? null
+                : (v) => setState(() {
+                      _agreedToTerms = v ?? false;
+                      _errorMessage = null;
+                    }),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                const Text('I agree to the ', style: plain),
+                link('Terms of Use', kTermsUrl),
+                const Text(' and ', style: plain),
+                link('Community Guidelines', kCommunityGuidelinesUrl),
+                const Text(", and I've read the ", style: plain),
+                link('Privacy Policy', kPrivacyUrl),
+                const Text('.', style: plain),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   String _mapErrorMessage(String code) {
@@ -287,6 +357,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
+                _termsCheckbox(),
                 if (_errorMessage != null) ...[
                   const SizedBox(height: 16),
                   Text(

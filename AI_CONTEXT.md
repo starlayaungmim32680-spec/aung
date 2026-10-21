@@ -471,6 +471,43 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > ညည်း/မင်းတို့/နင်တို့ + ကိုသတ်, ...ကိုရိုက်သတ်, မင်း/နင် + သေပြီ/သေမယ်) -
 > "ခြင်တွေကို သတ်ပစ်မယ်" (mosquitoes) and news "...သတ်ခံရ" still pass._
 >
+> _21 Oct 2026 (night, confirmed by Ko on Fly Dev, phones A and B):
+> **Terms of Use + Community Guidelines + "I agree" (Google Play UGC
+> policy).** New public Worker page **`GET /terms`** (alias
+> `/terms-of-use`; `/community-guidelines` redirects to
+> `/terms#community-guidelines`), `TERMS_PAGE_HTML` (`String.raw`, same
+> look as /privacy, "Last updated: 22 October 2026 · Version 1"): who can
+> use Fly (13+), your content + licence, Community Guidelines (12 "not
+> allowed" groups: child safety, hate, harassment, violence, nudity,
+> self-harm, illegal goods, scams/spam, impersonation, privacy,
+> copyright, harmful false info), how Fly keeps it safe (automatic
+> checks, reports/blocks, reporter never shown, actions, reason +
+> appeal by email), copyright (`kCopyrightContactEmail`), coins/gifts
+> (no cash value), ending accounts, legal part, contact. Written by
+> Claude - **not checked by a lawyer** (do that before earning money).
+> /privacy got the same Terms/Guidelines/Privacy tabs and a line about
+> storing which Terms version was accepted ("Last updated: 22 October
+> 2026"). App: NEW **`lib/screens/terms_consent.dart`** (`kTermsVersion
+> = 1`, URLs always prod Worker, `openFlyWebPage`, `termsAcceptedFields()`
+> = `termsVersion`, `termsAcceptedAt`, and **deletes `dateOfBirth`**,
+> `TermsConsent.ensureAccepted(context)`, `TermsConsentScreen` "Before
+> you fly 🕊️": glass card, 5 emoji rules, link chips, gradient "I
+> agree", "I don't agree - log out", `PopScope(canPop: false)`).
+> `signup_screen.dart`: unticked "I agree to the Terms of Use and
+> Community Guidelines, and I've read the Privacy Policy" checkbox
+> (links open the pages), required; it saves `termsAcceptedFields()`.
+> **Bug fixed:** sign-up used to SAVE `dateOfBirth` on users/{uid}
+> although the Privacy Policy says it is not saved (nothing read it) -
+> no longer saved, and old values are deleted when the person taps I
+> agree. `main_navigation_screen.dart`: `_maybeShowOnboardingOnce()`
+> first awaits `TermsConsent.ensureAccepted` (once per account; offline
+> -> skipped this run). No rules change (owners may write their own user
+> doc). Worker changed -> deployed to BOTH Workers. Lesson again: the
+> first dev build was STALE (string check False) - fixed with the full
+> gradlew --stop / kill java / delete build / flutter clean recipe (§7
+> step 5). Prod APK not built yet. Play Console: Terms URL =
+> `https://livekit-token-worker.chakaboycom.workers.dev/terms`._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1731,6 +1768,12 @@ position)` — Android drops the video surface in the background and a
   offline first step of text moderation (21 Oct 2026 rewrite: per-word
   English, Burmese with syllable boundary + allow list, Telegram/WhatsApp
   links). Keep it short; the Worker's lists are the real ones.
+- `screens/terms_consent.dart` **(21 Oct 2026)** — Terms of Use
+  consent: `kTermsVersion`, the public page URLs (`kTermsUrl`,
+  `kCommunityGuidelinesUrl`, `kPrivacyUrl`), `openFlyWebPage`,
+  `termsAcceptedFields()`, `TermsConsent.ensureAccepted` and the one-time
+  `TermsConsentScreen`. Raise `kTermsVersion` (and "Version" on /terms)
+  only when everyone must agree again.
 - `screens/moderation_service.dart` **(21 Oct 2026)** —
   `ModerationService.checkText(text, ModerationKind)` -> `ModerationResult`
   (`ok`, friendly English `message`). ContentFilter first, then Worker
@@ -2299,8 +2342,18 @@ others only see it once encoded (Bunny webhook).
     LDNOOBW, CC BY 4.0, 27 languages, no Burmese - keep the attribution
     notice) + an AI model for every language (OpenAI omni-moderation:
     free, 40 languages tested, images for sexual/violence/self-harm) +
-    Report with a review queue. AI part done 21 Oct (OpenAI). Later
-    (agreed order, 21 Oct): server-side enforcement (Worker re-checks
+    Report with a review queue. AI part done 21 Oct (OpenAI). Terms +
+    consent done 21 Oct. **Next (agreed 21 Oct, Facebook-style "report =
+    signal, rules decide"):** Worker `POST /report` (verified reporter,
+    one count per person) -> Worker re-checks the reported text with
+    OpenAI: AI also flags it, or the reason is child safety / danger to
+    life -> hide after 1 report; otherwise hide after 3 different
+    people (anti-brigading); HIDE (`hiddenByReports`), never auto-delete;
+    owner still sees it "Under review" + a notification with the reason
+    + Appeal; never show who reported; user accounts are never auto-
+    hidden; then an admin page (Worker + ADMIN token) for Ko to remove /
+    restore. Video frames can't be AI-checked yet (only captions). Later:
+    server-side enforcement (Worker re-checks
     after the write and deletes - a hacked app can skip the app-side
     check), strike/ban system, Report -> admin review page, "Are you
     sure?" nudge + creator comment filter, CSAM hash matching before
@@ -2362,9 +2415,11 @@ others only see it once encoded (Bunny webhook).
 4. **Delete old tiny videos** (uploaded before the orientation guard) and
    re-upload them.
 5. Before publishing: put the `/delete-account` link in Play Console's
-   Data safety form (done on the Worker side 3 Oct 2026), and add a
-   Privacy Policy page if Fly doesn't have one (Play requires one; not
-   confirmed yet whether it exists).
+   Data safety form (done on the Worker side 3 Oct 2026). Privacy Policy
+   (`/privacy`, 20 Oct) and Terms of Use + Community Guidelines (`/terms`,
+   21 Oct, with in-app consent) exist now - add their links in Play
+   Console, have a lawyer read both before Fly earns money, and plan CSAM
+   reporting (law) before the store release.
 6. Optional / later: AudD song recognition, direct MP3 upload, resumable
    (TUS) uploads, force-update check (old builds ignore `videoReady`).
    (The login-screen show/hide password icon listed here before is already

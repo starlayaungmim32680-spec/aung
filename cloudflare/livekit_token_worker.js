@@ -112,6 +112,10 @@
 //                         images - not video, so Bunny Stream doesn't
 //                         apply). Also a raw-body route, not JSON.
 //  GET  /privacy         - (Oct 2026) public Privacy Policy page (English)
+//  GET  /terms           - (22 Oct 2026) public Terms of Use + Community
+//                         Guidelines page (also /terms-of-use,
+//                         /community-guidelines). The app links to it at
+//                         sign-up and asks everyone to agree once.
 //  GET  /delete-account  - (Oct 2026) public web page where people can
 //                         ask for their Fly account to be deleted without
 //                         the app - Google Play requires this link (put it
@@ -186,6 +190,20 @@ export default {
     if (request.method === 'GET' &&
         (url.pathname === '/privacy' || url.pathname === '/privacy-policy')) {
       return new Response(PRIVACY_PAGE_HTML, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
+    if (request.method === 'GET' && url.pathname === '/community-guidelines') {
+      return Response.redirect(`${url.origin}/terms#community-guidelines`, 302);
+    }
+    if (request.method === 'GET' &&
+        (url.pathname === '/terms' || url.pathname === '/terms-of-use')) {
+      return new Response(TERMS_PAGE_HTML, {
         headers: {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': 'public, max-age=300',
@@ -3248,7 +3266,8 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
 <div class="wrap">
   <div class="logo">Fly</div>
   <h1>Privacy Policy</h1>
-  <p class="sub">Last updated: 21 October 2026</p>
+  <p class="sub">Last updated: 22 October 2026</p>
+  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a></div>
   
   <section>
   <div class="card">
@@ -3262,6 +3281,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
     <ul>
       <li><b>Account:</b> your email address and password (the password is handled by Firebase Authentication; we cannot read it), your display name and profile photo.</li>
       <li><b>Date of birth:</b> asked at sign-up only to check that you are 13 or older. It is checked on your phone and is <b>not saved</b>.</li>
+      <li><b>Agreement to our rules:</b> which version of the Terms of Use you agreed to, and when.</li>
       <li><b>Content you create:</b> videos, stories, captions, hashtags, comments, reactions, sounds you share, and your "Sky Note".</li>
       <li><b>Messages and calls:</b> text messages, photos and voice notes you send in chats, and the audio and video of calls and live streams while they happen.</li>
       <li><b>Activity in the app:</b> who you follow, friends, blocked accounts, saved videos, views, coins and gifts, what you search for (your recent searches are kept privately on your account), and reports you send us.</li>
@@ -3334,6 +3354,161 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
 
 
   <footer>Fly · Privacy Policy</footer>
+</div>
+</body>
+</html>
+`;
+
+// Terms of Use + Community Guidelines (22 Oct 2026) - GET /terms
+// (aliases /terms-of-use, /community-guidelines). Same look as the
+// Privacy page. Google Play needs Terms separate from the Privacy Policy
+// for apps with user content. Keep free of backticks and ${.
+// When the rules change in a way people must agree to again, bump the
+// "Version" here AND kTermsVersion in lib/screens/terms_consent.dart.
+const TERMS_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fly Terms of Use</title>
+<meta name="description" content="The rules for using Fly, including the Community Guidelines.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --pink: #FF4B6E; --purple: #9C4DFF; --blue: #3A8DFF;
+    --bg: #07060b; --card: rgba(255,255,255,0.06); --line: rgba(255,255,255,0.12);
+    --text: #f4f2fa; --muted: #a8a3b8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh; color: var(--text); background: var(--bg);
+    font-family: Poppins, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.7; overflow-x: hidden;
+  }
+  .glow { position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(40% 35% at 20% 15%, rgba(255,75,110,.35), transparent 70%),
+      radial-gradient(40% 35% at 85% 25%, rgba(156,77,255,.35), transparent 70%),
+      radial-gradient(45% 40% at 50% 95%, rgba(58,141,255,.30), transparent 70%);
+    filter: blur(10px); }
+  .wrap { position: relative; z-index: 1; max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+  .logo { font-weight: 800; font-size: 28px; letter-spacing: 1px;
+    background: linear-gradient(90deg, var(--pink), var(--purple), var(--blue));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h1 { font-size: 28px; margin: 14px 0 4px; }
+  .sub, .mini { color: var(--muted); }
+  .sub { margin: 0 0 14px; } .mini { font-size: 13px; }
+  .tabs { display: flex; gap: 10px; margin: 10px 0 4px; }
+  .tabs a { color: var(--text); text-decoration: none; border: 1px solid var(--line);
+    background: var(--card); border-radius: 999px; padding: 6px 16px; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
+    margin-top: 16px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card h3 { font-size: 15px; margin: 14px 0 4px; color: var(--pink); }
+  p { margin: 8px 0; } ul { margin: 6px 0; padding-left: 20px; } li { margin: 4px 0; }
+  a { color: var(--blue); }
+  .lang { margin-top: 36px; padding-top: 6px; border-top: 1px solid var(--line); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <div class="logo">Fly</div>
+  <h1>Terms of Use</h1>
+  <p class="sub">Last updated: 22 October 2026 · Version 1</p>
+  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a></div>
+
+  <section>
+  <div class="card">
+    <h2>1. Welcome to Fly</h2>
+    <p>Fly is a short-video social app where you can watch and post videos and stories, comment, chat and call friends, send gifts and go live. These Terms of Use and the <a href="#community-guidelines">Community Guidelines</a> below are the rules for using Fly. By creating an account or using Fly you agree to them. If you do not agree, please do not use Fly. How we handle your information is explained in our <a href="/privacy">Privacy Policy</a>.</p>
+  </div>
+
+  <div class="card">
+    <h2>2. Who can use Fly</h2>
+    <ul>
+      <li>You must be <b>13 or older</b>. If the law where you live sets a higher age for using apps like Fly, you must meet that age or have your parent's or guardian's permission.</li>
+      <li>One person, one real account. Do not pretend to be someone else, and do not create accounts to get around a block or a ban.</li>
+      <li>Keep your password safe. You are responsible for what happens on your account.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>3. Your content</h2>
+    <ul>
+      <li>You own the videos, photos, sounds and text you post ("your content").</li>
+      <li>So that Fly can work, you give us a worldwide, non-exclusive, royalty-free licence to host, store, copy, process, show and share your content inside Fly (for example in the feed, search and notifications) for as long as it is on Fly. If you share a sound so others can use it, they may use it in their Fly videos.</li>
+      <li>You must have the rights to everything you post, including music and other people's work.</li>
+      <li>When you delete your content or your account, we stop showing it; copies may stay in backups for a limited time (see the Privacy Policy).</li>
+    </ul>
+  </div>
+
+  <div class="card" id="community-guidelines">
+    <h2>4. Community Guidelines</h2>
+    <p>Fly is for everyone, everywhere. These rules apply to everything you post or send: videos, stories, live streams, captions, hashtags, comments, names, notes, profile photos, sounds and messages.</p>
+    <h3>Not allowed on Fly</h3>
+    <ul>
+      <li><b>Child safety:</b> anything that sexualises, exploits or endangers anyone under 18. We remove it, ban the account and report it to the authorities when the law requires.</li>
+      <li><b>Hate:</b> attacking or insulting people because of their race, ethnicity, nationality, religion, caste, sex, gender, sexual orientation, disability or serious illness, including slurs.</li>
+      <li><b>Harassment and bullying:</b> insults, threats, humiliating someone, or encouraging others to do so.</li>
+      <li><b>Violence:</b> threats, praising or encouraging violence or terrorism, and graphic gore.</li>
+      <li><b>Nudity and sexual content.</b></li>
+      <li><b>Suicide and self-harm:</b> content that encourages or shows how to hurt yourself. If you are struggling, please reach out to someone you trust or a local helpline.</li>
+      <li><b>Dangerous and illegal activities:</b> selling or promoting drugs, weapons or other illegal goods and services.</li>
+      <li><b>Scams and spam:</b> fraud, fake giveaways, repeated unwanted posts, and links that move people to other apps to trick or sell to them.</li>
+      <li><b>Impersonation:</b> pretending to be another person, a brand, or Fly staff.</li>
+      <li><b>Privacy:</b> sharing other people's private information (addresses, phone numbers, IDs, private photos) without their permission.</li>
+      <li><b>Copyright:</b> posting music, videos or other work you do not have the rights to.</li>
+      <li><b>False information</b> that can cause real-world harm.</li>
+    </ul>
+    <h3>Be kind</h3>
+    <p>Disagree without insulting. Respect people's choices to block you or not reply. Remember that real people, in many countries and languages, read what you write.</p>
+  </div>
+
+  <div class="card">
+    <h2>5. How we keep Fly safe</h2>
+    <ul>
+      <li><b>Automatic checks.</b> Text you post for others to see (names, captions, comments, live comments and notes) is checked automatically before it appears, using word lists and an AI safety service. Text that breaks the rules is not posted and you are told why.</li>
+      <li><b>Reports and blocks.</b> You can report and block accounts, videos, comments and sounds in the app. Who reported something is never shown to the person reported.</li>
+      <li><b>What we may do.</b> Remove or hide content, limit features (for example posting, commenting or going live), or suspend or close accounts that break these rules - more strictly for serious or repeated breaks.</li>
+      <li><b>Telling you and appeals.</b> When we act on your content or account, we tell you the reason. If you think we got it wrong, contact us (section 10) and a person will review it.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>6. Copyright</h2>
+    <p>If you believe something on Fly uses your work without permission, use the Copyright option in the app or email <a href="mailto:aungnaungkyaw545778@gmail.com">aungnaungkyaw545778@gmail.com</a> with a link to the content and proof that you own the work. We remove content when a valid notice is received, and may close accounts that repeatedly infringe.</p>
+  </div>
+
+  <div class="card">
+    <h2>7. Coins and gifts</h2>
+    <p>Coins and gifts are virtual items for use inside Fly only. They have no cash value, cannot be exchanged for money and cannot be transferred outside Fly, except where Fly offers it or the law requires. We may change how coins and gifts work. Coins in an account that is closed for breaking these rules may be lost.</p>
+  </div>
+
+  <div class="card">
+    <h2>8. Ending your account</h2>
+    <p>You can delete your account at any time in the app (Profile → ⋮ → Delete account) or at <a href="/delete-account">this page</a>. We may suspend or close accounts that break these Terms, put others at risk, or where the law requires it.</p>
+  </div>
+
+  <div class="card">
+    <h2>9. The legal part</h2>
+    <ul>
+      <li>Fly is provided "as is". We work hard to keep it running and safe, but we cannot promise it will always be available, error-free, or that everything other people post is accurate or appropriate.</li>
+      <li>To the extent the law allows, Fly is not responsible for content posted by users, or for indirect or unexpected losses from using Fly. Nothing in these Terms limits rights you have under the law where you live that cannot be limited.</li>
+      <li>We may update these Terms. When we do, we change the date and version at the top, and for important changes we will ask you to agree again in the app.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>10. Contact us</h2>
+    <p>Questions, appeals or reports: <a href="mailto:chakaboycom@gmail.com">chakaboycom@gmail.com</a></p>
+  </div>
+  </section>
+
+  <footer>Fly · Terms of Use</footer>
 </div>
 </body>
 </html>

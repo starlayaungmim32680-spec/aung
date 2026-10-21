@@ -26,6 +26,7 @@ import '../friend_service.dart';
 import '../search_service.dart';
 import 'public_profile_screen.dart';
 import 'moderation_service.dart';
+import 'terms_consent.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -642,6 +643,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // the same time, so the swipe hint doesn't silently burn its own
   // one-time flag while the onboarding screen is covering it.
   Future<void> _maybeShowOnboardingOnce() async {
+    // Terms of Use first (22 Oct 2026, terms_consent.dart) - everyone who
+    // hasn't agreed to the current version sees it once; "log out" ends
+    // here.
+    if (!await TermsConsent.ensureAccepted(context)) return;
+    if (!mounted) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       final docRef =
