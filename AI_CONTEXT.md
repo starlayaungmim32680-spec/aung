@@ -505,7 +505,9 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > doc). Worker changed -> deployed to BOTH Workers. Lesson again: the
 > first dev build was STALE (string check False) - fixed with the full
 > gradlew --stop / kill java / delete build / flutter clean recipe (§7
-> step 5). Prod APK not built yet. Play Console: Terms URL =
+> step 5). **Prod rollout done the same night** (prod APK tested on A
+and B: consent screen, text moderation, AI threat check, posting - all
+OK). Play Console: Terms URL =
 > `https://livekit-token-worker.chakaboycom.workers.dev/terms`._
 >
 >
