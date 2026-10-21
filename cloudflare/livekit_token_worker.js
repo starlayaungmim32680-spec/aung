@@ -84,6 +84,15 @@
 //                         (then what=posts). Shows a "Next page" link until
 //                         done. Also creates the tables the first time.
 //                         No Firebase sign-in - protected by the token.
+//  POST /moderate-text  - (21 Oct 2026) checks text BEFORE the app saves
+//                         it where others can see it (names, Sky Notes,
+//                         captions, comments, live comments/titles).
+//                         Body {text, kind}; answer {ok} or {ok: false,
+//                         reason: 'language' | 'spam' | 'reserved'}.
+//                         English per word (no "spicy"/"Scunthorpe"
+//                         mistakes), Burmese in Zawgyi or Unicode, links
+//                         to Telegram/WhatsApp. Word lists: see "Text
+//                         moderation" below. Nothing is stored.
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -243,6 +252,9 @@ export default {
     }
     if (path === '/search-trending') {
       return handleSearchTrending(env);
+    }
+    if (path === '/moderate-text') {
+      return handleModerateText(body);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -2441,6 +2453,308 @@ async function handleSearchBackfill(env, url) {
     return html(`<h2>❌ Error</h2><pre>${String(err.message)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
   }
+}
+
+// ---------------------------------------------------------------------
+// Text moderation (21 Oct 2026): POST /moderate-text
+// ---------------------------------------------------------------------
+// The app asks here BEFORE it saves text that other people will see:
+// names, Sky Notes, captions (hashtags come from the caption) + text
+// stickers on a video, video comments / replies, live comments and live
+// titles (lib/screens/moderation_service.dart). Chat messages are NOT
+// checked - they are private between friends; Report handles them.
+//
+// Body {text, kind}; kind = name | skynote | caption | comment |
+// live_comment | live_title (anything else counts as 'comment').
+// Answer {ok: true} or {ok: false, reason}: 'language' (a bad word),
+// 'spam' (Telegram/WhatsApp/short links, "free money"...) or 'reserved'
+// (a name pretending to be Fly staff). Only a yes/no + reason comes back -
+// never WHICH word matched - so nobody can use it to probe the list.
+//
+// Why on the Worker and not only on the phone: the Worker converts
+// Zawgyi -> Unicode (Myanmar text tools above), so a word typed in
+// Zawgyi, with spaces / dots / emoji between the letters, zero-width
+// characters, "fancy" letters (ｆｕｃｋ), leetspeak (sh1t, f*ck) or
+// stretched letters (fuuuuck) still matches - and the list grows with a
+// Worker deploy, no new APK. Cloudflare never "sleeps" (unlike the free
+// Render server), so the app can wait for this answer (~0.2 s).
+//
+// Matching rules (made so normal words are NOT blocked - "spicy",
+// "Scunthorpe", "Dickson", ကုလားထိုင် = chair, သူကလား = "is it him?"):
+//  - English is checked per WORD, never "anywhere in the text":
+//      MOD_EN_ANYWHERE - inside any word (motherfucker, fuckingg);
+//      MOD_EN_PREFIX   - a word that starts with it (bitches, shitty);
+//      MOD_EN_EXACT    - the word itself, or + s/es/ed/er/ers/ing
+//                        (dick, dicks - but never dickson). Words whose
+//                        endings make normal words ("spic" -> spicy,
+//                        spiced, spices) are left out on purpose;
+//      MOD_EN_SQUEEZED - also found with ALL spaces/symbols removed
+//                        (f u c k, f-u-c-k, fu ck); only long, unambiguous
+//                        words go here ("fish it" contains "shit"!);
+//      MOD_EN_PHRASES  - whole words in a row ("kill yourself").
+//  - Burmese has no spaces between words, so a Burmese entry is found
+//    anywhere in the text after every non-Burmese character between the
+//    letters is removed - BUT only when the match ends on a syllable
+//    boundary (ကောင် must not match inside ကောင်း) and is not part of a
+//    phrase in MOD_MY_ALLOW.
+//
+// Ko: add words from real reports (Firestore `reports`). Type Burmese
+// entries normally in Unicode - they are tidied when the Worker starts.
+// Keep each Burmese entry a whole insult, not a short syllable that is
+// also part of normal words. After editing: deploy BOTH Workers.
+const MOD_KINDS = new Set([
+  'name', 'skynote', 'caption', 'comment', 'live_comment', 'live_title',
+]);
+const MOD_MAX_CHARS = 5000;
+
+const MOD_EN_ANYWHERE = [
+  'fuck', 'nigger', 'nigga', 'faggot', 'motherfuck', 'cocksuck', 'shit',
+];
+const MOD_EN_PREFIX = [
+  'bitch', 'cunt', 'whore', 'slut', 'bastard', 'asshole', 'dickhead',
+  'wanker', 'twat', 'porn',
+];
+const MOD_EN_EXACT = [
+  'fuk', 'fuq', 'fck', 'fcuk', 'dick', 'pussy', 'dumbass', 'jackass',
+  'chink', 'fag', 'retard', 'kys', 'kalar',
+];
+const MOD_EN_SQUEEZED = [
+  'fuck', 'nigger', 'nigga', 'faggot', 'motherfuck', 'cocksuck',
+];
+const MOD_EN_PHRASES = [
+  'kill yourself', 'kill urself', 'kill your self', 'go die',
+  'send nudes', 'free money', 'click here to win',
+];
+const MOD_EN_SUFFIXES = ['', 's', 'es', 'ed', 'er', 'ers', 'ing'];
+
+// Burmese insults / slurs (Unicode). A starting list - Ko adds more.
+const MOD_MY_BLOCK = [
+  'လီး',          // vulgar (penis) - the most common swear
+  'လိုး',          // vulgar (fuck) - covers မအေလိုး, ငါလိုးမ ...
+  'စောက်',        // vulgar prefix - covers စောက်ရူး, စောက်ပိုး ...
+  'သောက်ရူး',     // "softened" spellings of the above
+  'သောက်ပိုး',
+  'သောက်ကောင်',
+  'ခွေးမသား',     // son of a bitch
+  'ခွေးကောင်',    // "dog" (as an insult)
+  'ကုလား',        // ethnic / religious slur
+  'ဖာသည်',        // prostitute (as an insult)
+  'ဖာသေမ',
+  'ဖင်ခံ',         // anti-gay slur
+];
+// Normal words that CONTAIN a blocked entry - never blocked.
+const MOD_MY_ALLOW = [
+  'ကုလားထိုင်',   // chair
+  'ကုလားပဲ',      // chickpea
+  'ကုလားအုတ်',    // camel
+  'ကုလားကာ',      // curtain
+  'မတ်စောက်',     // steep
+  'တောင်စောက်',   // steep (hillside)
+];
+
+const MOD_SPAM_LINK =
+  /(^|[^a-z0-9])(t\.me|telegram\.me|telegram\.dog|wa\.me|chat\.whatsapp\.com|bit\.ly|tinyurl\.com|cutt\.ly)([^a-z0-9]|$)/;
+const MOD_NAME_URL =
+  /(https?:\/\/|www\.|\.(com|net|org|io|me|ly|xyz|link|site|shop|club|info|biz|app)([^a-z]|$))/;
+const MOD_RESERVED_WORDS = ['admin', 'administrator', 'moderator'];
+const MOD_RESERVED_SQUEEZED = [
+  'flyofficial', 'officialfly', 'flyteam', 'teamfly', 'flysupport',
+  'flystaff', 'flyadmin',
+];
+const MOD_LEET = {
+  '@': 'a', '4': 'a', '3': 'e', '1': 'i', '!': 'i', '|': 'i', '0': 'o',
+  '$': 's', '5': 's', '7': 't',
+};
+
+let modMyLists = null;
+
+// Burmese entries tidied the same way as the text (once per Worker start).
+function modMyanmarLists() {
+  if (!modMyLists) {
+    const squeeze = (w) => modMyanmarSqueeze(mmTidy(w));
+    // An allowed phrase is also kept in its "read as Zawgyi" form, so the
+    // converted reading of a Unicode text (below) still finds it.
+    const allow = new Set();
+    for (const a of MOD_MY_ALLOW) {
+      allow.add(squeeze(a));
+      allow.add(modMyanmarSqueeze(mmTidy(zawgyiToUnicode(a))));
+    }
+    allow.delete('');
+    modMyLists = {
+      block: MOD_MY_BLOCK.map(squeeze).filter(Boolean),
+      allow: Array.from(allow),
+    };
+  }
+  return modMyLists;
+}
+
+// Keeps Burmese letters/marks only. A run of Latin letters becomes '|'
+// (a hard break); spaces, dots, digits, emoji... vanish, so
+// "ခွေး . ကောင်" is read as "ခွေးကောင်".
+function modMyanmarSqueeze(text) {
+  return String(text || '')
+    .replace(/[a-z]+/g, '|')
+    .replace(/[^က-႟ꩠ-ꩿꧠ-꧿|]/g, '');
+}
+
+function modMyanmarAllowed(s, start, length, allow) {
+  for (const a of allow) {
+    let from = 0;
+    for (;;) {
+      const i = s.indexOf(a, from);
+      if (i < 0) break;
+      if (i <= start && start + length <= i + a.length) return true;
+      from = i + 1;
+    }
+  }
+  return false;
+}
+
+function modMyanmarBlocked(raw) {
+  if (!/[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]/.test(raw)) return false;
+  const { block, allow } = modMyanmarLists();
+  // The text as typed is always checked. Unless the detector is sure it
+  // is Unicode, the "converted from Zawgyi" reading is checked TOO - the
+  // detector is often wrong on short text (Unicode "မအေလိုး" scores 0.99
+  // "Zawgyi"), and for blocking it is safer to look twice.
+  const readings = [modMyanmarSqueeze(mmTidy(raw))];
+  if (zawgyiProbability(raw) > 0.1) {
+    readings.push(modMyanmarSqueeze(mmTidy(zawgyiToUnicode(raw))));
+  }
+  for (const bad of block) {
+    // Per reading: does the word appear as an insult (uncovered) and/or
+    // only inside an allowed phrase (covered)?
+    let uncovered = false;
+    let onlyCoveredSomewhere = false;
+    for (const s of readings) {
+      let found = false;
+      let free = false;
+      let from = 0;
+      for (;;) {
+        const i = s.indexOf(bad, from);
+        if (i < 0) break;
+        from = i + 1;
+        // The syllable goes on (a vowel/medial/final mark follows), e.g.
+        // ကောင် inside ကောင်း - not this word.
+        if (/[\u102b-\u103e]/.test(s[i + bad.length] || '')) continue;
+        // Starts on a stacked (subscript) consonant - not a word start.
+        if (i > 0 && s[i - 1] === '\u1039') continue;
+        found = true;
+        if (!modMyanmarAllowed(s, i, bad.length, allow)) free = true;
+      }
+      if (free) uncovered = true;
+      else if (found) onlyCoveredSomewhere = true;
+    }
+    // A Zawgyi "ကုလားထိုင္" (chair) looks like the slur when read as
+    // typed, but is clearly the allowed word in its converted reading -
+    // one reading that explains every match as a normal word wins.
+    if (uncovered && !onlyCoveredSomewhere) return true;
+  }
+  return false;
+}
+
+// Latin text -> words (null = a number-only token, i.e. a break).
+function modLatinWords(lower) {
+  return lower
+    .split(/[^a-z0-9@$!|*]+/)
+    .filter(Boolean)
+    .map((t) => {
+      if (!/[a-z]/.test(t)) return null;
+      return Array.from(t).map((c) => MOD_LEET[c] || c).join('').replace(/\*/g, '');
+    });
+}
+
+// A word plus its "stretched letters" readings: fuuuuck -> fuck, and
+// asssshole -> asshole (3+ of the same letter -> 1 and -> 2).
+function modWordVariants(w) {
+  const out = new Set([w]);
+  out.add(w.replace(/(.)\1{2,}/g, '$1'));
+  out.add(w.replace(/(.)\1{2,}/g, '$1$1'));
+  return out;
+}
+
+function modWordBlocked(word) {
+  for (const w of modWordVariants(word)) {
+    for (const x of MOD_EN_ANYWHERE) if (w.includes(x)) return true;
+    for (const x of MOD_EN_PREFIX) if (w.startsWith(x)) return true;
+    for (const x of MOD_EN_EXACT) {
+      for (const sfx of MOD_EN_SUFFIXES) if (w === x + sfx) return true;
+    }
+  }
+  return false;
+}
+
+// Returns null (fine) or the reason the text is refused.
+function moderateText(text, kind) {
+  const raw = String(text || '').slice(0, MOD_MAX_CHARS);
+  if (!raw.trim()) return null;
+
+  // Fancy letters -> plain (ｆｕｃｋ, 𝐟𝐮𝐜𝐤), lower case, no zero-width
+  // characters, accents off Latin letters (fück -> fuck).
+  const lower = raw
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[​-‍⁠﻿]/g, '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .normalize('NFC');
+  const noSpaces = lower.replace(/\s+/g, '');
+  // "t . me / x" -> "t.me/x" (spaces around dots and slashes dropped).
+  const linkText = lower.replace(/\s*([./])\s*/g, '$1');
+
+  // ---- spam / off-app links (every kind) ----
+  if (MOD_SPAM_LINK.test(linkText)) return 'spam';
+
+  // ---- English words ----
+  const words = modLatinWords(lower);
+  const plain = words.filter(Boolean);
+  for (const w of plain) {
+    if (modWordBlocked(w)) return 'language';
+  }
+  // Letters typed one by one: "f u c k", "s.h.i.t".
+  let run = '';
+  for (const w of [...words, null]) {
+    if (w && w.length === 1) {
+      run += w;
+      continue;
+    }
+    if (run.length >= 3 && modWordBlocked(run)) return 'language';
+    run = '';
+  }
+  const squeezed = plain.join('');
+  for (const x of MOD_EN_SQUEEZED) {
+    for (const v of modWordVariants(squeezed)) {
+      if (v.includes(x)) return 'language';
+    }
+  }
+  const sentence = ` ${plain.join(' ')} `;
+  for (const p of MOD_EN_PHRASES) {
+    if (sentence.includes(` ${p} `)) return 'language';
+  }
+
+  // ---- Burmese (Zawgyi or Unicode) ----
+  if (modMyanmarBlocked(raw)) return 'language';
+
+  // ---- names only ----
+  if (kind === 'name') {
+    if (MOD_NAME_URL.test(noSpaces)) return 'spam';
+    if (/\d{8,}/.test(lower.replace(/[\s\-().+]/g, ''))) return 'spam';
+    for (const w of plain) {
+      if (MOD_RESERVED_WORDS.includes(w)) return 'reserved';
+    }
+    for (const x of MOD_RESERVED_SQUEEZED) {
+      if (squeezed.includes(x)) return 'reserved';
+    }
+    if (squeezed === 'fly') return 'reserved';
+  }
+  return null;
+}
+
+async function handleModerateText(body) {
+  const text = typeof body?.text === 'string' ? body.text : '';
+  const kind = MOD_KINDS.has(body?.kind) ? body.kind : 'comment';
+  const reason = moderateText(text, kind);
+  return jsonResponse(reason ? { ok: false, reason } : { ok: true });
 }
 
 async function getGoogleAccessToken(env, scope = FCM_SCOPE) {

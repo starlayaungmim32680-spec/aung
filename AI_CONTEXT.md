@@ -407,6 +407,39 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > Still open from the Friends leftovers: the Worker's `/call-push` and
 > `/chat-push` don't check friendship (rules already block it - cleanup)._
 >
+> _21 Oct 2026 (confirmed by Ko on Fly Dev, phones A and B): **text
+> moderation, step 1 of 3 - checked BEFORE saving, Burmese Zawgyi/Unicode
+> too.** New Worker route **`POST /moderate-text {text, kind}`** ->
+> `{ok}` / `{ok: false, reason: 'language'|'spam'|'reserved'}` (section
+> "Text moderation" in the Worker; never says WHICH word matched).
+> English per WORD (`MOD_EN_ANYWHERE` / `_PREFIX` / `_EXACT` /
+> `_SQUEEZED` / `_PHRASES`) - so "spicy", "Scunthorpe", "Dickson" pass -
+> with NFKC (fancy letters), leetspeak, `f u c k`, stretched letters;
+> Burmese `MOD_MY_BLOCK` found after Zawgyi->Unicode (both readings when
+> the detector isn't sure), spaces/dots/emoji/zero-width between letters
+> ignored, only on a syllable boundary (`ခွေးကောင်း` = "good dog" passes,
+> `ခွေးကောင်` is blocked), never inside `MOD_MY_ALLOW` (ကုလားထိုင် chair,
+> ကုလားပဲ, ကုလားအုတ်, ကုလားကာ, မတ်စောက်, တောင်စောက်); Telegram/WhatsApp/
+> short links = spam; names also refuse URLs, 8+ digit numbers and
+> "Fly Official/Team/Support/Staff", "admin", "moderator", plain "Fly".
+> App: NEW **`lib/screens/moderation_service.dart`**
+> (`ModerationService.checkText(text, ModerationKind.x)` = on-device
+> `ContentFilter` first, then the Worker, 6 s timeout; if the Worker
+> can't be reached the text passes on the on-device check alone). Used
+> for: Edit-profile name, Sky Note (sheet stays open with the reason),
+> caption + text stickers on the video (before any upload; Post button
+> spinner), comments/replies (**now BEFORE the write** - send button
+> spinner; the Render check still runs after), live comments, live
+> title (Go Live dialog stays open). `main.dart`: the email-prefix first
+> name falls back to "User" if `ContentFilter` refuses it.
+> `content_filter.dart` rewritten (per-word English, Burmese boundary +
+> allow list, the t.me/wa.me check never worked before; removed
+> မိန်းမကလေး and ကျားကောင် - normal words). NOT checked: chat (private,
+> Report only), story text, images/videos (steps 2-3, see To-do 01).
+> **Worker changed -> deployed to BOTH Workers.** Tested in Node (~65
+> cases). Prod APK not built yet._
+>
+>
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
 > Note, Fly Memories, Reaction Pulse, Timeline Highlights, the 13+ age gate
@@ -1540,8 +1573,10 @@ position)` — Android drops the video surface in the background and a
     the controller at the same spot (max 2 tries, then "Couldn't load").
     Also used after resuming. A dead player on resume is rebuilt too. - The layout rebuilds when `controller.value.size` changes (HLS can
     report 0x0 at initialize and the real size a moment later).
-    **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):** - **Instant send:** only the on-device `ContentFilter` runs before
-    posting; the comment is written at once with a locally generated doc
+    **Comments sheet (`_CommentsSheet`, 28 Sep 2026, confirmed on phones):** - **Instant send:** since 21 Oct 2026 `ModerationService.checkText`
+    (on-device list + the Worker's `/moderate-text`, ~0.2 s, `_sending`
+    ValueNotifier spinner on the send button) runs before posting; the
+    comment is then written at once with a locally generated doc
     id (input clears immediately, profile is pre-fetched in initState).
     The moderation-server check (`fly-moderation.onrender.com`, free
     Render — up to ~50s cold start, which is what made sending feel
@@ -1659,7 +1694,15 @@ position)` — Android drops the video surface in the background and a
   (background/shadow/neon/impact/gradient styles, looping entrance/exit
   animations) - shared by the upload preview, `home_screen.dart`'s feed
   playback, and `story_screen.dart`'s story viewer.
-- `screens/content_filter.dart` — content/keyword filtering helper.
+- `screens/content_filter.dart` — on-device word filter, the instant /
+  offline first step of text moderation (21 Oct 2026 rewrite: per-word
+  English, Burmese with syllable boundary + allow list, Telegram/WhatsApp
+  links). Keep it short; the Worker's lists are the real ones.
+- `screens/moderation_service.dart` **(21 Oct 2026)** —
+  `ModerationService.checkText(text, ModerationKind)` -> `ModerationResult`
+  (`ok`, friendly English `message`). ContentFilter first, then Worker
+  `POST /moderate-text`; fails open on network errors. Kinds: name,
+  skyNote, caption, comment, liveComment, liveTitle.
 - `screens/profile_screen.dart` — own profile: avatar, name, Edit Profile,
   stats (Posts / Followers / Following), video grid (tap = open viewer,
   long-press = delete own post), TikTok-style view count on each thumbnail.
@@ -2191,7 +2234,7 @@ others only see it once encoded (Bunny webhook).
   check the network (other Wi-Fi, VPN, Private DNS off, Google Play
   services updated) before debugging code for "spinner only on one phone".
 
-### To-do list (Ko's next steps, most urgent first — updated 18 Oct 2026)
+### To-do list (Ko's next steps, most urgent first — updated 21 Oct 2026)
 
 00. **After Premium + Early-Play (both libraries, done 16-17 Oct
     2026)** - still open: (1) done 21 Oct 2026: Bunny Billing checked - balance $9.30 (was
@@ -2209,6 +2252,22 @@ others only see it once encoded (Bunny webhook).
     Meilisearch/Typesense when Fly grows, see the 20 Oct note); (4) if the original is slow to start
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
+
+01. **Content moderation (step 1 done 21 Oct 2026 - text, see the note
+    at the top).** Next: (2) the fly-moderation server on Render (free,
+    sleeps ~50 s, the app "fails open" so bad captions/videos can slip
+    through; code comments say it proxies OpenAI omni-moderation, Ko
+    remembers Detoxify + Falconsai - not checked; Ko doesn't know if its
+    code is on GitHub). Idea discussed 21 Oct: call OpenAI's free
+    omni-moderation API straight from the Worker (secret OPENAI_API_KEY),
+    no Render; (3) images (profile photo, story image, chat photo) and
+    story videos + story text. **Many languages (Ko's question, 21 Oct):**
+    plan = layers - Worker word lists (Burmese + English now; more from
+    LDNOOBW, CC BY 4.0, 27 languages, no Burmese - keep the attribution
+    notice) + an AI model for every language (OpenAI omni-moderation:
+    free, 40 languages tested, images for sexual/violence/self-harm) +
+    Report with a review queue. Not decided yet. Also: grow
+    `MOD_MY_BLOCK` / `MOD_MY_ALLOW` from real reports.
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,
    Friend Requests screen, chat/calls/story replies friends-only, new

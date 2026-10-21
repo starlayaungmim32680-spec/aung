@@ -32,6 +32,14 @@
 //   - quick-emoji bar and my avatar by the composer; send button lights up
 //     in the Fly gradient only when there's text.
 //
+// 21 Oct 2026 - text moderation BEFORE sending: a comment / reply is now
+// checked by ModerationService (on-device word list + the Worker's
+// /moderate-text, ~0.2 s, Zawgyi/Unicode Burmese) before it is written,
+// so a bad comment never appears, not even for a moment. While that runs
+// the send button shows a small spinner (_sending, a ValueNotifier, so
+// only the button rebuilds). The slower fly-moderation (Render) check
+// still runs afterwards, as before.
+//
 // It's a `part` file: it shares home_screen.dart's imports and its private
 // (_) names, so moving the code here changed nothing else. Add new imports
 // to home_screen.dart, not here.
@@ -145,6 +153,7 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     _commentController.dispose();
     _focusNode.dispose();
     _commentCount.dispose();
+    _sending.dispose();
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
     super.dispose();
   }
@@ -224,14 +233,19 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     }
   }
 
-  // Sends a comment (or a reply) instantly.
+  // True while ModerationService checks a comment before it is sent - the
+  // send button shows a spinner and ignores taps.
+  final ValueNotifier<bool> _sending = ValueNotifier<bool>(false);
+
+  // Sends a comment (or a reply).
   //
   // Why it used to feel slow: it waited for the moderation server (a free
   // Render instance that can take ~50s to wake up) and then a profile
   // read, all BEFORE writing anything - and the input stayed locked with a
   // spinner the whole time. Now:
-  //   1. the quick on-device word filter still runs first (blocks before
-  //      posting, as before);
+  //   1. ModerationService checks the text first (21 Oct 2026: on-device
+  //      word list + the Worker's /moderate-text - about 0.2 s, never the
+  //      sleeping Render server); a refused comment is never written;
   //   2. the comment is written straight away and the input clears at
   //      once - Firestore shows it in the list immediately, even before
   //      the server confirms;
@@ -245,14 +259,19 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     final String text = _commentController.text.trim();
     if (user == null || text.isEmpty) return;
 
+    if (_sending.value) return;
+
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
 
-    if (ContentFilter.containsBlockedContent(text)) {
+    _sending.value = true;
+    final ModerationResult check =
+        await ModerationService.checkText(text, ModerationKind.comment);
+    if (!mounted) return;
+    _sending.value = false;
+    if (!check.ok) {
+      HapticFeedback.mediumImpact();
       messenger.showSnackBar(
-        const SnackBar(
-          content: Text(
-              'Your comment contains inappropriate language. Please edit it.'),
-        ),
+        SnackBar(content: Text(check.message!)),
       );
       return;
     }
@@ -1086,41 +1105,54 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // Send lights up (Fly gradient) only when there's text.
-                ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: _commentController,
-                  builder: (context, v, _) {
-                    final bool ready = v.text.trim().isNotEmpty;
-                    return GestureDetector(
-                      onTap: ready
-                          ? () {
-                              HapticFeedback.lightImpact();
-                              _sendComment();
-                            }
-                          : null,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: ready ? null : const Color(0xFF2A2A2A),
-                          gradient: ready
-                              ? const LinearGradient(
-                                  colors: [
-                                    Color(0xFFFF4B6E),
-                                    Color(0xFF9C4DFF),
-                                    Color(0xFF3A8DFF),
-                                  ],
+                // Send lights up (Fly gradient) only when there's text;
+                // a small spinner while the text is being checked.
+                ValueListenableBuilder<bool>(
+                  valueListenable: _sending,
+                  builder: (context, sending, _) =>
+                      ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _commentController,
+                    builder: (context, v, _) {
+                      final bool ready = v.text.trim().isNotEmpty;
+                      return GestureDetector(
+                        onTap: ready && !sending
+                            ? () {
+                                HapticFeedback.lightImpact();
+                                _sendComment();
+                              }
+                            : null,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: ready ? null : const Color(0xFF2A2A2A),
+                            gradient: ready
+                                ? const LinearGradient(
+                                    colors: [
+                                      Color(0xFFFF4B6E),
+                                      Color(0xFF9C4DFF),
+                                      Color(0xFF3A8DFF),
+                                    ],
+                                  )
+                                : null,
+                          ),
+                          child: sending
+                              ? const Padding(
+                                  padding: EdgeInsets.all(11),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.2,
+                                    color: Colors.white,
+                                  ),
                                 )
-                              : null,
+                              : Icon(Icons.arrow_upward_rounded,
+                                  color: ready ? Colors.white : Colors.white38,
+                                  size: 22),
                         ),
-                        child: Icon(Icons.arrow_upward_rounded,
-                            color: ready ? Colors.white : Colors.white38,
-                            size: 22),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ],
             ),

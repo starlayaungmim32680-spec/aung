@@ -30,7 +30,7 @@ import 'text_overlay_style.dart';
 import 'gifting.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
-import 'content_filter.dart';
+import 'moderation_service.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'local_video_cache.dart';

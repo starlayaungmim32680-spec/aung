@@ -13,6 +13,7 @@ import 'settings_screen.dart';
 import 'saved_videos_screen.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
+import 'moderation_service.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -392,9 +393,14 @@ class ProfileScreen extends StatelessWidget {
 
   // Opens the "Sky Note" composer - a short thought that floats near the
   // profile photo like a little cloud, then fades away after 24 hours.
+  // 21 Oct 2026: Share first checks the text (ModerationService); a
+  // refused note shows the reason under the field and the sheet stays
+  // open so it can be edited.
   Future<void> _editSkyNote(BuildContext context, String? currentText) async {
     final TextEditingController controller =
         TextEditingController(text: currentText ?? '');
+    final ValueNotifier<bool> checking = ValueNotifier<bool>(false);
+    final ValueNotifier<String?> refusal = ValueNotifier<String?>(null);
     final String? result = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
@@ -455,15 +461,60 @@ class ProfileScreen extends StatelessWidget {
                           style: TextStyle(color: Colors.redAccent)),
                     ),
                   const Spacer(),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF35E1E8),
-                      foregroundColor: Colors.black,
+                  ValueListenableBuilder<bool>(
+                    valueListenable: checking,
+                    builder: (context, busy, _) => ElevatedButton(
+                      onPressed: busy
+                          ? null
+                          : () async {
+                              final String text = controller.text.trim();
+                              if (text.isEmpty) {
+                                Navigator.pop(ctx, '');
+                                return;
+                              }
+                              refusal.value = null;
+                              checking.value = true;
+                              final ModerationResult check =
+                                  await ModerationService.checkText(
+                                      text, ModerationKind.skyNote);
+                              if (!ctx.mounted) return;
+                              checking.value = false;
+                              if (!check.ok) {
+                                refusal.value = check.message;
+                                return;
+                              }
+                              Navigator.pop(ctx, text);
+                            },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF35E1E8),
+                        foregroundColor: Colors.black,
+                      ),
+                      child: busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.2,
+                                color: Colors.black54,
+                              ),
+                            )
+                          : const Text('Share'),
                     ),
-                    child: const Text('Share'),
                   ),
                 ],
+              ),
+              ValueListenableBuilder<String?>(
+                valueListenable: refusal,
+                builder: (context, message, _) => message == null
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          message,
+                          style: const TextStyle(
+                              color: Colors.redAccent, fontSize: 12),
+                        ),
+                      ),
               ),
             ],
           ),
@@ -471,6 +522,11 @@ class ProfileScreen extends StatelessWidget {
       },
     );
 
+    // Disposed once the sheet is fully closed (its widgets are gone).
+    Future<void>.delayed(const Duration(seconds: 1), () {
+      checking.dispose();
+      refusal.dispose();
+    });
     if (result == null || !context.mounted) return; // dismissed
     final String? uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -1405,6 +1461,19 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     });
 
     try {
+      // The name is shown everywhere (feed, comments, search) - check it
+      // first (21 Oct 2026, ModerationService).
+      final ModerationResult nameCheck = await ModerationService.checkText(
+          _nameController.text, ModerationKind.name);
+      if (!mounted) return;
+      if (!nameCheck.ok) {
+        setState(() {
+          _isSaving = false;
+          _errorMessage = nameCheck.message;
+        });
+        return;
+      }
+
       String? photoUrl = widget.currentPhotoUrl;
 
       // Upload a new photo only if the user picked one

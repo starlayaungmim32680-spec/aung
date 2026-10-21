@@ -10,6 +10,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
+import 'moderation_service.dart';
 import 'gifting.dart';
 
 // Shared helper: gets a LiveKit access token + server url from our own
@@ -1049,6 +1050,9 @@ class LiveInteractionLayer extends StatefulWidget {
 class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
   final TextEditingController _commentController = TextEditingController();
   final FocusNode _commentFocus = FocusNode();
+  // True while a live comment is being checked (ModerationService, 21 Oct
+  // 2026) before it is sent - the send button shows a spinner.
+  final ValueNotifier<bool> _sending = ValueNotifier<bool>(false);
   final List<_LiveFlyingReaction> _flyingReactions = [];
   StreamSubscription<QuerySnapshot>? _reactionSub;
   bool _firstReactionSnapshot = true;
@@ -1196,7 +1200,21 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
 
   Future<void> _sendComment() async {
     final String text = _commentController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || _sending.value) return;
+
+    // Checked BEFORE it is sent, so a bad comment never shows on anyone's
+    // live screen (on-device word list + the Worker, ~0.2 s).
+    _sending.value = true;
+    final ModerationResult check =
+        await ModerationService.checkText(text, ModerationKind.liveComment);
+    if (!mounted) return;
+    _sending.value = false;
+    if (!check.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(check.message!)),
+      );
+      return;
+    }
     _commentController.clear();
 
     final user = FirebaseAuth.instance.currentUser;
@@ -1246,6 +1264,7 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
     _giftSub?.cancel();
     _commentController.dispose();
     _commentFocus.dispose();
+    _sending.dispose();
     super.dispose();
   }
 
@@ -1399,30 +1418,43 @@ class _LiveInteractionLayerState extends State<LiveInteractionLayer> {
                         // keyboards show a newline key instead. Drawn as
                         // a solid filled circle so it stays visible over
                         // a bright video background.
-                        ValueListenableBuilder<TextEditingValue>(
-                          valueListenable: _commentController,
-                          builder: (context, value, _) {
-                            final bool canSend = value.text.trim().isNotEmpty;
-                            return GestureDetector(
-                              onTap: canSend ? _sendComment : null,
-                              child: Container(
-                                margin: const EdgeInsets.only(left: 8),
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: canSend
-                                      ? Colors.redAccent
-                                      : Colors.white24,
+                        ValueListenableBuilder<bool>(
+                          valueListenable: _sending,
+                          builder: (context, sending, _) =>
+                              ValueListenableBuilder<TextEditingValue>(
+                            valueListenable: _commentController,
+                            builder: (context, value, _) {
+                              final bool canSend =
+                                  value.text.trim().isNotEmpty && !sending;
+                              return GestureDetector(
+                                onTap: canSend ? _sendComment : null,
+                                child: Container(
+                                  margin: const EdgeInsets.only(left: 8),
+                                  width: 36,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: canSend
+                                        ? Colors.redAccent
+                                        : Colors.white24,
+                                  ),
+                                  child: sending
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(10),
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.send_rounded,
+                                          size: 18,
+                                          color: Colors.white,
+                                        ),
                                 ),
-                                child: const Icon(
-                                  Icons.send_rounded,
-                                  size: 18,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
                       ],
                     ),

@@ -1,95 +1,185 @@
-// A lightweight, on-device text moderation filter for captions, comments,
-// and video titles.
+// A lightweight, on-device text filter - the INSTANT, offline first step
+// of text moderation. moderation_service.dart runs it first, then asks the
+// Worker (POST /moderate-text), which knows far more (Zawgyi Burmese,
+// "f u c k" tricks, links, fake official names). This file only needs to
+// catch the obvious cases when the phone is offline.
 //
-// This is a first line of defense: it catches obvious profanity, hate
-// speech, and spam BEFORE the text is even sent to Firestore or a video is
-// uploaded to Cloudinary — so it works instantly, with no backend and no
-// Blaze billing required.
+// 21 Oct 2026 fixes (it used to block normal words and miss others):
+//   - English is matched per WORD, not "anywhere in the text": "spicy",
+//     "Dickson", "Scunthorpe" are no longer blocked;
+//   - Burmese words are found even with spaces / dots / zero-width
+//     characters between the letters, only on a syllable boundary
+//     (ကောင် is not matched inside ကောင်း), and never inside a normal word
+//     from [_burmeseAllowed] (ကုလားထိုင် = chair);
+//   - the Telegram / WhatsApp link check never worked (the text's dots were
+//     removed but the list's were not) - links are now matched separately.
+// Removed from the list: မိန်းမကလေး ("little girl", a normal phrase) and
+// ကျားကောင် ("tiger").
 //
-// It is NOT a replacement for the AI-based image/video moderation service
-// (the separate fly-moderation project using Detoxify + Falconsai) — that
-// project still handles actual photo/video content once it's deployed.
-// This filter only handles text.
-//
-// The word list below is a starting point, not a complete list — no fixed
-// list ever fully covers real-world abuse. Expand `_blockedWords` over time
-// using real reports (the Report feature already writes to the Firestore
-// `reports` collection), so the list grows to match what users actually
-// try to post.
+// Keep this list SHORT and in step with the Worker's lists ("Text
+// moderation" in cloudflare/livekit_token_worker.js) - the Worker is the
+// one to grow from real reports (no new APK needed there).
 class ContentFilter {
   ContentFilter._();
 
-  // Starter blocklist. Keep this updated from real moderation reports.
-  // Grouped by category purely for readability when editing this list.
-  static const List<String> _blockedWords = [
-    // English — profanity
+  // A word that CONTAINS one of these is blocked (motherfucker).
+  static const List<String> _englishAnywhere = [
     'fuck',
-    'shit',
-    'bitch',
-    'asshole',
-    'bastard',
-    'slut',
-    'whore',
-    'dick',
-    'pussy',
-    'cunt',
-    // English — slurs / hate speech
     'nigger',
     'nigga',
     'faggot',
-    'retard',
-    'chink',
-    'spic',
-    // Burmese — profanity / insults / slurs (expand based on real reports)
-    'ခွေးကောင်',
-    'ကျားကောင်',
-    'ကုလား',
-    'မိန်းမကလေး',
-    // Spam / scam markers
-    'click here to win',
-    'free money',
-    't.me/',
-    'wa.me/',
+    'shit',
   ];
 
-  /// Normalizes text to catch common evasion tricks: lowercasing, removing
-  /// symbols used to break up letters (f.u.c.k, f*ck), simple leetspeak
-  /// substitutions (sh1t -> shit), and collapsing repeated characters
-  /// (fuuuuck -> fuck). Burmese script and spacing are left untouched.
-  static String _normalize(String input) {
-    String s = input.toLowerCase();
+  // A word that STARTS with one of these is blocked (bitches, shitty).
+  static const List<String> _englishPrefix = [
+    'bitch',
+    'cunt',
+    'whore',
+    'slut',
+    'bastard',
+    'asshole',
+  ];
 
-    const Map<String, String> substitutions = {
-      '@': 'a',
-      '4': 'a',
-      '3': 'e',
-      '1': 'i',
-      '!': 'i',
-      '0': 'o',
-      r'$': 's',
-      '5': 's',
-      '7': 't',
-    };
-    substitutions.forEach((from, to) {
-      s = s.replaceAll(from, to);
-    });
+  // Only the word itself (+ s/es/ed/er/ers/ing) is blocked: "dick",
+  // "dicks" - but not "Dickson".
+  static const List<String> _englishExact = [
+    'dick',
+    'pussy',
+    'chink',
+    'retard',
+  ];
 
-    // Strip punctuation commonly used to break up a blocked word.
-    s = s.replaceAll(RegExp(r'[.\-_*]'), '');
+  static const List<String> _englishSuffixes = [
+    '',
+    's',
+    'es',
+    'ed',
+    'er',
+    'ers',
+    'ing',
+  ];
 
-    // Collapse 3+ repeated characters down to 1 (fuuuuck -> fuck).
-    s = s.replaceAllMapped(RegExp(r'(.)\1{2,}'), (m) => m.group(1)!);
+  static const List<String> _burmeseBlocked = [
+    'လီး',
+    'လိုး',
+    'စောက်',
+    'ခွေးမသား',
+    'ခွေးကောင်',
+    'ကုလား',
+  ];
 
-    return s;
-  }
+  // Normal words that contain a blocked Burmese word.
+  static const List<String> _burmeseAllowed = [
+    'ကုလားထိုင်',
+    'ကုလားပဲ',
+    'ကုလားအုတ်',
+    'ကုလားကာ',
+    'မတ်စောက်',
+    'တောင်စောက်',
+  ];
 
-  /// Returns true if [text] contains blocked content (profanity, hate
-  /// speech, or obvious spam).
+  static final RegExp _spamLink = RegExp(
+      r'(^|[^a-z0-9])(t\.me|telegram\.me|wa\.me|chat\.whatsapp\.com)([^a-z0-9]|$)');
+
+  static const Map<String, String> _leet = {
+    '@': 'a',
+    '4': 'a',
+    '3': 'e',
+    '1': 'i',
+    '!': 'i',
+    '0': 'o',
+    r'$': 's',
+    '5': 's',
+    '7': 't',
+  };
+
+  // Everything that is not a Burmese letter/mark or our '|' break
+  // (spaces, dots, emoji, zero-width characters...).
+  static final RegExp _notBurmese = RegExp(r'[^က-႟|]');
+
+  /// Returns true if [text] contains blocked content (profanity, slurs or
+  /// a Telegram/WhatsApp link).
   static bool containsBlockedContent(String text) {
     if (text.trim().isEmpty) return false;
-    final String normalized = _normalize(text);
-    for (final String word in _blockedWords) {
-      if (normalized.contains(word.toLowerCase())) return true;
+    final String lower = text.toLowerCase();
+
+    final String linkText =
+        lower.replaceAllMapped(RegExp(r'\s*([./])\s*'), (m) => m.group(1)!);
+    if (_spamLink.hasMatch(linkText)) return true;
+
+    for (final String token in lower.split(RegExp(r'[^a-z0-9@$!*]+'))) {
+      if (token.isEmpty || !RegExp(r'[a-z]').hasMatch(token)) continue;
+      if (_englishWordBlocked(_cleanWord(token))) return true;
+    }
+
+    return _burmeseBlockedIn(text);
+  }
+
+  // sh1t -> shit, f*ck -> fck, fuuuuck -> fuck.
+  static String _cleanWord(String token) {
+    final StringBuffer b = StringBuffer();
+    for (final String c in token.split('')) {
+      if (c == '*') continue;
+      b.write(_leet[c] ?? c);
+    }
+    return b
+        .toString()
+        .replaceAllMapped(RegExp(r'(.)\1{2,}'), (m) => m.group(1)!);
+  }
+
+  static bool _englishWordBlocked(String w) {
+    for (final String x in _englishAnywhere) {
+      if (w.contains(x)) return true;
+    }
+    for (final String x in _englishPrefix) {
+      if (w.startsWith(x)) return true;
+    }
+    for (final String x in _englishExact) {
+      for (final String sfx in _englishSuffixes) {
+        if (w == '$x$sfx') return true;
+      }
+    }
+    return false;
+  }
+
+  static String _burmeseSqueeze(String text) {
+    return text
+        .replaceAll(RegExp(r'[a-zA-Z]+'), '|')
+        .replaceAll(_notBurmese, '');
+  }
+
+  static bool _burmeseBlockedIn(String text) {
+    if (!RegExp(r'[က-႟]').hasMatch(text)) return false;
+    final String s = _burmeseSqueeze(text);
+    for (final String bad in _burmeseBlocked) {
+      int from = 0;
+      while (true) {
+        final int i = s.indexOf(bad, from);
+        if (i < 0) break;
+        from = i + 1;
+        final int end = i + bad.length;
+        // The syllable goes on (a vowel/medial/final mark follows).
+        if (end < s.length) {
+          final int next = s.codeUnitAt(end);
+          if (next >= 0x102B && next <= 0x103E) continue;
+        }
+        if (_insideAllowed(s, i, bad.length)) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool _insideAllowed(String s, int start, int length) {
+    for (final String a in _burmeseAllowed) {
+      int from = 0;
+      while (true) {
+        final int i = s.indexOf(a, from);
+        if (i < 0) break;
+        if (i <= start && start + length <= i + a.length) return true;
+        from = i + 1;
+      }
     }
     return false;
   }

@@ -12,7 +12,7 @@ import 'sounds_library_screen.dart';
 import 'sound_sync_sheet.dart';
 import 'sound_moderation.dart';
 import 'post_upload_manager.dart';
-import 'content_filter.dart';
+import 'moderation_service.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
 
@@ -70,6 +70,10 @@ class _UploadScreenState extends State<UploadScreen> {
   bool _blurBackground = true;
   // 0.0 - 1.0 while the video is being sent to Cloudinary
   String? _errorMessage;
+  // True while the caption + text stickers are being checked
+  // (ModerationService, ~0.2 s) after tapping Post - the Post button shows
+  // a spinner and ignores taps. A ValueNotifier so only the button rebuilds.
+  final ValueNotifier<bool> _checkingText = ValueNotifier<bool>(false);
 
   // Which kind of video the user is posting: 'short' or 'long'.
   // null means the user hasn't chosen an upload type yet.
@@ -180,6 +184,7 @@ class _UploadScreenState extends State<UploadScreen> {
   @override
   void dispose() {
     _captionController.dispose();
+    _checkingText.dispose();
     _previewController?.dispose();
     super.dispose();
   }
@@ -411,17 +416,6 @@ class _UploadScreenState extends State<UploadScreen> {
       return;
     }
 
-    // Block obviously inappropriate captions before spending any upload
-    // bandwidth. This is a fast, offline first line of defense - the
-    // multilingual server check runs later, inside PostUploadManager.
-    if (ContentFilter.containsBlockedContent(_captionController.text)) {
-      setState(() {
-        _errorMessage =
-            'Your caption contains inappropriate language. Please edit it before uploading.';
-      });
-      return;
-    }
-
     // Borrowed Sound was implemented as a Cloudinary URL transform (see
     // _buildSoundUrl below) - Bunny Stream has no equivalent yet, so a
     // video using it is blocked here with a clear message rather than
@@ -442,6 +436,32 @@ class _UploadScreenState extends State<UploadScreen> {
       setState(() {
         _errorMessage =
             "No internet connection. Please check your connection and tap Post to try again.";
+      });
+      return;
+    }
+
+    // Check the caption (its #hashtags too) and the text stickers on the
+    // video BEFORE spending any upload bandwidth (21 Oct 2026):
+    // on-device word list + the Worker's /moderate-text (Zawgyi/Unicode
+    // Burmese, links). The fly-moderation server check still runs later,
+    // inside PostUploadManager.
+    if (_checkingText.value) return;
+    final String overlayText = _textOverlays
+        .where((o) => !o.isSticker && o.imageUrl == null)
+        .map((o) => o.text)
+        .join('\n');
+    final String textToCheck = [
+      _captionController.text.trim(),
+      overlayText.trim()
+    ].where((t) => t.isNotEmpty).join('\n');
+    _checkingText.value = true;
+    final ModerationResult check =
+        await ModerationService.checkText(textToCheck, ModerationKind.caption);
+    if (!mounted) return;
+    _checkingText.value = false;
+    if (!check.ok) {
+      setState(() {
+        _errorMessage = check.message;
       });
       return;
     }
@@ -875,18 +895,32 @@ class _UploadScreenState extends State<UploadScreen> {
           SizedBox(
             width: double.infinity,
             height: 50,
-            child: ElevatedButton(
-              onPressed: _uploadPost,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _checkingText,
+              builder: (context, checking, _) => ElevatedButton(
+                onPressed: checking ? null : _uploadPost,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  disabledBackgroundColor:
+                      Colors.redAccent.withValues(alpha: 0.6),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
-              ),
-              child: Text(
-                _errorMessage != null ? 'Retry Upload' : 'Post',
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                child: checking
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.4,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Text(
+                        _errorMessage != null ? 'Retry Upload' : 'Post',
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
               ),
             ),
           ),

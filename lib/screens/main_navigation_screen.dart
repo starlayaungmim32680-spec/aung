@@ -25,6 +25,7 @@ import 'friend_requests_screen.dart';
 import '../friend_service.dart';
 import '../search_service.dart';
 import 'public_profile_screen.dart';
+import 'moderation_service.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -702,45 +703,98 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     }
   }
 
-  // Prompts for an optional stream title, then opens the go-live screen
+  // Prompts for an optional stream title, then opens the go-live screen.
+  // 21 Oct 2026: "Go Live" first checks the title (ModerationService); a
+  // refused title shows the reason in the dialog, which stays open.
   Future<void> _startLiveFlow() async {
     final TextEditingController controller = TextEditingController();
+    final ValueNotifier<bool> checking = ValueNotifier<bool>(false);
+    final ValueNotifier<String?> refusal = ValueNotifier<String?>(null);
     final String? title = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
         title: const Text('Go Live', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          maxLength: 60,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            hintText: 'Give your stream a title... (optional)',
-            hintStyle: TextStyle(color: Colors.grey),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.white24),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              maxLength: 60,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: 'Give your stream a title... (optional)',
+                hintStyle: TextStyle(color: Colors.grey),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white24),
+                ),
+                focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.redAccent),
+                ),
+                counterStyle: TextStyle(color: Colors.grey),
+              ),
             ),
-            focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.redAccent),
+            ValueListenableBuilder<String?>(
+              valueListenable: refusal,
+              builder: (context, message, _) => message == null
+                  ? const SizedBox.shrink()
+                  : Text(
+                      message,
+                      style: const TextStyle(
+                          color: Colors.redAccent, fontSize: 12),
+                    ),
             ),
-            counterStyle: TextStyle(color: Colors.grey),
-          ),
+          ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Go Live',
-                style: TextStyle(color: Colors.redAccent)),
+          ValueListenableBuilder<bool>(
+            valueListenable: checking,
+            builder: (context, busy, _) => TextButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      final String text = controller.text.trim();
+                      refusal.value = null;
+                      checking.value = true;
+                      final ModerationResult check =
+                          await ModerationService.checkText(
+                              text, ModerationKind.liveTitle);
+                      if (!ctx.mounted) return;
+                      checking.value = false;
+                      if (!check.ok) {
+                        refusal.value = check.message;
+                        return;
+                      }
+                      Navigator.pop(ctx, text);
+                    },
+              child: busy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.redAccent,
+                      ),
+                    )
+                  : const Text('Go Live',
+                      style: TextStyle(color: Colors.redAccent)),
+            ),
           ),
         ],
       ),
     );
 
+    // Disposed once the dialog is fully closed (its widgets are gone).
+    Future<void>.delayed(const Duration(seconds: 1), () {
+      checking.dispose();
+      refusal.dispose();
+    });
     if (title == null) return; // Cancelled
     if (!mounted) return;
     Navigator.push(

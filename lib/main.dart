@@ -11,6 +11,7 @@ import 'network_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 import 'screens/home_screen.dart' show flyRouteObserver;
+import 'screens/content_filter.dart';
 
 // Handles an incoming-call push while the app is backgrounded or fully
 // closed. Must be a top-level function (not a class method/closure) and
@@ -219,8 +220,16 @@ class AuthGate extends StatelessWidget {
     final docRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
     final doc = await docRef.get();
     if (!doc.exists) {
+      // The first name is the start of the email address - unless that
+      // part is a bad word (21 Oct 2026; the on-device list is enough here,
+      // it is plain ASCII). People can change it later in Edit profile,
+      // where the full check (ModerationService) runs.
+      final String emailName = user.email?.split('@').first ?? '';
       await docRef.set({
-        'displayName': user.email?.split('@').first ?? 'User',
+        'displayName':
+            emailName.isEmpty || ContentFilter.containsBlockedContent(emailName)
+                ? 'User'
+                : emailName,
         'photoUrl': '',
         'email': user.email,
       });
