@@ -437,7 +437,39 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > မိန်းမကလေး and ကျားကောင် - normal words). NOT checked: chat (private,
 > Report only), story text, images/videos (steps 2-3, see To-do 01).
 > **Worker changed -> deployed to BOTH Workers.** Tested in Node (~65
-> cases). Prod APK not built yet._
+> cases). Prod APK built and installed the same evening. **Open bug:** Ko
+> reports that `ခွေးကောင်` typed WITHOUT a space still posts as a Home
+> comment (dev and prod), while `ခွေး ကောင်` is blocked - the same text
+> typed into chat is blocked by both the Worker and ContentFilter in
+> tests, so the phone's keyboard probably stores different characters
+> (autocorrect / suggestion). Next step: Ko copies the posted comment
+> (or the text from the input box) into chat to see its code points._
+>
+> _21 Oct 2026 (evening, confirmed by Ko on Fly Dev): **AI layer for
+> `/moderate-text` - OpenAI omni-moderation, any language.** Text that
+> passes the word lists goes to `https://api.openai.com/v1/moderations`
+> (`omni-moderation-latest`, free; free accounts get roughly 10,000
+> requests/day per forum reports). Blocks the flagged categories
+> harassment(/threatening), hate(/threatening), sexual(/minors),
+> violence/graphic, illicit/violent, and plain violence only at score
+> >= 0.8; self-harm is NOT blocked. Skips texts with < 3 letters, caches
+> answers 30 min (500 texts per Worker instance), 3.5 s timeout; no key /
+> 429 / error / timeout -> the word lists' answer stands (logged
+> `moderate-text: OpenAI ...`). App unchanged (still `reason: 'language'`).
+> New Worker secret **`OPENAI_API_KEY`** on BOTH Workers - OpenAI key
+> `fly-moderation` (Ko's OpenAI account, Default project,
+> Restricted: only Moderations, no expiry, **no billing/card** - so it
+> can never be charged). `/privacy` updated (Last updated 21 October
+> 2026): OpenAI listed as a provider, automatic checks of posted text
+> mentioned, chats not sent. Found on the OpenAI API keys page: an OLD
+> key (created 21 Aug 2026, **revoked**, "last used" 21 Oct 2026) -
+> probably the one fly-moderation on Render uses, which would mean
+> Render's checks have been failing (fail-open) - see To-do 01.
+> Tested on the phone: `I will find you and hurt you` is blocked, but
+> the AI does NOT catch Burmese threats (`မင်းကို သတ်ပစ်မယ်` passed), so
+> `MOD_MY_BLOCK` got threat phrases with "you" in front (မင်း/နင့်/နင်/
+> ညည်း/မင်းတို့/နင်တို့ + ကိုသတ်, ...ကိုရိုက်သတ်, မင်း/နင် + သေပြီ/သေမယ်) -
+> "ခြင်တွေကို သတ်ပစ်မယ်" (mosquitoes) and news "...သတ်ခံရ" still pass._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -599,7 +631,8 @@ null)` in dev), Worker `https://fly-dev-worker.chakaboycom.workers.dev`
     "fly-dev" key in the same LiveKit project), BUNNY_LIBRARY_ID=`771031`,
     BUNNY_API_KEY (dev library), BUNNY_STORAGE_ZONE=
     `fly-images-aungdev756617` + BUNNY_STORAGE_PASSWORD (shared with prod - if it is ever rotated, update BOTH Workers), BUNNY_WEBHOOK_TOKEN,
-    SEARCH_ADMIN_TOKEN (random, PowerShell). No APP_SHARED_SECRET. D1
+    SEARCH_ADMIN_TOKEN (random, PowerShell), OPENAI_API_KEY (21 Oct 2026,
+    same key as prod - text moderation). No APP_SHARED_SECRET. D1
     `fly-search-dev` bound as SEARCH_DB (tables auto-created). Bunny
     Stream library `fly-dev` (771031, CDN `vz-6cc91834-d0e.b-cdn.net`,
     "Block direct url file access" OFF, no premium encoding) with Webhook
@@ -2253,20 +2286,26 @@ others only see it once encoded (Bunny webhook).
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 
-01. **Content moderation (step 1 done 21 Oct 2026 - text, see the note
-    at the top).** Next: (2) the fly-moderation server on Render (free,
-    sleeps ~50 s, the app "fails open" so bad captions/videos can slip
-    through; code comments say it proxies OpenAI omni-moderation, Ko
-    remembers Detoxify + Falconsai - not checked; Ko doesn't know if its
-    code is on GitHub). Idea discussed 21 Oct: call OpenAI's free
-    omni-moderation API straight from the Worker (secret OPENAI_API_KEY),
-    no Render; (3) images (profile photo, story image, chat photo) and
+01. **Content moderation (step 1 done 21 Oct 2026 - text word lists +
+    OpenAI AI layer in the Worker, see the notes at the top).** Open bug:
+    `ခွေးကောင်` without a space passes (see the 21 Oct note). Next: (2)
+    remove the fly-moderation server on Render from the app (free, sleeps
+    ~50 s, fails open; its OpenAI key looks revoked, so it probably
+    checks nothing now): captions/comments are already covered by
+    `/moderate-text`; video moderation needs a Worker route (frames /
+    thumbnail -> OpenAI image moderation); (3) images (profile photo, story image, chat photo) and
     story videos + story text. **Many languages (Ko's question, 21 Oct):**
     plan = layers - Worker word lists (Burmese + English now; more from
     LDNOOBW, CC BY 4.0, 27 languages, no Burmese - keep the attribution
     notice) + an AI model for every language (OpenAI omni-moderation:
     free, 40 languages tested, images for sexual/violence/self-harm) +
-    Report with a review queue. Not decided yet. Also: grow
+    Report with a review queue. AI part done 21 Oct (OpenAI). Later
+    (agreed order, 21 Oct): server-side enforcement (Worker re-checks
+    after the write and deletes - a hacked app can skip the app-side
+    check), strike/ban system, Report -> admin review page, "Are you
+    sure?" nudge + creator comment filter, CSAM hash matching before
+    Play Store. If Fly outgrows OpenAI's free limits, swap the provider
+    inside the Worker only (app only knows /moderate-text). Also: grow
     `MOD_MY_BLOCK` / `MOD_MY_ALLOW` from real reports.
 
 0. **Friends - leftovers** (all 4 steps done 4 Oct 2026: friend system,

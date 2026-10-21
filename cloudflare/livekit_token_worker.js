@@ -92,7 +92,11 @@
 //                         English per word (no "spicy"/"Scunthorpe"
 //                         mistakes), Burmese in Zawgyi or Unicode, links
 //                         to Telegram/WhatsApp. Word lists: see "Text
-//                         moderation" below. Nothing is stored.
+//                         moderation" below. Text that passes the lists
+//                         is also checked by OpenAI's free
+//                         omni-moderation model (any language) when the
+//                         OPENAI_API_KEY secret exists (21 Oct 2026).
+//                         Nothing is stored.
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -139,6 +143,10 @@
 //   BUNNY_STORAGE_PASSWORD  - that zone's password/API key, from its
 //                             "FTP & API Access" page. Separate from
 //                             BUNNY_API_KEY (that one's for Stream/video).
+// optional, for AI text moderation (21 Oct 2026):
+//   OPENAI_API_KEY          - an OpenAI API key (no billing needed - the
+//                             Moderation API is free). Without it,
+//                             /moderate-text uses the word lists only.
 // one for search (4 Oct 2026):
 //   SEARCH_ADMIN_TOKEN      - any long random string, only for
 //                             /search-backfill?token=...
@@ -254,7 +262,7 @@ export default {
       return handleSearchTrending(env);
     }
     if (path === '/moderate-text') {
-      return handleModerateText(body);
+      return handleModerateText(body, env);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -2498,6 +2506,18 @@ async function handleSearchBackfill(env, url) {
 //    boundary (ကောင် must not match inside ကောင်း) and is not part of a
 //    phrase in MOD_MY_ALLOW.
 //
+// AI layer (21 Oct 2026): text that passes the word lists is sent to
+// OpenAI's omni-moderation model (free, 40+ languages, understands
+// meaning - threats and hate without swear words too). It needs the
+// Worker secret OPENAI_API_KEY; without it, or when OpenAI is slow
+// (> MOD_AI_TIMEOUT_MS), busy (429) or down, the word lists' answer
+// stands - the app never gets stuck because of OpenAI. Short texts
+// ("ok", "😍😍") skip the AI. The same text is answered from a small
+// in-memory cache for a while. Self-harm categories are NOT blocked
+// (blocking someone who is struggling helps nobody; showing help is a
+// later idea). Swap the provider here if Fly outgrows the free limits -
+// the app only knows /moderate-text.
+//
 // Ko: add words from real reports (Firestore `reports`). Type Burmese
 // entries normally in Unicode - they are tidied when the Worker starts.
 // Keep each Burmese entry a whole insult, not a short syllable that is
@@ -2541,6 +2561,22 @@ const MOD_MY_BLOCK = [
   'ဖာသည်',        // prostitute (as an insult)
   'ဖာသေမ',
   'ဖင်ခံ',         // anti-gay slur
+  // Threats (21 Oct 2026) - OpenAI's AI does not catch Burmese threats.
+  // Only with "you" in front (မင်း/နင်/ညည်း ...ကို), so news like
+  // "...ကို သတ်ခံရ" or "ခြင်တွေကို သတ်ပစ်မယ်" (mosquitoes) still pass.
+  // Spaces between the words don't matter (they are squeezed out).
+  'မင်းကိုသတ်',   // covers မင်းကို သတ်ပစ်မယ် / သတ်မယ် / သတ်မှာ
+  'နင့်ကိုသတ်',
+  'နင်ကိုသတ်',
+  'ညည်းကိုသတ်',
+  'မင်းတို့ကိုသတ်',
+  'နင်တို့ကိုသတ်',
+  'မင်းကိုရိုက်သတ်',
+  'နင့်ကိုရိုက်သတ်',
+  'မင်းသေပြီ',    // "you're dead"
+  'နင်သေပြီ',
+  'မင်းသေမယ်',
+  'နင်သေမယ်',
 ];
 // Normal words that CONTAIN a blocked entry - never blocked.
 const MOD_MY_ALLOW = [
@@ -2750,10 +2786,91 @@ function moderateText(text, kind) {
   return null;
 }
 
-async function handleModerateText(body) {
+// ---- AI layer (OpenAI omni-moderation) ----
+const MOD_AI_URL = 'https://api.openai.com/v1/moderations';
+const MOD_AI_MODEL = 'omni-moderation-latest';
+const MOD_AI_TIMEOUT_MS = 3500;
+const MOD_AI_MAX_CHARS = 2000;
+// Categories that block when OpenAI flags them.
+const MOD_AI_BLOCK = [
+  'harassment', 'harassment/threatening', 'hate', 'hate/threatening',
+  'sexual', 'sexual/minors', 'violence/graphic', 'illicit/violent',
+];
+// Plain "violence" also matches harmless things (a fight scene in a
+// movie caption), so it only blocks with a high score.
+const MOD_AI_VIOLENCE_SCORE = 0.8;
+const MOD_AI_CACHE_MAX = 500;
+const MOD_AI_CACHE_MS = 30 * 60 * 1000;
+const modAiCache = new Map(); // text -> { blocked, at }
+
+// Worth asking the AI: at least 3 letters (of any script) in total.
+function modAiWorthChecking(text) {
+  const letters = String(text).match(/\p{L}/gu);
+  return !!letters && letters.length >= 3;
+}
+
+// true = blocked, false = fine, null = no answer (no key / error /
+// timeout / rate limit) - then the word lists decide.
+async function modAiBlocked(text, env) {
+  if (!env.OPENAI_API_KEY) return null;
+  const input = String(text).slice(0, MOD_AI_MAX_CHARS);
+  if (!modAiWorthChecking(input)) return false;
+
+  const cached = modAiCache.get(input);
+  if (cached && Date.now() - cached.at < MOD_AI_CACHE_MS) {
+    return cached.blocked;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MOD_AI_TIMEOUT_MS);
+  try {
+    const res = await fetch(MOD_AI_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: MOD_AI_MODEL, input }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      // 429 = free daily limit reached; 401 = bad key. Visible with
+      // `npx wrangler tail` / Cloudflare -> Logs.
+      console.log('moderate-text: OpenAI HTTP', res.status,
+        (await res.text()).slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    const result = data?.results?.[0];
+    if (!result) return null;
+    const flags = result.categories || {};
+    const scores = result.category_scores || {};
+    const blocked =
+      MOD_AI_BLOCK.some((c) => flags[c] === true) ||
+      (scores.violence || 0) >= MOD_AI_VIOLENCE_SCORE;
+
+    if (modAiCache.size >= MOD_AI_CACHE_MAX) {
+      modAiCache.delete(modAiCache.keys().next().value);
+    }
+    modAiCache.set(input, { blocked, at: Date.now() });
+    return blocked;
+  } catch (err) {
+    console.log('moderate-text: OpenAI error', err.name, err.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleModerateText(body, env) {
   const text = typeof body?.text === 'string' ? body.text : '';
   const kind = MOD_KINDS.has(body?.kind) ? body.kind : 'comment';
-  const reason = moderateText(text, kind);
+  // 1. Word lists (instant, no network).
+  let reason = moderateText(text, kind);
+  // 2. AI - only when the lists found nothing.
+  if (!reason && (await modAiBlocked(text, env)) === true) {
+    reason = 'language';
+  }
   return jsonResponse(reason ? { ok: false, reason } : { ok: true });
 }
 
@@ -3131,7 +3248,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
 <div class="wrap">
   <div class="logo">Fly</div>
   <h1>Privacy Policy</h1>
-  <p class="sub">Last updated: 20 October 2026</p>
+  <p class="sub">Last updated: 21 October 2026</p>
   
   <section>
   <div class="card">
@@ -3165,7 +3282,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li>To run Fly: sign you in, show your profile and videos, deliver messages and calls, and show you the Home feed.</li>
       <li>To make search work: names, captions and hashtags are copied into a search index (in a normalised form, for example Zawgyi converted to Unicode) so people can find them.</li>
       <li>To send notifications you have allowed.</li>
-      <li>To keep Fly safe: handling reports, blocking, copyright takedowns and abuse.</li>
+      <li>To keep Fly safe: handling reports, blocking, copyright takedowns and abuse. Text you post for others to see (names, captions, comments, live comments and notes) is checked automatically for abusive content before it is shown.</li>
       <li>To fix problems and improve the app.</li>
     </ul>
     <p>We do <b>not</b> sell your personal information.</p>
@@ -3179,6 +3296,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li><b>Bunny.net</b> - storing and streaming videos, stories and images.</li>
       <li><b>Cloudflare</b> - our server (Workers) and the search index (D1).</li>
       <li><b>LiveKit</b> - real-time audio/video for calls and live streams.</li>
+      <li><b>OpenAI</b> - automatic safety checks of text you post (its moderation service only; private chat messages are not sent).</li>
     </ul>
     <p>Your profile, videos and comments are visible to other Fly users according to how the feature works (for example, posts are public; messages are only between you and the other person). We may also share information when the law requires it, or to protect the safety of Fly and its users.</p>
   </div>
