@@ -546,8 +546,9 @@ OK). Play Console: Terms URL =
 > lesson (twice tonight):** a plain `flutter build` after replacing Dart
 > files produced a STALE APK (new string False, old string True) - from
 > now on use the full clean recipe (§7 step 5) whenever Dart files
-> changed, and always do the new/old string pair check. Prod APK not
-> built yet._
+> changed, and always do the new/old string pair check. **Prod rollout
+> done 22-23 Oct 2026** (clean prod build, string pair check OK, tested
+> by Ko on the phones)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2377,7 +2378,9 @@ others only see it once encoded (Bunny webhook).
     OpenAI AI layer in the Worker, see the notes at the top).** Open bug:
     `ခွေးကောင်` without a space passes (see the 21 Oct note). (2)+(3) done
     22 Oct (pictures checked before upload, Render removed - see the note
-    at the top; prod APK still to build). **Next:** server-side re-check
+    at the top; prod done 23 Oct). Also still to do: shut down the
+    fly-moderation service in the Render dashboard (nothing calls it).
+    **Next:** server-side re-check
     (hack-proof): when Bunny's webhook says a video is ready, the Worker
     checks its thumbnail(s) with OpenAI and hides the post/story if
     refused; maybe also re-check story/profile images on the Worker's
@@ -2558,6 +2561,13 @@ rebuild takes ~3-5 min). The string-check copy in
 is still `True` right after killing Java, wait and retry:
 `Start-Sleep -Seconds 5; Remove-Item build -Recurse -Force` (the killed
 process needs a moment to let go of the files).
+Gradle cache error (23 Oct 2026): a build log full of
+`CorruptedCacheException ... file-access.bin` (journal-1) - the build
+still works, the APK is fine. It came after force-killing Java. Fix:
+`.\gradlew --stop`, kill java, then
+`Remove-Item "$env:USERPROFILE\.gradle\caches\journal-1" -Recurse -Force`
+(if "being used by another process": close VS Code / restart Windows and
+run it before opening VS Code). Gradle rebuilds that folder by itself.
 A notification that never shows: open Wallet → Push notifications →
 Test notification / Refresh log first - it shows `shown:` or the exact
 `SHOW FAILED:` error (12 Oct 2026 it was `invalid_icon`, see §4 Native
