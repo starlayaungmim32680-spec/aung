@@ -17,6 +17,7 @@ import 'story_music.dart';
 import 'sound_screen.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
+import 'moderation_service.dart';
 import 'local_video_cache.dart';
 import 'story_file_prefetch.dart';
 import 'text_overlay_style.dart';
@@ -215,6 +216,23 @@ Future<void> addStory(BuildContext context) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception('Not logged in');
 
+    // Checked BEFORE anything is uploaded (21 Oct 2026, moderation_service
+    // .dart): the text on the story, then the photo / frames (every 2 s) of the
+    // (already trimmed) video. A refusal closes the spinner with the reason.
+    final String storyText =
+        (kind == 'image' ? imageTextOverlays : videoTextOverlays)
+            .where((o) => !o.isSticker && o.imageUrl == null)
+            .map((o) => o.text)
+            .join('\n');
+    final ModerationResult textCheck =
+        await ModerationService.checkText(storyText, ModerationKind.caption);
+    if (!textCheck.ok) throw _StoryRejected(textCheck.message!);
+    final ModerationResult pictureCheck = kind == 'image'
+        ? await ModerationService.checkImage(
+            await File(picked.path).readAsBytes())
+        : await ModerationService.checkVideo(videoFileToUpload);
+    if (!pictureCheck.ok) throw _StoryRejected(pictureCheck.message!);
+
     String mediaUrl;
     // Video stories only: Bunny id + the local file, for instant playback
     // by the poster and the "ready" flag (see video_upload_service.dart).
@@ -357,10 +375,21 @@ Future<void> addStory(BuildContext context) async {
     if (context.mounted) {
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Story failed: $e')),
+        SnackBar(
+          content: Text(e is _StoryRejected ? e.message : 'Story failed: $e'),
+          duration: Duration(seconds: e is _StoryRejected ? 6 : 4),
+        ),
       );
     }
   }
+}
+
+// A story refused by the content check (shown as is, no "Story failed").
+class _StoryRejected implements Exception {
+  final String message;
+  const _StoryRejected(this.message);
+  @override
+  String toString() => message;
 }
 
 // ---------------------------------------------------------------------------

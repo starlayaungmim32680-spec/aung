@@ -97,6 +97,17 @@
 //                         omni-moderation model (any language) when the
 //                         OPENAI_API_KEY secret exists (21 Oct 2026).
 //                         Nothing is stored.
+//  POST /moderate-image - (21 Oct 2026) checks pictures BEFORE they are
+//                         uploaded: frames of a video (post or story), a
+//                         story photo or a profile photo. Body
+//                         {images: [base64 JPEG/PNG, max 16], kind}. Each
+//                         goes to OpenAI omni-moderation (free) as its own
+//                         request; answer {ok: true, checked} or {ok:
+//                         false, reason: 'nudity' | 'violence' |
+//                         'self_harm'}. No OPENAI_API_KEY / OpenAI down ->
+//                         {ok: true, checked: false} - the app then
+//                         REFUSES the upload ("try again in a minute"):
+//                         pictures fail closed. Images are not stored.
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -281,6 +292,9 @@ export default {
     }
     if (path === '/moderate-text') {
       return handleModerateText(body, env);
+    }
+    if (path === '/moderate-image') {
+      return handleModerateImage(body, env);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -2878,6 +2892,104 @@ async function modAiBlocked(text, env) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---- Images (21 Oct 2026): POST /moderate-image ----
+// OpenAI checks images for sexual content, violence and self-harm only
+// (hate/harassment/"sexual/minors" are text-only categories there).
+// One request per image (the docs don't promise several images in one
+// request), all in parallel. A plain "violence" score (an action-movie
+// scene) only blocks when very high; graphic violence blocks when flagged.
+// 22 Oct 2026 (Ko: "sexual videos/photos must NOT get in"): up to 16
+// frames per video, sent 4 at a time (gentler on OpenAI's free limits),
+// and "sexual" blocks already at a moderate score, not only when OpenAI
+// itself flags it. Raise MOD_IMG_SEXUAL_SCORE if normal photos (beach,
+// gym) get refused too often; lower it to be even stricter.
+const MOD_IMG_MAX_COUNT = 16;
+const MOD_IMG_PARALLEL = 4;
+const MOD_IMG_MAX_B64 = 2 * 1024 * 1024; // ~1.5 MB per image
+const MOD_IMG_TIMEOUT_MS = 9000;
+const MOD_IMG_VIOLENCE_SCORE = 0.85;
+const MOD_IMG_SEXUAL_SCORE = 0.4;
+
+function modImageMime(b64) {
+  if (b64.startsWith('/9j/')) return 'image/jpeg';
+  if (b64.startsWith('iVBOR')) return 'image/png';
+  if (b64.startsWith('UklGR')) return 'image/webp';
+  return null;
+}
+
+// 'nudity' | 'violence' | 'self_harm' = blocked, null = fine,
+// undefined = no answer (error / timeout / rate limit).
+async function modImageVerdict(b64, env) {
+  const mime = modImageMime(b64);
+  if (!mime) return undefined;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MOD_IMG_TIMEOUT_MS);
+  try {
+    const res = await fetch(MOD_AI_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MOD_AI_MODEL,
+        input: [{
+          type: 'image_url',
+          image_url: { url: `data:${mime};base64,${b64}` },
+        }],
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.log('moderate-image: OpenAI HTTP', res.status,
+        (await res.text()).slice(0, 200));
+      return undefined;
+    }
+    const data = await res.json();
+    const result = data?.results?.[0];
+    if (!result) return undefined;
+    const f = result.categories || {};
+    const sc = result.category_scores || {};
+    if (f.sexual === true || (sc.sexual || 0) >= MOD_IMG_SEXUAL_SCORE) {
+      return 'nudity';
+    }
+    if (f['self-harm'] === true || f['self-harm/intent'] === true ||
+        f['self-harm/instructions'] === true) return 'self_harm';
+    if (f['violence/graphic'] === true ||
+        (sc.violence || 0) >= MOD_IMG_VIOLENCE_SCORE) return 'violence';
+    return null;
+  } catch (err) {
+    console.log('moderate-image: OpenAI error', err.name, err.message);
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleModerateImage(body, env) {
+  const images = Array.isArray(body?.images)
+    ? body.images.filter((x) => typeof x === 'string' && x.length > 0)
+    : [];
+  if (images.length === 0) return jsonResponse({ ok: true, checked: true });
+  if (images.length > MOD_IMG_MAX_COUNT ||
+      images.some((x) => x.length > MOD_IMG_MAX_B64)) {
+    return jsonResponse({ error: 'too many or too large images' }, 400);
+  }
+  if (!env.OPENAI_API_KEY) return jsonResponse({ ok: true, checked: false });
+
+  // A few at a time; stop at the first refused frame.
+  const verdicts = [];
+  for (let i = 0; i < images.length; i += MOD_IMG_PARALLEL) {
+    const batch = await Promise.all(images.slice(i, i + MOD_IMG_PARALLEL)
+      .map((b64) => modImageVerdict(b64, env)));
+    const reason = batch.find((v) => typeof v === 'string');
+    if (reason) return jsonResponse({ ok: false, reason });
+    verdicts.push(...batch);
+  }
+  const checked = verdicts.every((v) => v === null);
+  return jsonResponse({ ok: true, checked });
 }
 
 async function handleModerateText(body, env) {

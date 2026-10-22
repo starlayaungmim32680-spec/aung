@@ -510,6 +510,45 @@ and B: consent screen, text moderation, AI threat check, posting - all
 OK). Play Console: Terms URL =
 > `https://livekit-token-worker.chakaboycom.workers.dev/terms`._
 >
+> _22 Oct 2026 (after midnight, confirmed by Ko on Fly Dev): **pictures
+> are checked BEFORE upload - sexual/nude, graphic violence, self-harm -
+> and the Render server is gone.** Ko's priority: sexual videos/photos
+> must not get in, so pictures **fail closed**. New Worker route
+> **`POST /moderate-image {images: [base64 JPEG/PNG, max 16], kind}`**:
+> each image is its own OpenAI omni-moderation request, 4 at a time,
+> stops at the first refusal; blocks `sexual` flagged OR sexual score >=
+> **`MOD_IMG_SEXUAL_SCORE` (0.4)** -> `nudity`, any self-harm flag ->
+> `self_harm`, `violence/graphic` flagged or violence >= 0.85 ->
+> `violence`; answers `{ok:false, reason}` or `{ok:true, checked}`
+> (`checked:false` = no key / OpenAI error / timeout 9 s). App
+> (`moderation_service.dart`): `checkVideo(file, startMs, endMs)` takes a
+> JPEG frame (512 px, `video_thumbnail` - now a DIRECT dependency in
+> pubspec, same 0.5.6 that video_trimmer_2 pulled in) every 2 s of the
+> part being posted (min 6, max 16, 2%..98%); `checkImage(bytes)`
+> shrinks big photos to 512 px PNG (dart:ui); `ModerationResult.retryable`
+> + `.unchecked(kind)` = "We couldn't check your video/photo right now..."
+> when the check can't run (fewer than half the frames readable, HTTP
+> error, `checked:false`) -> upload refused. Wired into: feed posts
+> (`post_upload_manager.dart`, before trim/compress/upload, pill "Checking
+> video...", unchecked -> failed WITH Retry, refused -> no Retry), video
+> and photo stories + the text on them (`story_screen.dart`,
+> `_StoryRejected` shows the reason), profile photos (`profile_screen.dart`
+> `_saveProfile`). Chat photos are NOT checked (Ko's choice: private
+> between friends; Report). **fly-moderation (Render) is no longer called
+> anywhere** (caption, video, comment re-check removed;
+> `home_screen.dart` lost its now-unused `dart:convert` import) - its
+> Render service can be shut down. Known gaps: a short scene between two
+> frames, sound, and OpenAI images have no "minors" category; beach/gym
+> photos may be refused (raise MOD_IMG_SEXUAL_SCORE if too strict).
+> Tested on the phone: flower story OK, blood / nude-painting story and
+> profile photo refused, normal 30 s video posted, Airplane mode ->
+> "couldn't check". Worker changed -> deployed to BOTH Workers. **Build
+> lesson (twice tonight):** a plain `flutter build` after replacing Dart
+> files produced a STALE APK (new string False, old string True) - from
+> now on use the full clean recipe (§7 step 5) whenever Dart files
+> changed, and always do the new/old string pair check. Prod APK not
+> built yet._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1776,11 +1815,14 @@ position)` — Android drops the video surface in the background and a
   `termsAcceptedFields()`, `TermsConsent.ensureAccepted` and the one-time
   `TermsConsentScreen`. Raise `kTermsVersion` (and "Version" on /terms)
   only when everyone must agree again.
-- `screens/moderation_service.dart` **(21 Oct 2026)** —
+- `screens/moderation_service.dart` **(21-22 Oct 2026)** —
   `ModerationService.checkText(text, ModerationKind)` -> `ModerationResult`
-  (`ok`, friendly English `message`). ContentFilter first, then Worker
-  `POST /moderate-text`; fails open on network errors. Kinds: name,
-  skyNote, caption, comment, liveComment, liveTitle.
+  (`ok`, friendly English `message`, `retryable`). ContentFilter first,
+  then Worker `POST /moderate-text`; text fails OPEN on network errors.
+  Pictures: `checkVideo(file, startMs, endMs)` (a frame every 2 s, 6-16)
+  and `checkImage(bytes)` -> Worker `POST /moderate-image`; pictures fail
+  CLOSED (`unchecked`). Kinds: name, skyNote, caption, comment,
+  liveComment, liveTitle, video, photo.
 - `screens/profile_screen.dart` — own profile: avatar, name, Edit Profile,
   stats (Posts / Followers / Following), video grid (tap = open viewer,
   long-press = delete own post), TikTok-style view count on each thumbnail.
@@ -2333,12 +2375,13 @@ others only see it once encoded (Bunny webhook).
 
 01. **Content moderation (step 1 done 21 Oct 2026 - text word lists +
     OpenAI AI layer in the Worker, see the notes at the top).** Open bug:
-    `ခွေးကောင်` without a space passes (see the 21 Oct note). Next: (2)
-    remove the fly-moderation server on Render from the app (free, sleeps
-    ~50 s, fails open; its OpenAI key looks revoked, so it probably
-    checks nothing now): captions/comments are already covered by
-    `/moderate-text`; video moderation needs a Worker route (frames /
-    thumbnail -> OpenAI image moderation); (3) images (profile photo, story image, chat photo) and
+    `ခွေးကောင်` without a space passes (see the 21 Oct note). (2)+(3) done
+    22 Oct (pictures checked before upload, Render removed - see the note
+    at the top; prod APK still to build). **Next:** server-side re-check
+    (hack-proof): when Bunny's webhook says a video is ready, the Worker
+    checks its thumbnail(s) with OpenAI and hides the post/story if
+    refused; maybe also re-check story/profile images on the Worker's
+    `/upload-image`. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
     story videos + story text. **Many languages (Ko's question, 21 Oct):**
     plan = layers - Worker word lists (Burmese + English now; more from
     LDNOOBW, CC BY 4.0, 27 languages, no Burmese - keep the attribution

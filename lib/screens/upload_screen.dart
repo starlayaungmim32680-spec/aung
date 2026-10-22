@@ -443,8 +443,8 @@ class _UploadScreenState extends State<UploadScreen> {
     // Check the caption (its #hashtags too) and the text stickers on the
     // video BEFORE spending any upload bandwidth (21 Oct 2026):
     // on-device word list + the Worker's /moderate-text (Zawgyi/Unicode
-    // Burmese, links). The fly-moderation server check still runs later,
-    // inside PostUploadManager.
+    // Burmese, links). The video itself (a frame every 2 s) is checked by
+    // PostUploadManager before it is uploaded.
     if (_checkingText.value) return;
     final String overlayText = _textOverlays
         .where((o) => !o.isSticker && o.imageUrl == null)

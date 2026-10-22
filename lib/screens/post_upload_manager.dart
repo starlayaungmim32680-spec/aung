@@ -17,8 +17,16 @@
 // The Android process stays alive in the background thanks to the presence
 // foreground service (PresenceForegroundService.kt), so the upload also
 // survives the person leaving the app for a while.
+//
+// 21 Oct 2026 (night): the fly-moderation server on Render is no longer
+// called (it slept ~50 s, "failed open", and its OpenAI key had been
+// revoked, so it most likely checked nothing). The caption is checked in
+// UploadScreen (ModerationService.checkText, the Worker's /moderate-text)
+// and the VIDEO is now checked here BEFORE trim/compress/upload:
+// ModerationService.checkVideo takes a frame every 2 s (6-16) of the part
+// being posted and the Worker asks OpenAI - a refused video never reaches
+// Bunny. If the check can't run, the post fails with Retry (fail closed).
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -29,6 +37,7 @@ import '../app_config.dart';
 import '../search_service.dart';
 import 'home_screen.dart' show homeFeedScrollToTopSignal;
 import 'local_video_cache.dart';
+import 'moderation_service.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
 
@@ -177,27 +186,33 @@ class PostUploadManager {
       throw const VideoUploadException('You must be logged in to upload');
     }
 
-    // Second line of defense for the caption (OpenAI multilingual
-    // moderation via fly-moderation). Skipped on a Retry that already got
-    // past it (the video is uploaded).
-    if (job.bunnyVideoId == null && job.caption.isNotEmpty) {
-      final bool flagged = await _isFlaggedByModerationServer(
-        '/moderate/text',
-        {'text': job.caption},
-      );
-      if (flagged) {
-        throw const _PostRejected(
-            'Your caption contains inappropriate language. Please edit it and post again.');
-      }
-    }
-
-    // ---- trim + compress + upload (skipped when a previous try already
-    // uploaded the video) ----
+    // ---- picture check + trim + compress + upload (skipped when a
+    // previous try already uploaded the video) ----
     if (job.bunnyVideoId == null) {
       File uploadFile = job.videoFile;
       final bool hasRealTrimRange = job.trimStartSeconds != null &&
           job.trimEndSeconds != null &&
           job.trimEndSeconds! > job.trimStartSeconds!;
+
+      // Frames of the part that will be posted, checked before anything is
+      // uploaded (passes if the check itself can't run - see
+      // moderation_service.dart).
+      _set(const PostUploadState(PostUploadPhase.working,
+          label: 'Checking video...'));
+      final ModerationResult videoCheck = await ModerationService.checkVideo(
+        job.videoFile,
+        startMs: hasRealTrimRange ? job.trimStartSeconds! * 1000 : null,
+        endMs: hasRealTrimRange ? job.trimEndSeconds! * 1000 : null,
+      );
+      if (!videoCheck.ok) {
+        // "Couldn't check" can be retried; a real refusal can't.
+        if (videoCheck.retryable) {
+          throw VideoUploadException(videoCheck.message!);
+        }
+        throw _PostRejected(videoCheck.message!);
+      }
+      _set(const PostUploadState(PostUploadPhase.working,
+          label: 'Preparing...'));
       if (hasRealTrimRange) {
         try {
           final Trimmer trimmer = Trimmer();
@@ -245,16 +260,6 @@ class PostUploadManager {
 
     _set(const PostUploadState(PostUploadPhase.working,
         progress: 1, label: 'Finishing up...'));
-
-    // Video content check (needs the hosted video's url to sample frames).
-    final bool videoFlagged = await _isFlaggedByModerationServer(
-      '/moderate/video',
-      {'video_url': videoUrl},
-    );
-    if (videoFlagged) {
-      throw const _PostRejected(
-          'This video was flagged as inappropriate and could not be posted.');
-    }
 
     // Uploader's display name, so a shared sound can be credited.
     String ownerName = user.email?.split('@').first ?? 'User';
@@ -341,33 +346,6 @@ class PostUploadManager {
     unawaited(syncVideoReady(postRef, bunnyVideoId));
     // Searchable straight away (not only after Bunny's webhook).
     unawaited(SearchService.indexPost(postRef.id));
-  }
-
-  // Base URL of the self-hosted moderation service (Flask on Render.com).
-  static const String _moderationBaseUrl =
-      'https://fly-moderation.onrender.com';
-
-  // Fails "open" (not flagged) on any network error or timeout - the free
-  // Render instance can take ~50s to wake up - so an outage of the
-  // moderation service never blocks posting.
-  Future<bool> _isFlaggedByModerationServer(
-    String endpoint,
-    Map<String, dynamic> body,
-  ) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_moderationBaseUrl$endpoint'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 90));
-      if (response.statusCode != 200) return false;
-      final Map<String, dynamic> data = jsonDecode(response.body);
-      return data['flagged'] == true;
-    } catch (_) {
-      return false;
-    }
   }
 
   // True for a plain connectivity failure, as opposed to something the

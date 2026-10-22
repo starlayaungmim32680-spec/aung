@@ -1476,8 +1476,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
       String? photoUrl = widget.currentPhotoUrl;
 
-      // Upload a new photo only if the user picked one
+      // Upload a new photo only if the user picked one - checked first
+      // (21 Oct 2026: nudity / graphic violence / self-harm, see
+      // moderation_service.dart).
       if (_pickedImageBytes != null) {
+        final ModerationResult photoCheck =
+            await ModerationService.checkImage(_pickedImageBytes!);
+        if (!mounted) return;
+        if (!photoCheck.ok) {
+          setState(() {
+            _isSaving = false;
+            _errorMessage = photoCheck.message;
+          });
+          return;
+        }
         photoUrl = await _uploadImage(_pickedImageBytes!);
       }
 

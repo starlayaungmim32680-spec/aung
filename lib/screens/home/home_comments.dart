@@ -38,7 +38,8 @@
 // so a bad comment never appears, not even for a moment. While that runs
 // the send button shows a small spinner (_sending, a ValueNotifier, so
 // only the button rebuilds). The slower fly-moderation (Render) check
-// still runs afterwards, as before.
+// used to run afterwards; removed the same night (it slept, failed open
+// and its OpenAI key had been revoked).
 //
 // It's a `part` file: it shares home_screen.dart's imports and its private
 // (_) names, so moving the code here changed nothing else. Add new imports
@@ -202,37 +203,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     });
   }
 
-  // Base URL of the self-hosted moderation service (Flask on Render.com),
-  // which proxies to OpenAI's free, multilingual omni-moderation model.
-  static const String _moderationBaseUrl =
-      'https://fly-moderation.onrender.com';
-
-  // Calls the moderation service and returns whether the content was
-  // flagged. Fails "open" (returns false / not flagged) on any network
-  // error or timeout, so a moderation-service outage never blocks
-  // comments outright. The free Render instance can take up to ~50s to
-  // wake from a cold start - which is exactly why this now runs AFTER the
-  // comment is posted (see _sendComment), never before it.
-  static Future<bool> _isFlaggedByModerationServer(
-    String endpoint,
-    Map<String, dynamic> body,
-  ) async {
-    try {
-      final response = await http
-          .post(
-            Uri.parse('$_moderationBaseUrl$endpoint'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 90));
-      if (response.statusCode != 200) return false;
-      final Map<String, dynamic> data = jsonDecode(response.body);
-      return data['flagged'] == true;
-    } catch (_) {
-      return false;
-    }
-  }
-
   // True while ModerationService checks a comment before it is sent - the
   // send button shows a spinner and ignores taps.
   final ValueNotifier<bool> _sending = ValueNotifier<bool>(false);
@@ -249,11 +219,9 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   //   2. the comment is written straight away and the input clears at
   //      once - Firestore shows it in the list immediately, even before
   //      the server confirms;
-  //   3. the moderation-server check runs in the background afterwards;
-  //      if it flags the comment, the comment is deleted again and the
-  //      author gets a message. The video owner's notification is only
-  //      sent once that check passes, so a flagged comment's text never
-  //      lands in their notifications.
+  //   3. the notifications are sent in the background afterwards
+  //      (_moderateAfterPost - the name is historical: the Render
+  //      re-check it used to do was removed 21 Oct 2026).
   Future<void> _sendComment() async {
     final User? user = FirebaseAuth.instance.currentUser;
     final String text = _commentController.text.trim();
@@ -348,23 +316,10 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     required String photoUrl,
     required ScaffoldMessengerState messenger,
   }) async {
-    final bool flagged =
-        await _isFlaggedByModerationServer('/moderate/text', {'text': text});
-
-    if (flagged) {
-      try {
-        await ref.delete();
-      } catch (_) {}
-      messenger.showSnackBar(
-        const SnackBar(
-          content:
-              Text('Your comment was removed because it contains inappropriate '
-                  'language.'),
-        ),
-      );
-      return;
-    }
-
+    // (21 Oct 2026: the old fly-moderation / Render re-check that used to
+    // run here is gone - the comment was already checked by
+    // ModerationService BEFORE it was written. This now only sends the
+    // notifications.)
     if (isReply) {
       await _notifyReply(
         text: text,
