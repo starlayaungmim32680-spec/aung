@@ -108,6 +108,15 @@
 //                         {ok: true, checked: false} - the app then
 //                         REFUSES the upload ("try again in a minute"):
 //                         pictures fail closed. Images are not stored.
+//  GET  /posts-audience-backfill - (25 Oct 2026) one-time: gives every
+//                         old post without an `audience` field
+//                         `audience: 'everyone'` ("Who can watch",
+//                         lib/screens/post_audience.dart), 40 at a time:
+//                         /posts-audience-backfill?token=SEARCH_ADMIN_TOKEN
+//                         Needed before the app queries
+//                         where('audience', '==', 'everyone') - Firestore
+//                         never matches a missing field. Only touches that
+//                         one field. Run it on BOTH Workers (dev + prod).
 //  POST /create-video    - (kept for potential future use) creates a
 //                         Bunny Stream video slot and mints a presigned
 //                         TUS upload signature
@@ -229,6 +238,9 @@ export default {
     // One-time search backfill, opened by Ko in a browser (token-protected).
     if (request.method === 'GET' && url.pathname === '/search-backfill') {
       return handleSearchBackfill(env, url);
+    }
+    if (request.method === 'GET' && url.pathname === '/posts-audience-backfill') {
+      return handlePostsAudienceBackfill(env, url);
     }
 
     if (request.method !== 'POST') {
@@ -645,19 +657,27 @@ async function handleBunnyWebhook(request, env, url) {
         videoGuid,
       );
       for (const name of docNames) {
-        await firestorePatchByName(accessToken, name, {
-          videoReady: ready,
-          videoFailed: failed,
-        });
+        // Posts are read first (best-effort): for search, and so a post
+        // from an older app build gets `audience: 'everyone'` (25 Oct 2026,
+        // "Who can watch" - a where('audience', '==', 'everyone') query
+        // never matches a missing field).
+        let doc = null;
+        if (collection === 'posts') {
+          try {
+            doc = await firestoreGetByName(accessToken, name);
+          } catch (_) {}
+        }
+        const patch = { videoReady: ready, videoFailed: failed };
+        if (doc && !(doc.fields && doc.fields.audience)) patch.audience = 'everyone';
+        await firestorePatchByName(accessToken, name, patch);
         // A post whose video just became playable goes into search
         // (best-effort - search must never make Bunny retry the webhook).
-        if (collection === 'posts' && ready && env.SEARCH_DB) {
+        if (collection === 'posts' && ready && env.SEARCH_DB && doc) {
           try {
-            const doc = await firestoreGetByName(accessToken, name);
-            if (doc) {
-              await ensureSearchSchema(env);
-              await searchUpsertPost(env, docIdFromName(name), doc.fields || {});
-            }
+            const fields = { ...(doc.fields || {}) };
+            if (patch.audience) fields.audience = { stringValue: 'everyone' };
+            await ensureSearchSchema(env);
+            await searchUpsertPost(env, docIdFromName(name), fields);
           } catch (_) {}
         }
       }
@@ -2502,6 +2522,74 @@ async function handleSearchBackfill(env, url) {
       ? `<p><a style="font-size:20px" href="/search-backfill?${new URLSearchParams({ token, what: 'posts' })}">Now copy posts →</a></p>`
       : '<h3>🎉 All done.</h3>';
     return html(`<h2>✅ ${what} done</h2>${summary}${nextStep}`);
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${String(err.message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// "Who can watch" backfill (25 Oct 2026): GET /posts-audience-backfill
+// ---------------------------------------------------------------------
+// Same idea as /search-backfill: protected by SEARCH_ADMIN_TOKEN, 40 posts
+// per page, a "Next page" link until done. A post that already has an
+// audience is left alone, so running it twice is harmless.
+// 40, not more: the free Workers plan allows 50 subrequests per request
+// (1 Google token + 1 list + up to 40 writes). On 25 Oct 2026 a 100-post
+// page stopped half-way on prod; opening the page again finished it.
+async function handlePostsAudienceBackfill(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:640px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  const pageToken = url.searchParams.get('page') || '';
+  const doneSoFar = Number(url.searchParams.get('done') || '0') || 0;
+  const seenSoFar = Number(url.searchParams.get('seen') || '0') || 0;
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const params = new URLSearchParams({ pageSize: '40' });
+    params.append('mask.fieldPaths', 'audience');
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`${firestoreBase(env)}/posts?${params}`, {
+      headers: { Authorization: `Bearer ${dbToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore list failed: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const docs = data.documents || [];
+    const missing = docs.filter(
+      (d) => !(d.fields && d.fields.audience && d.fields.audience.stringValue),
+    );
+    // 10 at a time - gentle on Firestore and on the Worker's subrequests.
+    for (let i = 0; i < missing.length; i += 10) {
+      await Promise.all(missing.slice(i, i + 10).map((d) =>
+        firestorePatchByName(dbToken, d.name, { audience: 'everyone' })));
+    }
+    const done = doneSoFar + missing.length;
+    const seen = seenSoFar + docs.length;
+    const summary =
+      `<p>Project: <b>${env.FIREBASE_PROJECT_ID}</b></p>` +
+      `<p>Posts checked: <b>${seen}</b> · set to Everyone: <b>${done}</b></p>`;
+    if (data.nextPageToken) {
+      const next = new URLSearchParams({
+        token, page: data.nextPageToken, done: String(done), seen: String(seen),
+      });
+      return html(
+        `<h2>⏳ Working...</h2>${summary}` +
+          `<p><a style="font-size:20px" href="/posts-audience-backfill?${next}">` +
+          `Next page →</a></p>`,
+      );
+    }
+    return html(`<h2>🎉 All done</h2>${summary}`);
   } catch (err) {
     return html(`<h2>❌ Error</h2><pre>${String(err.message)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);

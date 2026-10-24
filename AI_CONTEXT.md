@@ -579,6 +579,20 @@ OK). Play Console: Terms URL =
 > posts - a modified app can still read them (step C), and Home still
 > downloads every post (step B). Prod APK not built yet._
 >
+> _25 Oct 2026 (night, done by Ko on both projects): **"Who can watch"
+> step B1 - every post has an `audience` now.** New Worker admin page
+> **`GET /posts-audience-backfill?token=SEARCH_ADMIN_TOKEN`** (40 posts a
+> page - the free plan allows 50 subrequests per request; a first
+> 100-post version stopped half-way on prod and finished when reopened;
+> only sets `audience: 'everyone'` where the field is missing, so it is
+> safe to run again). Results: prod `aung-1756e` 55 posts (all set),
+> dev `fly-dev-58b29` 16 posts. Also `/bunny-webhook` now adds
+> `audience: 'everyone'` to a post that has none (posts from app builds
+> older than step A) when its video is ready. `SEARCH_ADMIN_TOKEN` was
+> replaced on both Workers that night (the old value could not be read
+> back from Cloudflare); it is only used by the two backfill pages. Next:
+> step B2 (queries)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2414,9 +2428,8 @@ others only see it once encoded (Bunny webhook).
     **B** - Home feed / Shorts / full-screen queries stop downloading
     every post: For You = `where('audience', '==', 'everyone')` +
     `orderBy createdAt` + `limit` (paging), Following = per followed
-    account; first a Worker admin route (token, like /search-backfill)
-    sets `audience: 'everyone'` on every old post in BOTH projects
-    (a `==` query never matches a missing field); composite indexes
+    account (the backfill so a `==` query matches old posts is DONE,
+    B1, 25 Oct); composite indexes
     (audience+createdAt, videoType+audience+createdAt, hashtags+audience
     +createdAt, soundId+audience, userId+audience) from the error links.
     **C** - firestore.rules: posts `get`/`list` only if audience ==
