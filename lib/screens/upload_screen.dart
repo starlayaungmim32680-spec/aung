@@ -13,6 +13,7 @@ import 'sound_sync_sheet.dart';
 import 'sound_moderation.dart';
 import 'post_upload_manager.dart';
 import 'moderation_service.dart';
+import 'post_audience.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
 
@@ -74,6 +75,10 @@ class _UploadScreenState extends State<UploadScreen> {
   // (ModerationService, ~0.2 s) after tapping Post - the Post button shows
   // a spinner and ignores taps. A ValueNotifier so only the button rebuilds.
   final ValueNotifier<bool> _checkingText = ValueNotifier<bool>(false);
+  // "Who can watch" (24 Oct 2026, post_audience.dart). A ValueNotifier so
+  // picking an audience only rebuilds the tile and the sound checkbox.
+  final ValueNotifier<PostAudience> _audience =
+      ValueNotifier<PostAudience>(PostAudience.everyone);
 
   // Which kind of video the user is posting: 'short' or 'long'.
   // null means the user hasn't chosen an upload type yet.
@@ -185,6 +190,7 @@ class _UploadScreenState extends State<UploadScreen> {
   void dispose() {
     _captionController.dispose();
     _checkingText.dispose();
+    _audience.dispose();
     _previewController?.dispose();
     super.dispose();
   }
@@ -476,7 +482,9 @@ class _UploadScreenState extends State<UploadScreen> {
       filterType: _filterType,
       blurBackground: _blurBackground,
       textOverlays: _textOverlays.map((o) => o.toMap()).toList(),
-      shareSound: _shareSound,
+      // A sound can only be shared from an Everyone video.
+      shareSound: _shareSound && _audience.value.isPublic,
+      audience: _audience.value.id,
       replyToPostId: widget.replyToPostId,
       replyToOwnerId: widget.replyToOwnerId,
       replyToOwnerName: widget.replyToOwnerName,
@@ -500,6 +508,7 @@ class _UploadScreenState extends State<UploadScreen> {
       _captionController.clear();
       _errorMessage = null;
       _shareSound = false;
+      _audience.value = PostAudience.everyone;
       _selectedSoundId = null;
       _selectedSoundTitle = null;
       _selectedSoundOwnerName = null;
@@ -875,14 +884,23 @@ class _UploadScreenState extends State<UploadScreen> {
             ),
           ),
           const SizedBox(height: 12),
+          // "Who can watch" (24 Oct 2026, post_audience.dart).
+          AudiencePickerTile(audience: _audience),
+          const SizedBox(height: 12),
           // Only this video's own audio can be shared - a borrowed sound
-          // already belongs to someone else.
+          // already belongs to someone else - and only from an Everyone
+          // video (a private video's sound shouldn't become public).
           if (_selectedSoundId == null || _selectedSoundId!.isEmpty)
-            SoundRightsCheckbox(
-              value: _shareSound,
-              onChanged: (v) {
-                setState(() => _shareSound = v);
-              },
+            ValueListenableBuilder<PostAudience>(
+              valueListenable: _audience,
+              builder: (context, audience, _) => audience.isPublic
+                  ? SoundRightsCheckbox(
+                      value: _shareSound,
+                      onChanged: (v) {
+                        setState(() => _shareSound = v);
+                      },
+                    )
+                  : const SizedBox.shrink(),
             ),
           if (_errorMessage != null) ...[
             const SizedBox(height: 12),

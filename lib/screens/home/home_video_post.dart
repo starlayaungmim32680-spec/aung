@@ -1200,13 +1200,45 @@ class _VideoPostItemState extends State<_VideoPostItem>
     );
   }
 
+  // The post's current audience (null if it couldn't be read).
+  Future<PostAudience?> _currentAudience() async {
+    if (widget.postId.isEmpty) return PostAudience.everyone;
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snap =
+          await FirebaseFirestore.instance
+              .collection('posts')
+              .doc(widget.postId)
+              .get();
+      return audienceOf(snap.data());
+    } catch (_) {
+      return null;
+    }
+  }
+
   // The main share bottom sheet: a row of direct-share destinations
   // (WhatsApp / Messenger / Facebook / Email / Copy link / More apps —
   // "More apps" opens the full OS chooser, which covers every other app
   // and lets the user pick a specific group chat inside it), plus the
   // existing in-app "Share to Fly" repost action and the video download.
-  Future<void> _openShareSheet() {
-    return showModalBottomSheet(
+  Future<void> _openShareSheet() async {
+    // 24 Oct 2026: only Everyone videos can be shared or reposted - a
+    // Friends / Followers & Friends / Only me video must not leak out
+    // through a link or a repost (post_audience.dart).
+    final PostAudience? audience = await _currentAudience();
+    if (!mounted) return;
+    if (audience == null || !audience.isPublic) {
+      final bool mine = widget.userId == FirebaseAuth.instance.currentUser?.uid;
+      HapticFeedback.mediumImpact();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(audience == null
+            ? "Couldn't check who can watch this video. Please try again."
+            : mine
+                ? '${audience.emoji} ${audience.label} only - this video can\'t be shared. Post for Everyone to share it.'
+                : "This video isn't public, so it can't be shared."),
+      ));
+      return;
+    }
+    await showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E1E1E),
       shape: const RoundedRectangleBorder(
@@ -2501,6 +2533,19 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   ),
                 ),
               ),
+              // "Who can watch" chip on MY non-public videos (24 Oct 2026,
+              // post_audience.dart), so I can see at a glance who else can
+              // watch this one. Nothing for Everyone videos.
+              if (user != null &&
+                  widget.userId == user.uid &&
+                  !audienceOf(livePostData).isPublic)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 60,
+                  left: 12,
+                  child: IgnorePointer(
+                    child: AudienceBadge(audience: audienceOf(livePostData)),
+                  ),
+                ),
             ],
           ),
         );

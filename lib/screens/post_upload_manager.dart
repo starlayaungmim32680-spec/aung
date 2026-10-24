@@ -54,6 +54,9 @@ class PostJob {
   final bool blurBackground;
   final List<Map<String, dynamic>> textOverlays; // already .toMap()'d
   final bool shareSound;
+  // "Who can watch" (24 Oct 2026): PostAudience.id - 'everyone',
+  // 'followers', 'friends' or 'only_me' (post_audience.dart).
+  final String audience;
   final String? replyToPostId;
   final String? replyToOwnerId;
   final String? replyToOwnerName;
@@ -75,6 +78,7 @@ class PostJob {
     required this.blurBackground,
     required this.textOverlays,
     required this.shareSound,
+    this.audience = 'everyone',
     this.replyToPostId,
     this.replyToOwnerId,
     this.replyToOwnerName,
@@ -329,6 +333,7 @@ class PostUploadManager {
       'soundId': soundId,
       'soundTitle': soundTitle,
       'soundOwnerName': soundOwnerName,
+      'audience': job.audience,
       // See video_upload_service.dart / the Worker's /bunny-webhook.
       ...newVideoReadinessFields(bunnyVideoId),
       if (job.replyToPostId != null) ...{
@@ -344,8 +349,11 @@ class PostUploadManager {
     final String? localPath = job.uploadedLocalPath;
     if (localPath != null) LocalVideoCache.register(videoUrl, localPath);
     unawaited(syncVideoReady(postRef, bunnyVideoId));
-    // Searchable straight away (not only after Bunny's webhook).
-    unawaited(SearchService.indexPost(postRef.id));
+    // Searchable straight away (not only after Bunny's webhook) - only
+    // Everyone videos go into Search (the Worker checks it too).
+    if (job.audience == 'everyone') {
+      unawaited(SearchService.indexPost(postRef.id));
+    }
   }
 
   // True for a plain connectivity failure, as opposed to something the

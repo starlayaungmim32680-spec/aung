@@ -2122,7 +2122,20 @@ function searchUserStatement(env, uid, fields) {
   ).bind(uid, name, Date.now());
 }
 
+// 24 Oct 2026 ("Who can watch"): only Everyone posts are searchable. A post
+// whose `audience` is followers / friends / only_me is REMOVED from the
+// index instead (so a post that becomes private disappears from Search).
+// Posts without the field are Everyone.
+function searchPostIsPublic(fields) {
+  const audience = fsString(fields, 'audience');
+  return audience === '' || audience === 'everyone';
+}
+
 function searchPostStatement(env, postId, fields) {
+  if (!searchPostIsPublic(fields)) {
+    return env.SEARCH_DB.prepare('DELETE FROM posts WHERE post_id = ?1')
+      .bind(postId);
+  }
   const caption = searchNormalizeIndex(fsString(fields, 'caption').slice(0, 500));
   const tags = searchNormalizeIndex(
     fsStringArray(fields, 'hashtags')

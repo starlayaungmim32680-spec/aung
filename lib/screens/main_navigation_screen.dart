@@ -23,6 +23,7 @@ import 'gifting.dart';
 import 'onboarding_screen.dart';
 import 'friend_requests_screen.dart';
 import '../friend_service.dart';
+import '../following_service.dart';
 import '../search_service.dart';
 import 'public_profile_screen.dart';
 import 'moderation_service.dart';
@@ -137,6 +138,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // waiting for the first screen that needs it (it is safe to call again
     // from those screens).
     FriendService.instance.start();
+    // Who I follow - for "Followers & Friends" videos (24 Oct 2026,
+    // post_audience.dart).
+    FollowingService.instance.start();
     // Keep my name findable in search (Cloudflare D1, see
     // search_service.dart). Once per app run, best-effort.
     SearchService.syncMe();

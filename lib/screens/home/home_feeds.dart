@@ -749,7 +749,13 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
             );
           }
 
-          final posts = snapshot.data?.docs ?? [];
+          // Same filter as the profile grid, so the tapped index matches
+          // (audience "Who can watch" + failed encoding).
+          final String? myId = FirebaseAuth.instance.currentUser?.uid;
+          final posts = (snapshot.data?.docs ?? [])
+              .where((d) =>
+                  isVideoVisibleTo(d.data() as Map<String, dynamic>, myId))
+              .toList();
           if (posts.isEmpty) {
             return const Center(
               child: Text('No videos', style: TextStyle(color: Colors.grey)),
@@ -1069,7 +1075,12 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
       body: StreamBuilder<QuerySnapshot>(
         stream: _postsStream,
         builder: (context, snapshot) {
-          final List<QueryDocumentSnapshot> docs = snapshot.data?.docs ?? [];
+          // Only videos I may see (audience / failed encoding).
+          final String? myId = FirebaseAuth.instance.currentUser?.uid;
+          final List<QueryDocumentSnapshot> docs = (snapshot.data?.docs ?? [])
+              .where((d) =>
+                  isVideoVisibleTo(d.data() as Map<String, dynamic>, myId))
+              .toList();
           final int initialIndex =
               docs.indexWhere((d) => d.id == widget.postId);
 

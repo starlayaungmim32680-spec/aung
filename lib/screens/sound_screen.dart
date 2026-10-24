@@ -7,6 +7,8 @@ import 'home_screen.dart';
 import 'upload_screen.dart';
 import 'media_utils.dart';
 import 'sound_moderation.dart';
+import 'post_audience.dart' show audienceOf;
+import 'video_upload_service.dart' show isVideoVisibleTo;
 
 // Shows one sound (for now always an "Original sound" taken from a user's
 // own upload), lets you listen to it, and lists every video using it -
@@ -179,7 +181,13 @@ class _SoundScreenState extends State<SoundScreen> {
                 .where('soundId', isEqualTo: widget.soundId)
                 .snapshots(),
             builder: (context, postSnap) {
-              final docs = postSnap.data?.docs ?? [];
+              // A sound page is public: only Everyone videos (24 Oct 2026,
+              // post_audience.dart), and never failed ones.
+              final String? myId = FirebaseAuth.instance.currentUser?.uid;
+              final docs = (postSnap.data?.docs ?? []).where((d) {
+                final Map<String, dynamic> m = d.data() as Map<String, dynamic>;
+                return audienceOf(m).isPublic && isVideoVisibleTo(m, myId);
+              }).toList();
 
               return Column(
                 children: [

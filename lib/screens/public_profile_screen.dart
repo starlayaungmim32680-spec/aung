@@ -14,6 +14,7 @@ import 'profile_screen.dart' show SkyNoteBubble;
 import 'presence_badge.dart';
 import '../block_service.dart';
 import '../friend_service.dart';
+import 'video_upload_service.dart' show isVideoVisibleTo;
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -97,7 +98,15 @@ class PublicProfileScreen extends StatelessWidget {
                         .where('sharedBy', isEqualTo: userId)
                         .snapshots(),
                     builder: (context, repostSnapshot) {
-                      final ownDocs = snapshot.data?.docs ?? [];
+                      // Only the videos I may see (24 Oct 2026: "Who can
+                      // watch" audiences) - the same filter as
+                      // UserVideoFeedScreen, so a tapped index matches.
+                      final String? viewerId =
+                          FirebaseAuth.instance.currentUser?.uid;
+                      final ownDocs = (snapshot.data?.docs ?? [])
+                          .where((d) => isVideoVisibleTo(
+                              d.data() as Map<String, dynamic>, viewerId))
+                          .toList();
                       final repostDocs = repostSnapshot.data?.docs ?? [];
                       final int postCount = ownDocs.length;
 

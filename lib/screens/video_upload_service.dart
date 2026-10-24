@@ -27,6 +27,7 @@ import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
+import 'post_audience.dart' show canSeeAudience;
 
 // Cloudflare's request-body limit on the free Workers plan is 100 MB.
 const int kMaxVideoUploadBytes = 95 * 1024 * 1024;
@@ -68,7 +69,13 @@ Future<void> syncVideoReady(DocumentReference ref, String bunnyVideoId) async {
 // play the original file instead - see home_video_post.dart (posts) and
 // story_screen.dart (stories). Only a video whose encoding FAILED stays
 // hidden (except from its uploader).
+//
+// 24 Oct 2026: also checks the post's audience ("Who can watch",
+// post_audience.dart) - a Friends / Followers & Friends / Only me video is
+// hidden from people it isn't meant for. Stories have no audience field,
+// so they stay visible to everyone as before.
 bool isVideoVisibleTo(Map<String, dynamic> data, String? myUid) {
+  if (!canSeeAudience(data, myUid)) return false;
   if (data['videoFailed'] != true) return true;
   return myUid != null && data['userId'] == myUid;
 }

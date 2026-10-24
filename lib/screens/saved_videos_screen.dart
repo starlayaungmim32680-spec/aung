@@ -18,6 +18,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart' show SavedVideosFeedScreen;
 import 'media_utils.dart';
+import 'video_upload_service.dart' show isVideoVisibleTo;
 
 class SavedVideosScreen extends StatefulWidget {
   const SavedVideosScreen({super.key});
@@ -85,11 +86,17 @@ class _SavedVideosScreenState extends State<SavedVideosScreen> {
     }
 
     if (!mounted || token != _loadToken) return;
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
     setState(() {
-      // Back in saved order; deleted posts are simply missing from byId.
+      // Back in saved order; deleted posts are simply missing from byId,
+      // and a video I may no longer see (its owner changed who can watch
+      // it, 24 Oct 2026) is skipped too.
       _posts = [
         for (final id in ids)
-          if (byId[id] != null) byId[id]!,
+          if (byId[id] != null &&
+              isVideoVisibleTo(
+                  (byId[id]!.data() as Map<String, dynamic>?) ?? {}, myId))
+            byId[id]!,
       ];
     });
   }

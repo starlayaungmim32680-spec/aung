@@ -199,7 +199,13 @@ class HashtagScreen extends StatelessWidget {
               child: CircularProgressIndicator(color: Colors.white54),
             );
           }
-          final docs = snapshot.data!.docs;
+          // Hashtag pages are public places: only Everyone videos
+          // (24 Oct 2026, post_audience.dart), and never failed ones.
+          final String? myId = FirebaseAuth.instance.currentUser?.uid;
+          final docs = snapshot.data!.docs.where((d) {
+            final Map<String, dynamic> m = d.data() as Map<String, dynamic>;
+            return audienceOf(m).isPublic && isVideoVisibleTo(m, myId);
+          }).toList();
           if (docs.isEmpty) {
             return const Center(
               child: Text('No videos with this hashtag yet.',

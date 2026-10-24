@@ -550,6 +550,35 @@ OK). Play Console: Terms URL =
 > done 22-23 Oct 2026** (clean prod build, string pair check OK, tested
 > by Ko on the phones)._
 >
+> _24-25 Oct 2026 (confirmed by Ko on Fly Dev, phones A and B): **"Who
+> can watch" - post audiences, step A of 4** (like Facebook Public /
+> Friends / Only me, TikTok Everyone / Friends / Only you). NEW
+> **`lib/screens/post_audience.dart`**: `enum PostAudience` (`everyone`
+> 🌍, `followers` 👥 "Followers & Friends" = people who follow the owner
+> + the owner's friends, `friends` 🤝, `only_me` 🔒; stored as
+> `posts/{id}.audience`, missing = everyone), `audienceOf(data)`,
+> `canSeeAudience(data, myUid)` (instant, from FriendService +
+> FollowingService), `showAudiencePicker` sheet, `AudiencePickerTile`
+> (ValueNotifier, on the Post screen under the caption), `AudienceBadge`
+> chip. NEW **`lib/following_service.dart`** (`FollowingService`, live
+> users/{me}/following, started in MainNavigationScreen next to
+> FriendService). `isVideoVisibleTo` now also checks the audience, so
+> Home (For You + Following), Shorts, search results, notification posts
+> and stories (no field -> everyone) hide what I may not see; also
+> filtered: FullScreenVideoScreen, UserVideoFeedScreen + public profile
+> grid (same filter so tapped indexes match), Saved; hashtag and sound
+> pages show Everyone posts only. Only Everyone posts: share sound
+> (checkbox hidden otherwise; `PostJob.shareSound` forced false),
+> `SearchService.indexPost` (Worker `searchPostStatement` also DELETES a
+> non-public post from D1 - `searchPostIsPublic`), share sheet / repost
+> / external link (`_openShareSheet` reads the post's audience first:
+> owner gets "🔒 Only me only - this video can't be shared...", others
+> "This video isn't public..."). My own non-public videos show the chip
+> top-left in the feed. Worker changed -> deployed to BOTH Workers. No
+> rules change yet. **Limits of step A:** only the phone hides private
+> posts - a modified app can still read them (step C), and Home still
+> downloads every post (step B). Prod APK not built yet._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1816,6 +1845,12 @@ position)` — Android drops the video surface in the background and a
   `termsAcceptedFields()`, `TermsConsent.ensureAccepted` and the one-time
   `TermsConsentScreen`. Raise `kTermsVersion` (and "Version" on /terms)
   only when everyone must agree again.
+- `screens/post_audience.dart` **(24 Oct 2026)** — "Who can watch":
+  `PostAudience` enum, `audienceOf`, `canSeeAudience`, the picker sheet /
+  tile and `AudienceBadge`. `isVideoVisibleTo` (video_upload_service
+  .dart) calls `canSeeAudience`.
+- `following_service.dart` (lib/, **24 Oct 2026**) — `FollowingService`:
+  who I follow, app-wide (like FriendService).
 - `screens/moderation_service.dart` **(21-22 Oct 2026)** —
   `ModerationService.checkText(text, ModerationKind)` -> `ModerationResult`
   (`ok`, friendly English `message`, `retryable`). ContentFilter first,
@@ -2373,6 +2408,27 @@ others only see it once encoded (Bunny webhook).
     Meilisearch/Typesense when Fly grows, see the 20 Oct note); (4) if the original is slow to start
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
+
+001. **"Who can watch" audiences (step A done 24-25 Oct 2026, see the
+    note at the top; prod APK still to build).** Next, in order:
+    **B** - Home feed / Shorts / full-screen queries stop downloading
+    every post: For You = `where('audience', '==', 'everyone')` +
+    `orderBy createdAt` + `limit` (paging), Following = per followed
+    account; first a Worker admin route (token, like /search-backfill)
+    sets `audience: 'everyone'` on every old post in BOTH projects
+    (a `==` query never matches a missing field); composite indexes
+    (audience+createdAt, videoType+audience+createdAt, hashtags+audience
+    +createdAt, soundId+audience, userId+audience) from the error links.
+    **C** - firestore.rules: posts `get`/`list` only if audience ==
+    everyone, or owner, or (friends: users/{owner}/friends/{me} exists),
+    or (followers: followers/{me} or friends/{me} exists); every query
+    must then be provable (audience filter, or `userId ==` + audience
+    `in` [...] chosen from my relationship); comments/views/saves
+    subcollections of private posts too; publish to BOTH projects (dev
+    first). Note: Bunny video URLs stay public if someone has the link -
+    signed URLs later. **D** - change the audience after posting (owner
+    long-press / ⋮ menu; also removes/re-adds the D1 search row; reposts
+    of a post that became private should disappear).
 
 01. **Content moderation (step 1 done 21 Oct 2026 - text word lists +
     OpenAI AI layer in the Worker, see the notes at the top).** Open bug:

@@ -32,6 +32,7 @@ import 'media_utils.dart';
 import 'moderation_service.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
+import 'post_audience.dart';
 import 'local_video_cache.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
