@@ -19,6 +19,15 @@ rules_version = '2';
 // history).
 // Update (4 Oct 2026): chats/{id}.unread.<uid> - anyone in the room may
 // reset their OWN unread count to 0.
+// Update (25 Oct 2026, "Who can watch" step C): posts are readable only
+// by the people their `audience` allows (canSeePost) - everyone /
+// followers (followers + friends) / friends / only_me; missing field =
+// everyone. Same for reading/writing their comments and replies and for
+// reacting. Rules are not filters: every app query on posts now carries
+// a constraint that proves it (audience == 'everyone', userId == me, or
+// userId == X + audience in [what I may see of X]) - see
+// lib/screens/post_audience.dart allowedAudienceIdsFor(). Publish to
+// BOTH Firebase projects (fly-dev-58b29 first, then aung-1756e).
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -78,6 +87,35 @@ service cloud.firestore {
     // are friends (users/{me}/friends/{other}, friend_service.dart).
     function areFriends(roomId) {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid)/friends/$(otherInRoom(roomId)));
+    }
+
+    // ---- post audiences ("Who can watch", 25 Oct 2026) ----
+    // users/{owner}/friends/{me} exists (friends are written on both sides).
+    function isFriendOf(owner) {
+      return exists(/databases/$(database)/documents/users/$(owner)/friends/$(request.auth.uid));
+    }
+
+    // users/{owner}/followers/{me} exists (written by the follower).
+    function isFollowerOf(owner) {
+      return exists(/databases/$(database)/documents/users/$(owner)/followers/$(request.auth.uid));
+    }
+
+    // May the signed-in user see a post with this data? Friends are
+    // checked before followers, so a friend costs one exists() call.
+    function canSeePost(data) {
+      let a = data.get('audience', 'everyone');
+      return signedIn() && (
+        a == 'everyone'
+        || data.userId == request.auth.uid
+        || (a == 'friends' && isFriendOf(data.userId))
+        || (a == 'followers'
+            && (isFriendOf(data.userId) || isFollowerOf(data.userId)))
+      );
+    }
+
+    // The same check for a post's subcollections (comments, replies).
+    function canSeePostId(postId) {
+      return canSeePost(get(/databases/$(database)/documents/posts/$(postId)).data);
     }
 
     function isPostOwner(postId) {
@@ -200,11 +238,17 @@ service cloud.firestore {
 
     // ================= posts =================
     match /posts/{postId} {
-      allow read: if signedIn();
+      // 25 Oct 2026: only the people the post's audience allows.
+      allow read: if canSeePost(resource.data);
       allow create: if signedIn()
-        && request.resource.data.userId == request.auth.uid;
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.get('audience', 'everyone')
+             in ['everyone', 'followers', 'friends', 'only_me'];
       allow update: if signedIn() && (
-        resource.data.userId == request.auth.uid || onlyMyReaction()
+        (resource.data.userId == request.auth.uid
+          && request.resource.data.get('audience', 'everyone')
+               in ['everyone', 'followers', 'friends', 'only_me'])
+        || (canSeePost(resource.data) && onlyMyReaction())
       );
       allow delete: if signedIn() && resource.data.userId == request.auth.uid;
 
@@ -229,10 +273,11 @@ service cloud.firestore {
       // by changing only `hidden`/`hiddenAt`. The author may not touch
       // those two fields, so they can't undo the owner's hide.
       match /comments/{commentId} {
-        allow read: if signedIn();
+        allow read: if canSeePostId(postId);
         allow create: if signedIn()
           && request.resource.data.userId == request.auth.uid
-          && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt']);
+          && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt'])
+          && canSeePostId(postId);
         allow update: if signedIn() && (
           (resource.data.userId == request.auth.uid
             && !changedKeys().hasAny(['hidden', 'hiddenAt']))
@@ -245,10 +290,11 @@ service cloud.firestore {
         );
 
         match /replies/{replyId} {
-          allow read: if signedIn();
+          allow read: if canSeePostId(postId);
           allow create: if signedIn()
             && request.resource.data.userId == request.auth.uid
-            && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt']);
+            && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt'])
+            && canSeePostId(postId);
           allow update: if signedIn() && (
             (resource.data.userId == request.auth.uid
               && !changedKeys().hasAny(['hidden', 'hiddenAt']))

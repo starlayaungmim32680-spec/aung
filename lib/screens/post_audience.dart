@@ -9,6 +9,11 @@
 //   friends   - the owner's friends only (Fly friends, friend_service.dart)
 //   only_me   - the owner only
 //
+// Steps B/C (25 Oct 2026): feeds only ask for what I may see, and
+// firestore.rules enforce it on the server (canSeePost) -
+// allowedAudienceIdsFor() builds the audience constraint for queries on
+// one person's posts (profile grid, their video feed).
+//
 // Step A (this file + the call sites): the audience is chosen on the Post
 // screen and saved; the app hides a post from anyone it isn't meant for
 // (`canSeeAudience`, used by `isVideoVisibleTo` in video_upload_service
@@ -18,6 +23,8 @@
 // still downloads every post and filters on the phone; C - Firestore
 // rules don't enforce it yet (a modified app could still read a private
 // post); D - changing the audience after posting.
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../following_service.dart';
@@ -74,6 +81,36 @@ bool canSeeAudience(Map<String, dynamic> data, String? myUid) {
     case PostAudience.onlyMe:
       return false;
   }
+}
+
+/// Which audiences of [owner]'s posts [myUid] may read - the value for a
+/// `where('audience', whereIn: ...)` constraint (25 Oct 2026, step C).
+/// Firestore rules are not filters: a query that could return a post I
+/// may not see is refused as a whole, so every query on someone else's
+/// posts must say which audiences it wants. Returns null for my own posts
+/// (no constraint needed - the rules let owners read everything).
+List<String>? allowedAudienceIdsFor(String owner, String? myUid) {
+  if (myUid != null && owner == myUid) return null;
+  if (FriendService.instance.isFriend(owner)) {
+    return const ['everyone', 'followers', 'friends'];
+  }
+  if (FollowingService.instance.isFollowing(owner)) {
+    return const ['everyone', 'followers'];
+  }
+  return const ['everyone'];
+}
+
+/// The query for [owner]'s posts that the Firestore rules accept for me:
+/// all of them if they're mine, otherwise only the audiences I may see.
+/// Used by the public profile grid and UserVideoFeedScreen - both must use
+/// it so the tapped index matches.
+Query<Map<String, dynamic>> postsOfUserQuery(String owner) {
+  final Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+      .collection('posts')
+      .where('userId', isEqualTo: owner);
+  final List<String>? allowed =
+      allowedAudienceIdsFor(owner, FirebaseAuth.instance.currentUser?.uid);
+  return allowed == null ? q : q.where('audience', whereIn: allowed);
 }
 
 const List<Color> _flyGradient = [

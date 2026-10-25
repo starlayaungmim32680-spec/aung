@@ -67,22 +67,25 @@ class _SavedVideosScreenState extends State<SavedVideosScreen> {
     final int token = ++_loadToken;
     final List<String> ids = snap.docs.map((d) => d.id).toList();
 
-    // whereIn accepts at most 10 values per query, so fetch in chunks.
+    // One get() per saved post (25 Oct 2026, "Who can watch" step C): a
+    // documentId-whereIn query is refused by the Firestore rules as soon as
+    // one saved video became private, so each post is read on its own and
+    // a refused / deleted one is simply skipped. 10 at a time.
     final Map<String, DocumentSnapshot> byId = {};
-    try {
-      for (int i = 0; i < ids.length; i += 10) {
-        final List<String> chunk =
-            ids.sublist(i, i + 10 > ids.length ? ids.length : i + 10);
-        final QuerySnapshot result = await FirebaseFirestore.instance
-            .collection('posts')
-            .where(FieldPath.documentId, whereIn: chunk)
-            .get();
-        for (final doc in result.docs) {
-          byId[doc.id] = doc;
-        }
+    final CollectionReference posts =
+        FirebaseFirestore.instance.collection('posts');
+    for (int i = 0; i < ids.length; i += 10) {
+      final List<String> chunk =
+          ids.sublist(i, i + 10 > ids.length ? ids.length : i + 10);
+      final List<DocumentSnapshot?> got = await Future.wait(chunk.map(
+        (id) => posts.doc(id).get().then<DocumentSnapshot?>(
+              (d) => d,
+              onError: (_) => null,
+            ),
+      ));
+      for (final DocumentSnapshot? doc in got) {
+        if (doc != null && doc.exists) byId[doc.id] = doc;
       }
-    } catch (_) {
-      // Keep whatever loaded; a network blip shouldn't blank the screen.
     }
 
     if (!mounted || token != _loadToken) return;

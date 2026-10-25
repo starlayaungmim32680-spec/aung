@@ -718,10 +718,10 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable();
-    _userPostsStream = FirebaseFirestore.instance
-        .collection('posts')
-        .where('userId', isEqualTo: widget.userId)
-        .snapshots();
+    // 25 Oct 2026 (step C): same query as the profile grid
+    // (postsOfUserQuery) so the tapped index matches and the rules accept
+    // it.
+    _userPostsStream = postsOfUserQuery(widget.userId).snapshots();
   }
 
   @override

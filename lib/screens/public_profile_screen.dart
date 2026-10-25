@@ -15,6 +15,7 @@ import 'presence_badge.dart';
 import '../block_service.dart';
 import '../friend_service.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
+import 'post_audience.dart' show postsOfUserQuery;
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -87,10 +88,10 @@ class PublicProfileScreen extends StatelessWidget {
               final bool isOnline = isUserOnline(profile);
 
               return StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('posts')
-                    .where('userId', isEqualTo: userId)
-                    .snapshots(),
+                // 25 Oct 2026 ("Who can watch" step C): only the
+                // audiences I may see - the Firestore rules refuse a query
+                // that could return someone's private posts.
+                stream: postsOfUserQuery(userId).snapshots(),
                 builder: (context, snapshot) {
                   return StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance

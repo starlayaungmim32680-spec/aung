@@ -621,6 +621,39 @@ OK). Play Console: Terms URL =
 > rules change. Prod APK not built yet - check all 3 prod indexes say
 > Enabled first, or Home shows only a spinner._
 >
+> _25 Oct 2026 (evening, confirmed by Ko on Fly Dev, phones A and B, with
+> the new rules published to **fly-dev-58b29 only**): **"Who can watch"
+> step C - the server enforces it.** `firestore.rules`: new helpers
+> `isFriendOf(owner)` (users/{owner}/friends/{me}), `isFollowerOf(owner)`
+> (users/{owner}/followers/{me}), `canSeePost(data)` (audience
+> everyone / owner / friends -> friend / followers -> friend or follower;
+> missing field = everyone; friends checked first = one exists() for a
+> friend), `canSeePostId(postId)`. posts: `read` only if canSeePost;
+> create/owner-update must keep audience one of the 4 values; others may
+> only change their own reaction AND must be allowed to see the post;
+> comments + replies: read/create only if canSeePostId. (views / saves /
+> shares subcollections unchanged - counts only.) **Rules are not
+> filters**, so every app query on posts now proves itself: Home/Shorts/
+> full screen/hashtag/sound = audience == everyone; my own = userId ==
+> me; Search = documentId in [...] + audience == everyone
+> (`_fetchInOrder(..., everyoneOnly: true)`); profile grid +
+> UserVideoFeedScreen = **`postsOfUserQuery(owner)`** (post_audience
+> .dart: userId == owner + audience whereIn
+> `allowedAudienceIdsFor(owner, me)` - friend [everyone, followers,
+> friends], follower [everyone, followers], else [everyone], mine = no
+> filter); CirclePostsFeed = friends chunks (audience in [followers,
+> friends]) and follow-only chunks (audience == followers), **4
+> accounts per query** (rules allow 10 exists() calls per query), and it
+> re-queries when my friends set changes too; Saved = one `get()` per
+> post (a documentId-whereIn query would be refused as soon as one saved
+> post turned private). **ROLLOUT ORDER (important):** rules must be
+> published only AFTER every phone runs an APK with these queries - an
+> older APK asks for all posts and its Home / profiles break
+> (permission-denied). Prod is still on the OLD rules: next = check the 3
+> prod indexes are Enabled -> prod APK -> install on A and B -> then
+> publish the same firestore.rules to aung-1756e. Note: Bunny video URLs
+> are still public to anyone who has the link (signed URLs later)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2454,9 +2487,10 @@ others only see it once encoded (Bunny webhook).
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 
-001. **"Who can watch" audiences (steps A, B1, B2 done 24-25 Oct 2026,
-    see the notes at the top; prod APK still to build - best after C).**
-    Next: **C**, then **D**. (Done, kept for reference: **B** - Home feed / Shorts / full-screen queries stop downloading
+001. **"Who can watch" audiences (steps A, B1, B2, C done 24-25 Oct
+    2026, see the notes at the top).** C's rules are live on fly-dev
+    only - **prod rollout next** (prod indexes Enabled -> prod APK on A
+    and B -> publish rules to aung-1756e). Then **D**. (Done, kept for reference: **B** - Home feed / Shorts / full-screen queries stop downloading
     every post: For You = `where('audience', '==', 'everyone')` +
     `orderBy createdAt` + `limit` (paging), Following = per followed
     account (the backfill so a `==` query matches old posts is DONE,

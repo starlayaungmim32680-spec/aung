@@ -213,7 +213,9 @@ class SearchService {
     final db = FirebaseFirestore.instance;
     final results = await Future.wait([
       _fetchInOrder(db.collection('users'), userIds),
-      _fetchInOrder(db.collection('posts'), postIds),
+      // Only Everyone posts are searchable; the audience constraint also
+      // lets the Firestore rules accept this query (25 Oct 2026, step C).
+      _fetchInOrder(db.collection('posts'), postIds, everyoneOnly: true),
     ]);
 
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
@@ -236,11 +238,15 @@ class SearchService {
   // the same order D1 ranked them. Missing (deleted) docs are skipped.
   static Future<List<DocumentSnapshot<Map<String, dynamic>>>> _fetchInOrder(
     CollectionReference<Map<String, dynamic>> col,
-    List<String> ids,
-  ) async {
+    List<String> ids, {
+    bool everyoneOnly = false,
+  }) async {
     if (ids.isEmpty) return const [];
     final List<String> wanted = ids.take(30).toList();
-    final snap = await col.where(FieldPath.documentId, whereIn: wanted).get();
+    Query<Map<String, dynamic>> q =
+        col.where(FieldPath.documentId, whereIn: wanted);
+    if (everyoneOnly) q = q.where('audience', isEqualTo: 'everyone');
+    final snap = await q.get();
     final byId = {for (final d in snap.docs) d.id: d};
     return [
       for (final id in wanted)
