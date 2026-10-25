@@ -654,6 +654,16 @@ OK). Play Console: Terms URL =
 > publish the same firestore.rules to aung-1756e. Note: Bunny video URLs
 > are still public to anyone who has the link (signed URLs later)._
 >
+> _25 Oct 2026 (night, confirmed by Ko on prod, phones A and B): **"Who
+> can watch" A + B + C rolled out to prod.** Order followed: the 3 prod
+> composite indexes Enabled -> clean prod APK (string checks OK) on A and
+> B -> tested with the old rules -> **firestore.rules published to
+> aung-1756e** -> tested again (Home, Shorts, profiles, a Friends video
+> visible to the friend, an Only me video hidden, search, saved, chat,
+> stories, notifications). Both projects now run the same rules. Any
+> phone still on an older APK will see an empty Home / profiles until it
+> updates. Next: step D (change who can watch after posting)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2488,9 +2498,8 @@ others only see it once encoded (Bunny webhook).
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 
 001. **"Who can watch" audiences (steps A, B1, B2, C done 24-25 Oct
-    2026, see the notes at the top).** C's rules are live on fly-dev
-    only - **prod rollout next** (prod indexes Enabled -> prod APK on A
-    and B -> publish rules to aung-1756e). Then **D**. (Done, kept for reference: **B** - Home feed / Shorts / full-screen queries stop downloading
+    2026, see the notes at the top; live on dev AND prod since 25 Oct).**
+    Next: **D**. (Done, kept for reference: **B** - Home feed / Shorts / full-screen queries stop downloading
     every post: For You = `where('audience', '==', 'everyone')` +
     `orderBy createdAt` + `limit` (paging), Following = per followed
     account (the backfill so a `==` query matches old posts is DONE,
