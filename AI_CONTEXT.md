@@ -692,6 +692,26 @@ OK). Play Console: Terms URL =
 > (comes with the Report system); a post created AFTER a refusal (hacked
 > app) keeps pointing at a deleted video; sound is not checked._
 >
+> _25 Oct 2026 (late night, confirmed by Ko on dev AND prod with phones A
+> and B - Worker only, no APK, no new variable): **the two Worker security
+> holes are closed.** (1) `POST /token` (`handleTokenRequest(body, env,
+> caller)`): the LiveKit identity is now ALWAYS the caller's verified
+> uid (`participant_name` only becomes the display `name` claim); room
+> `live_{host}` -> the host may publish, everyone else gets a watch-only
+> token (canPublish / canPublishData false); a call room `{uidA}_{uidB}`
+> (sorted, `pairOtherId()`) -> only one of those two, and only while
+> `users/{me}/friends/{other}` exists; any other room name -> 403. Side
+> fix: live viewers used their email prefix as identity (leaked emails,
+> and two viewers with the same prefix kicked each other out). (2)
+> `POST /call-push` (incoming_call / call_cancelled / chat_message): the
+> room / chatId must be a pair that includes the caller, the two must be
+> friends (cancel is allowed after an unfriend so ringing can always be
+> stopped), and `fcmToken` must equal the OTHER person's
+> `users/{other}.fcmToken`; on a call the callerId / name / photo come
+> from the caller's own users doc (body callerId ignored). Tested: video +
+> voice call, cancel before answer, chat push with Fly swiped away, Live
+> host + viewer._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2453,9 +2473,9 @@ others only see it once encoded (Bunny webhook).
   verifies Firebase ID tokens, the app no longer contains
   `kAppSharedSecret`, and the `APP_SHARED_SECRET` Worker secret was
   deleted on 7 Oct 2026, so the old value in git history no longer works.
-  Still open: `/token` lets any signed-in
-  user mint a token for any room name, and `/call-push` doesn't check that
-  `callerId` equals the caller's uid.
+  Fixed 25 Oct 2026: `/token` only for a room the caller belongs in
+  (identity = uid), and `/call-push` only between friends to the other
+  person's own fcmToken (see the note at the top).
 - **Coins are granted client-side** (`gifting.dart`); the rules only cap each
   write at +10. Fine while coins are free, but must move server-side
   (Worker) before coins are ever sold or cashed out.
@@ -2557,8 +2577,8 @@ others only see it once encoded (Bunny webhook).
     note at the top). Still open: re-check story/profile images on the
     Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
     Store blockers first - (1) server-side video re-check DONE, (2) the
-    two Worker security holes (`/token` any room, `/call-push` callerId),
-    (3) Report system + admin page, (4) Google Play Child Safety
+    two Worker security holes (`/token` any room, `/call-push` callerId)
+    DONE 25 Oct, **(3) Report system (next)** + admin page, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
@@ -2592,9 +2612,8 @@ others only see it once encoded (Bunny webhook).
    can chat/call (no "message requests" folder for now); a request is one
    tap, no note; old chats with a non-friend stay readable with an "Add
    friend to keep chatting" banner. Friend request / accept phone
-   notifications are done too (Worker `/friend-push`). Still open: the Worker's
-   `/call-push` and `/chat-push` don't check friendship (the rules already
-   block the call doc / message - cleanup, not urgent); (done 21 Oct 2026: `FriendService.start()` now also starts in
+   notifications are done too (Worker `/friend-push`). (Done 25 Oct 2026: the
+   Worker's `/call-push` - calls and chat pushes - now checks friendship.) (done 21 Oct 2026: `FriendService.start()` now also starts in
    `main_navigation_screen.dart` next to `BlockService.start()`.) (Unread-in-bold, the bottom-bar unread badge
    and delete-account cleanup of friends / requests / search history are
    done, 4 Oct 2026.) Still left behind on delete (needs a server, e.g.

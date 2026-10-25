@@ -11,7 +11,12 @@
 // APP_SHARED_SECRET secret exists (so older app builds keep working
 // during the switch-over); deleting that secret turns it off for good.
 //
-//  POST /token          - mints a LiveKit access token
+//  POST /token          - mints a LiveKit access token. Since 25 Oct 2026
+//                         only for a room the caller belongs in (their own
+//                         live, someone's live as a watch-only viewer, or
+//                         a call with a friend), identity = their uid.
+//                         /call-push likewise only from one of the two
+//                         friends to the OTHER one's own fcmToken.
 //  POST /call-push       - sends an FCM push to wake a phone for an
 //                         incoming call, even if Fly is fully closed.
 //                         With `type: 'call_cancelled'` it instead tells
@@ -330,7 +335,7 @@ export default {
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
     }
-    return handleTokenRequest(body, env);
+    return handleTokenRequest(body, env, caller);
   },
 };
 
@@ -461,13 +466,66 @@ async function verifyFirebaseIdToken(token, env) {
   }
 }
 
-async function handleTokenRequest(body, env) {
-  const roomName = body.room_name;
-  const participantName = body.participant_name;
+// The other person's uid in a 1-on-1 room / chat id "{uidA}_{uidB}"
+// (sorted, as the app builds it) when [uid] is one of the two, else null.
+// "live_{uid}" rooms never count as a pair.
+function pairOtherId(roomName, uid) {
+  const room = String(roomName || '');
+  if (room.startsWith('live_')) return null;
+  const ids = room.split('_');
+  if (ids.length !== 2 || !isSafeUid(ids[0]) || !isSafeUid(ids[1])) return null;
+  if (ids[0] === ids[1] || ids[0] > ids[1]) return null;
+  if (!isSafeUid(uid) || !ids.includes(uid)) return null;
+  return ids[0] === uid ? ids[1] : ids[0];
+}
+
+// 25 Oct 2026 (security): a token is only given for a room the caller
+// belongs in, and always with the caller's own uid as the identity:
+//   - "live_{host}": the host may publish; anyone else joins as a viewer
+//     who can watch only (no camera / mic / data);
+//   - "{uidA}_{uidB}" (a call): only one of those two, and only while
+//     they are friends (users/{me}/friends/{other} exists - the same rule
+//     the app and firestore.rules use for calls).
+// Before this, any signed-in user could get a token for ANY room name
+// (join someone else's call, or publish into someone's live) with any
+// identity. participant_name is now only the display name.
+async function handleTokenRequest(body, env, caller) {
+  const roomName = String(body.room_name || '');
+  const participantName = String(body.participant_name || '');
   if (!roomName || !participantName) {
     return new Response('room_name and participant_name are required', {
       status: 400,
     });
+  }
+  const uid = caller && caller.uid;
+  if (!isSafeUid(uid)) {
+    return new Response('Not allowed', { status: 403 });
+  }
+
+  let canPublish = true;
+  if (roomName.startsWith('live_')) {
+    const host = roomName.slice('live_'.length);
+    if (!isSafeUid(host)) {
+      return new Response('Not allowed for this room', { status: 403 });
+    }
+    canPublish = host === uid;
+  } else {
+    const other = pairOtherId(roomName, uid);
+    if (!other) {
+      return new Response('Not allowed for this room', { status: 403 });
+    }
+    try {
+      const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+      const friend = await firestoreGetFields(
+        env, dbToken, `users/${uid}/friends/${other}`);
+      if (friend === null) {
+        return new Response('Only friends can call', { status: 403 });
+      }
+    } catch (err) {
+      return new Response(`Could not check the call: ${err.message}`, {
+        status: 503,
+      });
+    }
   }
 
   try {
@@ -475,7 +533,9 @@ async function handleTokenRequest(body, env) {
       apiKey: env.LIVEKIT_API_KEY,
       apiSecret: env.LIVEKIT_API_SECRET,
       room: roomName,
-      identity: participantName,
+      identity: uid,
+      name: participantName.slice(0, 80),
+      canPublish,
     });
 
     return new Response(
@@ -1059,6 +1119,48 @@ async function handleCallPush(body, env, caller) {
     });
   }
 
+  // 25 Oct 2026 (security): every type must come from one of the two
+  // people of that chat / call room, the two must be friends (calls and
+  // chat are friends-only, like firestore.rules), and the push may only go
+  // to the OTHER person's own phone (fcmToken must equal theirs). The
+  // caller id, name and photo on a call come from the caller's own
+  // profile - nobody can ring someone "as" another person, or push to a
+  // stranger's phone. callerId in the body is ignored (older app builds
+  // still send it).
+  const pairRoom = type === 'chat_message' ? body.chatId : roomName;
+  const uid = caller && caller.uid;
+  const otherId = pairOtherId(pairRoom, uid);
+  if (!otherId) {
+    return new Response('Not allowed for this room', { status: 403 });
+  }
+  let profileName = '';
+  let profilePhoto = '';
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const [friend, other, me] = await Promise.all([
+      firestoreGetFields(env, dbToken, `users/${uid}/friends/${otherId}`),
+      firestoreGetFields(env, dbToken, `users/${otherId}`),
+      type === 'incoming_call'
+        ? firestoreGetFields(env, dbToken, `users/${uid}`)
+        : Promise.resolve(null),
+    ]);
+    // A cancel is still allowed after an unfriend, so a ringing phone can
+    // always be stopped.
+    if (friend === null && type !== 'call_cancelled') {
+      return new Response('Only friends', { status: 403 });
+    }
+    if (!stringField(other, 'fcmToken') ||
+        stringField(other, 'fcmToken') !== String(fcmToken)) {
+      return new Response('Not that person\'s device', { status: 403 });
+    }
+    profileName = stringField(me, 'displayName').trim();
+    profilePhoto = stringField(me, 'photoUrl');
+  } catch (err) {
+    return new Response(`Could not check the push: ${err.message}`, {
+      status: 503,
+    });
+  }
+
   // A cancel only needs the room name - the phone just stops ringing, so
   // there's nothing to show and no sound to play.
   const data =
@@ -1072,9 +1174,9 @@ async function handleCallPush(body, env, caller) {
       : {
           type,
           roomName: String(roomName),
-          callerId: String(callerId || ''),
-          callerName: String(callerName),
-          callerPhoto: String(callerPhoto || ''),
+          callerId: uid,
+          callerName: (profileName || String(callerName)).slice(0, 80),
+          callerPhoto: (profilePhoto || String(callerPhoto || '')).slice(0, 500),
           isVideo: String(!!isVideo),
         };
   const aps =
@@ -3388,12 +3490,15 @@ async function importPrivateKey(base64Der) {
   );
 }
 
-async function createLiveKitToken({ apiKey, apiSecret, room, identity }) {
+async function createLiveKitToken({
+  apiKey, apiSecret, room, identity, name = '', canPublish = true,
+}) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     iss: apiKey,
     sub: identity,
+    name,
     iat: now,
     nbf: now,
     exp: now + 60 * 60,
@@ -3401,9 +3506,9 @@ async function createLiveKitToken({ apiKey, apiSecret, room, identity }) {
     video: {
       room,
       roomJoin: true,
-      canPublish: true,
+      canPublish,
       canSubscribe: true,
-      canPublishData: true,
+      canPublishData: canPublish,
     },
   };
 
