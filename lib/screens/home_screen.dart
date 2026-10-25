@@ -33,6 +33,7 @@ import 'moderation_service.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'post_audience.dart';
+import 'circle_posts.dart';
 import 'local_video_cache.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
@@ -83,6 +84,11 @@ final ValueNotifier<bool> homeFeedScrollingDown = ValueNotifier<bool>(false);
 // screen to find it themselves.
 final ValueNotifier<int> navigateToHomeSignal = ValueNotifier<int>(0);
 
+// How many Everyone posts / reposts the Home feed loads (25 Oct 2026,
+// "Who can watch" step B2). Before, Home downloaded every post. Paging
+// ("load more" near the end) is a later step.
+const int kHomeFeedLimit = 100;
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -105,6 +111,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // rebuilt this widget (e.g. tapping like).
   late final Stream<QuerySnapshot> _postsStream;
   late final Stream<QuerySnapshot> _repostsStream;
+  // Posts only my circle may see (my own + friends' / followed accounts'
+  // non-public ones) - see circle_posts.dart (25 Oct 2026, step B2).
+  final CirclePostsFeed _circle = CirclePostsFeed();
 
   // "For You" (everything) vs "Following" (only people you follow)
   bool _followingOnly = false;
@@ -127,14 +136,23 @@ class _HomeScreenState extends State<HomeScreen> {
     WakelockPlus.enable();
     homeFeedScrollToTopSignal.addListener(_onScrollToTopSignal);
     BlockService.instance.hidden.addListener(_onBlockedChanged);
+    // 25 Oct 2026 ("Who can watch" step B2): only Everyone posts, newest
+    // kHomeFeedLimit - before, every post in the database was downloaded
+    // on every phone. Needs the composite index posts: audience Asc +
+    // createdAt Desc (AI_CONTEXT). Private posts of my circle come from
+    // _circle instead.
     _postsStream = FirebaseFirestore.instance
         .collection('posts')
+        .where('audience', isEqualTo: 'everyone')
         .orderBy('createdAt', descending: true)
+        .limit(kHomeFeedLimit)
         .snapshots();
     _repostsStream = FirebaseFirestore.instance
         .collection('reposts')
         .orderBy('createdAt', descending: true)
+        .limit(kHomeFeedLimit)
         .snapshots();
+    _circle.start();
 
     // Keep the set of followed accounts up to date so the Following
     // tab reacts immediately when you follow or unfollow someone.
@@ -161,6 +179,7 @@ class _HomeScreenState extends State<HomeScreen> {
     homeFeedScrollToTopSignal.removeListener(_onScrollToTopSignal);
     _followingSub?.cancel();
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    _circle.dispose();
     _pageController.dispose();
     super.dispose();
   }
@@ -226,285 +245,296 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _postsStream,
-        builder: (context, snapshot) {
-          return StreamBuilder<QuerySnapshot>(
-            stream: _repostsStream,
-            builder: (context, repostSnapshot) {
-              // Only show the loader when we genuinely have nothing yet.
-              // Checking connectionState alone would also fire on a
-              // transient re-subscribe and destroy the playing video.
-              if (!snapshot.hasData && !repostSnapshot.hasData) {
-                return const Center(
-                  child: CircularProgressIndicator(color: Colors.redAccent),
-                );
-              }
+      body: ValueListenableBuilder<List<QueryDocumentSnapshot>>(
+        valueListenable: _circle.docs,
+        builder: (context, circleDocs, _) => StreamBuilder<QuerySnapshot>(
+          stream: _postsStream,
+          builder: (context, snapshot) {
+            return StreamBuilder<QuerySnapshot>(
+              stream: _repostsStream,
+              builder: (context, repostSnapshot) {
+                // Only show the loader when we genuinely have nothing yet.
+                // Checking connectionState alone would also fire on a
+                // transient re-subscribe and destroy the playing video.
+                if (!snapshot.hasData && !repostSnapshot.hasData) {
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.redAccent),
+                  );
+                }
 
-              final ownDocs = snapshot.data?.docs ?? [];
-              final repostDocs = repostSnapshot.data?.docs ?? [];
+                // Everyone posts + my circle's private ones, no duplicates.
+                final Map<String, QueryDocumentSnapshot> postsById = {
+                  for (final d in snapshot.data?.docs ?? []) d.id: d,
+                  for (final d in circleDocs) d.id: d,
+                };
+                final ownDocs = postsById.values.toList();
+                final repostDocs = repostSnapshot.data?.docs ?? [];
 
-              // Combine original posts with shared videos (reposts) into
-              // one newest-first feed, so a video someone shares shows up
-              // at home for their followers/friends to see too.
-              final List<_FeedItem> feedItems = [
-                // Posts still being encoded by Bunny are only shown to
-                // their uploader (who plays them from the local file).
-                ...ownDocs
-                    .where((d) => isVideoVisibleTo(
-                        d.data() as Map<String, dynamic>,
-                        FirebaseAuth.instance.currentUser?.uid))
-                    .map((d) => _FeedItem.post(d)),
-                ...repostDocs.map((d) => _FeedItem.repost(d)),
-              ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+                // Combine original posts with shared videos (reposts) into
+                // one newest-first feed, so a video someone shares shows up
+                // at home for their followers/friends to see too.
+                final List<_FeedItem> feedItems = [
+                  // Posts still being encoded by Bunny are only shown to
+                  // their uploader (who plays them from the local file).
+                  ...ownDocs
+                      .where((d) => isVideoVisibleTo(
+                          d.data() as Map<String, dynamic>,
+                          FirebaseAuth.instance.currentUser?.uid))
+                      .map((d) => _FeedItem.post(d)),
+                  ...repostDocs.map((d) => _FeedItem.repost(d)),
+                ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-              // Never show posts/reposts from accounts you've blocked,
-              // regardless of which tab is active.
-              final List<_FeedItem> unblockedItems = _blockedIds.isEmpty
-                  ? feedItems
-                  : feedItems.where((item) {
-                      final String posterId = (item.isRepost
-                              ? item.sharedByUserId
-                              : item.originalUserId) ??
-                          '';
-                      if (_blockedIds.contains(posterId)) return false;
-                      // A repost of a blocked user's original video should
-                      // also be hidden.
-                      if (item.isRepost &&
-                          _blockedIds.contains(item.originalUserId)) {
-                        return false;
-                      }
-                      return true;
-                    }).toList();
+                // Never show posts/reposts from accounts you've blocked,
+                // regardless of which tab is active.
+                final List<_FeedItem> unblockedItems = _blockedIds.isEmpty
+                    ? feedItems
+                    : feedItems.where((item) {
+                        final String posterId = (item.isRepost
+                                ? item.sharedByUserId
+                                : item.originalUserId) ??
+                            '';
+                        if (_blockedIds.contains(posterId)) return false;
+                        // A repost of a blocked user's original video should
+                        // also be hidden.
+                        if (item.isRepost &&
+                            _blockedIds.contains(item.originalUserId)) {
+                          return false;
+                        }
+                        return true;
+                      }).toList();
 
-              // On the Following tab, keep only videos from accounts you
-              // follow - either the original poster, or whoever shared it.
-              final List<_FeedItem> visibleItems = _followingOnly
-                  ? unblockedItems.where((item) {
-                      if (item.isRepost) {
-                        return _followingIds.contains(item.sharedByUserId);
-                      }
-                      return _followingIds.contains(item.originalUserId);
-                    }).toList()
-                  : unblockedItems;
+                // On the Following tab, keep only videos from accounts you
+                // follow - either the original poster, or whoever shared it.
+                final List<_FeedItem> visibleItems = _followingOnly
+                    ? unblockedItems.where((item) {
+                        if (item.isRepost) {
+                          return _followingIds.contains(item.sharedByUserId);
+                        }
+                        return _followingIds.contains(item.originalUserId);
+                      }).toList()
+                    : unblockedItems;
 
-              // Every 5 real videos swiped, insert a YouTube-style "Shorts
-              // shelf" page: a horizontal strip previewing a few of the
-              // upcoming shorts, so the user can jump straight to one
-              // instead of swiping through everything in between.
-              final _FeedSlots slots = _FeedSlots(visibleItems);
+                // Every 5 real videos swiped, insert a YouTube-style "Shorts
+                // shelf" page: a horizontal strip previewing a few of the
+                // upcoming shorts, so the user can jump straight to one
+                // instead of swiping through everything in between.
+                final _FeedSlots slots = _FeedSlots(visibleItems);
 
-              // Get a head start on the next two videos so even several
-              // fast swipes in a row (before onPageChanged has caught up)
-              // stay smooth, matching TikTok/Facebook's feel, instead of
-              // just the very first swipe.
-              if (visibleItems.length > 1) {
-                VideoPreloadCache.preload(visibleItems[1].videoUrl);
-              }
-              if (visibleItems.length > 2) {
-                VideoPreloadCache.preload(visibleItems[2].videoUrl);
-              }
+                // Get a head start on the next two videos so even several
+                // fast swipes in a row (before onPageChanged has caught up)
+                // stay smooth, matching TikTok/Facebook's feel, instead of
+                // just the very first swipe.
+                if (visibleItems.length > 1) {
+                  VideoPreloadCache.preload(visibleItems[1].videoUrl);
+                }
+                if (visibleItems.length > 2) {
+                  VideoPreloadCache.preload(visibleItems[2].videoUrl);
+                }
 
-              if (feedItems.isEmpty) {
-                return const Center(
-                  child: Text(
-                    'No posts yet. Be the first to upload!',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                );
-              }
+                if (feedItems.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No posts yet. Be the first to upload!',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  );
+                }
 
-              // Header (search bar/tabs/bell/stories/live) gets its own
-              // fixed area at the top, and the video feed gets the rest -
-              // Column, not a Stack overlay, so the two never overlap:
-              // Stories/search always have their own space, and the video
-              // never renders underneath them.
-              return Column(
-                children: [
-                  SafeArea(
-                    bottom: false,
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _feedTab('Following', true),
-                                    const SizedBox(width: 10),
-                                    Container(
-                                      width: 1,
-                                      height: 14,
-                                      color: Colors.white24,
+                // Header (search bar/tabs/bell/stories/live) gets its own
+                // fixed area at the top, and the video feed gets the rest -
+                // Column, not a Stack overlay, so the two never overlap:
+                // Stories/search always have their own space, and the video
+                // never renders underneath them.
+                return Column(
+                  children: [
+                    SafeArea(
+                      bottom: false,
+                      child: Column(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Center(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _feedTab('Following', true),
+                                      const SizedBox(width: 10),
+                                      Container(
+                                        width: 1,
+                                        height: 14,
+                                        color: Colors.white24,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      _feedTab('For You', false),
+                                    ],
+                                  ),
+                                ),
+                                Positioned(
+                                  left: 12,
+                                  top: 0,
+                                  child: GestureDetector(
+                                    onTap: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const SearchScreen(),
+                                      ),
                                     ),
-                                    const SizedBox(width: 10),
-                                    _feedTab('For You', false),
-                                  ],
+                                    child: const Icon(Icons.search,
+                                        color: Colors.white, size: 26),
+                                  ),
+                                ),
+                                Positioned(
+                                  right: 12,
+                                  top: 0,
+                                  child: _NotificationBell(),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const StoriesBar(),
+                          const LiveBadgeBar(),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: visibleItems.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(32),
+                                child: Text(
+                                  'Nothing here yet.\n'
+                                  'Follow some accounts and their videos '
+                                  'will show up here.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey),
                                 ),
                               ),
-                              Positioned(
-                                left: 12,
-                                top: 0,
-                                child: GestureDetector(
-                                  onTap: () => Navigator.push(
+                            )
+                          : PageView.builder(
+                              controller: _pageController,
+                              scrollDirection: Axis.vertical,
+                              itemCount: slots.length,
+                              onPageChanged: (index) {
+                                // Track whether the feed is scrolled to its
+                                // very first video, for the Back-button
+                                // scroll-to-top behavior in
+                                // MainNavigationScreen.
+                                homeFeedAtTop.value = index == 0;
+                                // Hide MainNavigationScreen's bottom bar
+                                // while swiping down to later videos, bring
+                                // it back the moment the swipe direction
+                                // reverses - Facebook-style.
+                                if (index > _lastPageIndex) {
+                                  homeFeedScrollingDown.value = true;
+                                } else if (index < _lastPageIndex) {
+                                  homeFeedScrollingDown.value = false;
+                                }
+                                _lastPageIndex = index;
+                                // Preloading only makes sense for actual
+                                // videos - a shelf slot has no single video
+                                // of its own.
+                                final _FeedItem? current = slots.itemAt(index);
+                                if (current == null) return;
+                                final Set<String> keep = {current.videoUrl};
+                                final _FeedItem? next = slots.itemAt(index + 1);
+                                if (next != null) {
+                                  keep.add(next.videoUrl);
+                                  VideoPreloadCache.preload(next.videoUrl);
+                                }
+                                // Also start the one after that - by the time
+                                // the person lands on `next`, this one is
+                                // already partway loaded too, so back-to-back
+                                // fast swipes don't hit a spinner.
+                                final _FeedItem? nextNext =
+                                    slots.itemAt(index + 2);
+                                if (nextNext != null) {
+                                  keep.add(nextNext.videoUrl);
+                                  VideoPreloadCache.preload(nextNext.videoUrl);
+                                }
+                                final _FeedItem? prev = slots.itemAt(index - 1);
+                                if (prev != null) {
+                                  keep.add(prev.videoUrl);
+                                  VideoPreloadCache.preload(prev.videoUrl);
+                                }
+                                VideoPreloadCache.evictExcept(keep);
+                              },
+                              itemBuilder: (context, index) {
+                                final List<int>? shelfRealIndices =
+                                    slots.shelfAt(index);
+                                if (shelfRealIndices != null) {
+                                  return _ShortsShelfPage(
+                                    entries: shelfRealIndices
+                                        .map(
+                                            (i) => MapEntry(i, visibleItems[i]))
+                                        .toList(),
+                                    onTapItem: (realIndex) {
+                                      _pageController.animateToPage(
+                                        slots.displayIndexForReal(realIndex),
+                                        duration:
+                                            const Duration(milliseconds: 300),
+                                        curve: Curves.easeInOut,
+                                      );
+                                    },
+                                  );
+                                }
+
+                                final item = slots.itemAt(index)!;
+
+                                // key includes the doc id (post id for own
+                                // posts, repost id for reposts) so Flutter
+                                // doesn't reuse a _VideoPostItem's State for
+                                // a different feed entry, even when the same
+                                // video appears twice (once as someone's
+                                // original post, once as a repost).
+                                return _VideoPostItem(
+                                  key: ValueKey(item.feedKey),
+                                  postId: item.postId,
+                                  userId: item.originalUserId,
+                                  videoUrl: item.videoUrl,
+                                  caption: item.caption,
+                                  userEmail: item.userEmail,
+                                  reactions: item.reactions,
+                                  videoType: item.videoType,
+                                  onVideoEnd: () =>
+                                      _goToNextVideo(slots.length),
+                                  repostNote: item.isRepost ? item.note : null,
+                                  repostByName:
+                                      item.isRepost ? item.sharedByName : null,
+                                  repostByUserId: item.isRepost
+                                      ? item.sharedByUserId
+                                      : null,
+                                  repostByPhoto:
+                                      item.isRepost ? item.sharedByPhoto : null,
+                                  videoSpeed: item.videoSpeed,
+                                  filterType: item.filterType,
+                                  blurBackground: item.blurBackground,
+                                  textOverlays: item.textOverlays,
+                                  effectsBaked: item.effectsBaked,
+                                  // Tapping opens the same video full-screen,
+                                  // starting right on this item.
+                                  onTapToExpand: () => Navigator.push(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (_) => const SearchScreen(),
+                                      builder: (_) => FullScreenVideoScreen(
+                                        items: visibleItems,
+                                        initialIndex:
+                                            slots.realIndexAt(index) ?? 0,
+                                      ),
                                     ),
                                   ),
-                                  child: const Icon(Icons.search,
-                                      color: Colors.white, size: 26),
-                                ),
-                              ),
-                              Positioned(
-                                right: 12,
-                                top: 0,
-                                child: _NotificationBell(),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const StoriesBar(),
-                        const LiveBadgeBar(),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: visibleItems.isEmpty
-                        ? const Center(
-                            child: Padding(
-                              padding: EdgeInsets.all(32),
-                              child: Text(
-                                'Nothing here yet.\n'
-                                'Follow some accounts and their videos '
-                                'will show up here.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ),
-                          )
-                        : PageView.builder(
-                            controller: _pageController,
-                            scrollDirection: Axis.vertical,
-                            itemCount: slots.length,
-                            onPageChanged: (index) {
-                              // Track whether the feed is scrolled to its
-                              // very first video, for the Back-button
-                              // scroll-to-top behavior in
-                              // MainNavigationScreen.
-                              homeFeedAtTop.value = index == 0;
-                              // Hide MainNavigationScreen's bottom bar
-                              // while swiping down to later videos, bring
-                              // it back the moment the swipe direction
-                              // reverses - Facebook-style.
-                              if (index > _lastPageIndex) {
-                                homeFeedScrollingDown.value = true;
-                              } else if (index < _lastPageIndex) {
-                                homeFeedScrollingDown.value = false;
-                              }
-                              _lastPageIndex = index;
-                              // Preloading only makes sense for actual
-                              // videos - a shelf slot has no single video
-                              // of its own.
-                              final _FeedItem? current = slots.itemAt(index);
-                              if (current == null) return;
-                              final Set<String> keep = {current.videoUrl};
-                              final _FeedItem? next = slots.itemAt(index + 1);
-                              if (next != null) {
-                                keep.add(next.videoUrl);
-                                VideoPreloadCache.preload(next.videoUrl);
-                              }
-                              // Also start the one after that - by the time
-                              // the person lands on `next`, this one is
-                              // already partway loaded too, so back-to-back
-                              // fast swipes don't hit a spinner.
-                              final _FeedItem? nextNext =
-                                  slots.itemAt(index + 2);
-                              if (nextNext != null) {
-                                keep.add(nextNext.videoUrl);
-                                VideoPreloadCache.preload(nextNext.videoUrl);
-                              }
-                              final _FeedItem? prev = slots.itemAt(index - 1);
-                              if (prev != null) {
-                                keep.add(prev.videoUrl);
-                                VideoPreloadCache.preload(prev.videoUrl);
-                              }
-                              VideoPreloadCache.evictExcept(keep);
-                            },
-                            itemBuilder: (context, index) {
-                              final List<int>? shelfRealIndices =
-                                  slots.shelfAt(index);
-                              if (shelfRealIndices != null) {
-                                return _ShortsShelfPage(
-                                  entries: shelfRealIndices
-                                      .map((i) => MapEntry(i, visibleItems[i]))
-                                      .toList(),
-                                  onTapItem: (realIndex) {
-                                    _pageController.animateToPage(
-                                      slots.displayIndexForReal(realIndex),
-                                      duration:
-                                          const Duration(milliseconds: 300),
-                                      curve: Curves.easeInOut,
-                                    );
-                                  },
                                 );
-                              }
-
-                              final item = slots.itemAt(index)!;
-
-                              // key includes the doc id (post id for own
-                              // posts, repost id for reposts) so Flutter
-                              // doesn't reuse a _VideoPostItem's State for
-                              // a different feed entry, even when the same
-                              // video appears twice (once as someone's
-                              // original post, once as a repost).
-                              return _VideoPostItem(
-                                key: ValueKey(item.feedKey),
-                                postId: item.postId,
-                                userId: item.originalUserId,
-                                videoUrl: item.videoUrl,
-                                caption: item.caption,
-                                userEmail: item.userEmail,
-                                reactions: item.reactions,
-                                videoType: item.videoType,
-                                onVideoEnd: () => _goToNextVideo(slots.length),
-                                repostNote: item.isRepost ? item.note : null,
-                                repostByName:
-                                    item.isRepost ? item.sharedByName : null,
-                                repostByUserId:
-                                    item.isRepost ? item.sharedByUserId : null,
-                                repostByPhoto:
-                                    item.isRepost ? item.sharedByPhoto : null,
-                                videoSpeed: item.videoSpeed,
-                                filterType: item.filterType,
-                                blurBackground: item.blurBackground,
-                                textOverlays: item.textOverlays,
-                                effectsBaked: item.effectsBaked,
-                                // Tapping opens the same video full-screen,
-                                // starting right on this item.
-                                onTapToExpand: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => FullScreenVideoScreen(
-                                      items: visibleItems,
-                                      initialIndex:
-                                          slots.realIndexAt(index) ?? 0,
-                                    ),
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              );
-            },
-          );
-        },
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }

@@ -162,15 +162,21 @@ class _ShortsScreenState extends State<ShortsScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    // 25 Oct 2026 ("Who can watch" step B2): Shorts is a discovery feed -
+    // Everyone posts only, newest kHomeFeedLimit. Needs the composite index
+    // posts: videoType Asc + audience Asc + createdAt Desc.
     _shortPostsStream = FirebaseFirestore.instance
         .collection('posts')
         .where('videoType', isEqualTo: 'short')
+        .where('audience', isEqualTo: 'everyone')
         .orderBy('createdAt', descending: true)
+        .limit(kHomeFeedLimit)
         .snapshots();
     _shortRepostsStream = FirebaseFirestore.instance
         .collection('reposts')
         .where('videoType', isEqualTo: 'short')
         .orderBy('createdAt', descending: true)
+        .limit(kHomeFeedLimit)
         .snapshots();
     BlockService.instance.hidden.addListener(_onBlockedChanged);
   }
@@ -1023,9 +1029,14 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    // 25 Oct 2026 (step B2): Everyone posts only (same query + index as
+    // Home's For You). A tapped friends-only video isn't in this list, so
+    // it falls back to the single-video view below.
     _postsStream = FirebaseFirestore.instance
         .collection('posts')
+        .where('audience', isEqualTo: 'everyone')
         .orderBy('createdAt', descending: true)
+        .limit(kHomeFeedLimit)
         .snapshots();
   }
 

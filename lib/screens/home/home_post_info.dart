@@ -191,7 +191,11 @@ class HashtagScreen extends StatelessWidget {
         stream: FirebaseFirestore.instance
             .collection('posts')
             .where('hashtags', arrayContains: tag)
+            // 25 Oct 2026 (step B2): Everyone posts only. Index: posts
+            // hashtags Arrays + audience Asc + createdAt Desc.
+            .where('audience', isEqualTo: 'everyone')
             .orderBy('createdAt', descending: true)
+            .limit(kHomeFeedLimit)
             .snapshots(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {

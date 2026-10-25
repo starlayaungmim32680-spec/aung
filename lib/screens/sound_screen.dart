@@ -179,6 +179,8 @@ class _SoundScreenState extends State<SoundScreen> {
             stream: FirebaseFirestore.instance
                 .collection('posts')
                 .where('soundId', isEqualTo: widget.soundId)
+                // 25 Oct 2026 (step B2): Everyone posts only.
+                .where('audience', isEqualTo: 'everyone')
                 .snapshots(),
             builder: (context, postSnap) {
               // A sound page is public: only Everyone videos (24 Oct 2026,

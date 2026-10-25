@@ -593,6 +593,34 @@ OK). Play Console: Terms URL =
 > back from Cloudflare); it is only used by the two backfill pages. Next:
 > step B2 (queries)._
 >
+> _25 Oct 2026 (afternoon, confirmed by Ko on Fly Dev, phones A and B):
+> **"Who can watch" step B2 - feeds no longer download every post.**
+> Home For You = `where('audience', '==', 'everyone')` + `orderBy
+> createdAt desc` + `limit(kHomeFeedLimit)` (100, const in
+> home_screen.dart; reposts limited too). NEW
+> **`lib/screens/circle_posts.dart`** (`CirclePostsFeed`, owned by
+> HomeScreen): my own posts (`userId == me`, any audience) + non-public
+> posts of friends / followed accounts (`userId in [10]` AND `audience in
+> [followers, friends]`, rebuilt only when FriendService /
+> FollowingService change; no orderBy -> no index); Home merges both
+> (dedupe by id, `ValueListenableBuilder` on `_circle.docs`) and still
+> filters with `isVideoVisibleTo`. Shorts (`videoType == short` +
+> audience everyone + limit), FullScreenVideoScreen (same as For You; a
+> tapped friends-only video falls back to the single-video view),
+> hashtag page (+ audience + limit) and sound page (+ audience) ask for
+> Everyone posts only. Profile grids / UserVideoFeedScreen still read
+> `userId == X` (all of that person's posts, filtered on the phone) -
+> step C must change them. **Composite indexes (posts, scope Collection)
+> created in BOTH projects:** `audience Asc, createdAt Desc`;
+> `videoType Asc, audience Asc, createdAt Desc`; `hashtags Arrays,
+> audience Asc, createdAt Desc`. Lesson: a leading space in the
+> Collection ID created an index on "%20posts" (useless - deleted) and a
+> leading space in a field path is refused - type names without spaces.
+> Known limit: Following shows followed people's Everyone posts only from
+> the newest 100 overall (paging / per-account query later). No Worker /
+> rules change. Prod APK not built yet - check all 3 prod indexes say
+> Enabled first, or Home shows only a spinner._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -1863,6 +1891,9 @@ position)` — Android drops the video surface in the background and a
   `PostAudience` enum, `audienceOf`, `canSeeAudience`, the picker sheet /
   tile and `AudienceBadge`. `isVideoVisibleTo` (video_upload_service
   .dart) calls `canSeeAudience`.
+- `screens/circle_posts.dart` **(25 Oct 2026)** — `CirclePostsFeed`: the
+  Home feed's "my circle" posts (mine + friends'/followed accounts'
+  non-public ones), merged with the Everyone query in home_screen.dart.
 - `following_service.dart` (lib/, **24 Oct 2026**) — `FollowingService`:
   who I follow, app-wide (like FriendService).
 - `screens/moderation_service.dart` **(21-22 Oct 2026)** —
@@ -2423,15 +2454,15 @@ others only see it once encoded (Bunny webhook).
     on weak phones, look at the moov atom / `faststart`. (Background
     posting with the "Posting... %" pill: done 18 Oct 2026.)
 
-001. **"Who can watch" audiences (step A done 24-25 Oct 2026, see the
-    note at the top; prod APK still to build).** Next, in order:
-    **B** - Home feed / Shorts / full-screen queries stop downloading
+001. **"Who can watch" audiences (steps A, B1, B2 done 24-25 Oct 2026,
+    see the notes at the top; prod APK still to build - best after C).**
+    Next: **C**, then **D**. (Done, kept for reference: **B** - Home feed / Shorts / full-screen queries stop downloading
     every post: For You = `where('audience', '==', 'everyone')` +
     `orderBy createdAt` + `limit` (paging), Following = per followed
     account (the backfill so a `==` query matches old posts is DONE,
     B1, 25 Oct); composite indexes
     (audience+createdAt, videoType+audience+createdAt, hashtags+audience
-    +createdAt, soundId+audience, userId+audience) from the error links.
+    +createdAt, soundId+audience, userId+audience) from the error links.)
     **C** - firestore.rules: posts `get`/`list` only if audience ==
     everyone, or owner, or (friends: users/{owner}/friends/{me} exists),
     or (followers: followers/{me} or friends/{me} exists); every query
