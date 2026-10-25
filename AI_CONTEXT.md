@@ -664,6 +664,34 @@ OK). Play Console: Terms URL =
 > phone still on an older APK will see an empty Home / profiles until it
 > updates. Next: step D (change who can watch after posting)._
 >
+> _25 Oct 2026 (late night, confirmed by Ko on dev AND prod - Worker only,
+> no APK): **server-side video re-check (hack-proof moderation).** When
+> Bunny's webhook says encoding FINISHED (status 3), the Worker
+> (`modCheckBunnyVideo`) sends Bunny's own pictures of the video to
+> OpenAI - the "seek" sprite sheets (`{guid}/seek/_0.jpg`, `_1.jpg`...,
+> 6x6 grids, one frame every 2 s, ~72 s per sheet, max 8 sheets spread over
+> long videos) + `thumbnail.jpg` - as https URLs (OpenAI downloads them; no
+> base64 in the Worker). Same thresholds as `/moderate-image`. If refused:
+> the post / story doc is DELETED, the Bunny video is deleted, the D1
+> Search row is deleted, `videoStatus/{guid}` gets `blocked: true,
+> blockReason`, and the case is logged in **`moderationActions/{guid}`**
+> (kind, reason, userId, removed, createdAt; no rule = clients can't read
+> or write it - for the future admin page). If the check can't run,
+> nothing is removed (the phone already checked) and `videoStatus` gets
+> `modChecked: false`. New plain Text variable on BOTH Workers:
+> **`BUNNY_CDN_HOSTNAME`** (prod `vz-a6ab9346-730.b-cdn.net`, dev
+> `vz-6cc91834-d0e.b-cdn.net`; without it the re-check is skipped). Test
+> page: `GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=<Bunny
+> video ID>` shows the scores and removes nothing; `&remove=1` runs the
+> REAL removal on that video (tested on dev with a harmless video: gone
+> from the app and Bunny; never use it on prod user videos). Prod test: a
+> normal video passed (sexual 0%, violence 64% / 52% - under 85%). Known
+> gaps: the video is visible for a few seconds between "playable" (status
+> 4) and the check (status 3); sprite cells are small (300 px), so the
+> phone check stays the main one; the owner gets no notification yet
+> (comes with the Report system); a post created AFTER a refusal (hacked
+> app) keeps pointing at a deleted video; sound is not checked._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -825,7 +853,9 @@ null)` in dev), Worker `https://fly-dev-worker.chakaboycom.workers.dev`
     BUNNY_API_KEY (dev library), BUNNY_STORAGE_ZONE=
     `fly-images-aungdev756617` + BUNNY_STORAGE_PASSWORD (shared with prod - if it is ever rotated, update BOTH Workers), BUNNY_WEBHOOK_TOKEN,
     SEARCH_ADMIN_TOKEN (random, PowerShell), OPENAI_API_KEY (21 Oct 2026,
-    same key as prod - text moderation). No APP_SHARED_SECRET. D1
+    same key as prod - text moderation), BUNNY_CDN_HOSTNAME=
+    `vz-6cc91834-d0e.b-cdn.net` (plain Text, 25 Oct 2026 - server-side
+    video re-check; prod has `vz-a6ab9346-730.b-cdn.net`). No APP_SHARED_SECRET. D1
     `fly-search-dev` bound as SEARCH_DB (tables auto-created). Bunny
     Stream library `fly-dev` (771031, CDN `vz-6cc91834-d0e.b-cdn.net`,
     "Block direct url file access" OFF, no premium encoding) with Webhook
@@ -2523,11 +2553,15 @@ others only see it once encoded (Bunny webhook).
     22 Oct (pictures checked before upload, Render removed - see the note
     at the top; prod done 23 Oct). Also still to do: shut down the
     fly-moderation service in the Render dashboard (nothing calls it).
-    **Next:** server-side re-check
-    (hack-proof): when Bunny's webhook says a video is ready, the Worker
-    checks its thumbnail(s) with OpenAI and hides the post/story if
-    refused; maybe also re-check story/profile images on the Worker's
-    `/upload-image`. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
+    Server-side video re-check: **done 25 Oct 2026** (dev + prod, see the
+    note at the top). Still open: re-check story/profile images on the
+    Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
+    Store blockers first - (1) server-side video re-check DONE, (2) the
+    two Worker security holes (`/token` any room, `/call-push` callerId),
+    (3) Report system + admin page, (4) Google Play Child Safety
+    Standards (CSAE page, in-app report, contact), (5) delete-account
+    leftovers (Bunny files), (6) force-update check. "Who can watch" D
+    and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
     story videos + story text. **Many languages (Ko's question, 21 Oct):**
     plan = layers - Worker word lists (Burmese + English now; more from
     LDNOOBW, CC BY 4.0, 27 languages, no Burmese - keep the attribution

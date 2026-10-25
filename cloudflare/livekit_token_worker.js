@@ -156,6 +156,15 @@
 //                         Authenticated with ?token=BUNNY_WEBHOOK_TOKEN
 //                         in the webhook URL (Bunny can't send a
 //                         Firebase token).
+//                         25 Oct 2026: when encoding FINISHES (status 3)
+//                         it also re-checks the video's pictures with
+//                         OpenAI and removes a refused post / story (see
+//                         modCheckBunnyVideo) - hack-proof moderation.
+//  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
+//                         that re-check's scores for one video; removes
+//                         nothing. With &remove=1 it runs the real
+//                         removal on that video (to test it with a
+//                         harmless video).
 //
 // SETUP: same secrets as before - LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
 // LIVEKIT_URL, APP_SHARED_SECRET (legacy - delete once every phone runs
@@ -179,6 +188,13 @@
 //   BUNNY_WEBHOOK_TOKEN     - any long random string; the same value goes
 //                             at the end of the Webhook URL set in Bunny
 //                             (.../bunny-webhook?token=THAT_VALUE).
+// and one for the server-side video re-check (25 Oct 2026, a plain Text
+// variable - not secret):
+//   BUNNY_CDN_HOSTNAME      - the Stream library's CDN host, the same as
+//                             bunnyStreamCdnHost in lib/app_config.dart:
+//                             prod vz-a6ab9346-730.b-cdn.net,
+//                             dev  vz-6cc91834-d0e.b-cdn.net.
+//                             Without it the re-check is skipped.
 
 // Cloudflare's request-body limit on the free Workers plan is 100 MB.
 const MAX_VIDEO_UPLOAD_BYTES = 95 * 1024 * 1024;
@@ -241,6 +257,9 @@ export default {
     }
     if (request.method === 'GET' && url.pathname === '/posts-audience-backfill') {
       return handlePostsAudienceBackfill(env, url);
+    }
+    if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
+      return handleModerationVideoTest(env, url);
     }
 
     if (request.method !== 'POST') {
@@ -640,6 +659,33 @@ async function handleBunnyWebhook(request, env, url) {
 
   try {
     const accessToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+
+    // 25 Oct 2026: server-side re-check once encoding has FINISHED (all of
+    // Bunny's pictures exist then) - see modCheckBunnyVideo.
+    if (status === 3) {
+      let check = { reason: null, checked: false };
+      try {
+        check = await modCheckBunnyVideo(env, videoGuid);
+      } catch (err) {
+        console.log('video re-check failed', videoGuid, err.message);
+      }
+      if (check.reason) {
+        await firestorePatch(env, accessToken, `videoStatus/${videoGuid}`, {
+          ready: false,
+          failed: true,
+          status,
+          blocked: true,
+          blockReason: check.reason,
+          modChecked: true,
+          updatedAt: new Date(),
+        });
+        await modRemoveBunnyVideo(env, accessToken, videoGuid, check.reason);
+        return new Response('OK: removed by moderation', { status: 200 });
+      }
+      await firestorePatch(env, accessToken, `videoStatus/${videoGuid}`, {
+        modChecked: check.checked,
+      });
+    }
 
     await firestorePatch(env, accessToken, `videoStatus/${videoGuid}`, {
       ready,
@@ -3020,11 +3066,12 @@ function modImageMime(b64) {
   return null;
 }
 
-// 'nudity' | 'violence' | 'self_harm' = blocked, null = fine,
-// undefined = no answer (error / timeout / rate limit).
-async function modImageVerdict(b64, env) {
-  const mime = modImageMime(b64);
-  if (!mime) return undefined;
+// OpenAI's raw answer for one image ({categories, category_scores}), or
+// undefined = no answer (error / timeout / rate limit / image not
+// reachable). [imageUrl] is a data: URL (pictures sent by the phone) or
+// an https URL OpenAI downloads itself (Bunny frames, see
+// modCheckBunnyVideo - no base64 work in the Worker).
+async function modImageResult(imageUrl, env) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MOD_IMG_TIMEOUT_MS);
   try {
@@ -3036,10 +3083,7 @@ async function modImageVerdict(b64, env) {
       },
       body: JSON.stringify({
         model: MOD_AI_MODEL,
-        input: [{
-          type: 'image_url',
-          image_url: { url: `data:${mime};base64,${b64}` },
-        }],
+        input: [{ type: 'image_url', image_url: { url: imageUrl } }],
       }),
       signal: controller.signal,
     });
@@ -3049,24 +3093,203 @@ async function modImageVerdict(b64, env) {
       return undefined;
     }
     const data = await res.json();
-    const result = data?.results?.[0];
-    if (!result) return undefined;
-    const f = result.categories || {};
-    const sc = result.category_scores || {};
-    if (f.sexual === true || (sc.sexual || 0) >= MOD_IMG_SEXUAL_SCORE) {
-      return 'nudity';
-    }
-    if (f['self-harm'] === true || f['self-harm/intent'] === true ||
-        f['self-harm/instructions'] === true) return 'self_harm';
-    if (f['violence/graphic'] === true ||
-        (sc.violence || 0) >= MOD_IMG_VIOLENCE_SCORE) return 'violence';
-    return null;
+    return data?.results?.[0] || undefined;
   } catch (err) {
     console.log('moderate-image: OpenAI error', err.name, err.message);
     return undefined;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// 'nudity' | 'violence' | 'self_harm' = blocked, null = fine,
+// undefined = no answer.
+function modImageVerdictOf(result) {
+  if (!result) return undefined;
+  const f = result.categories || {};
+  const sc = result.category_scores || {};
+  if (f.sexual === true || (sc.sexual || 0) >= MOD_IMG_SEXUAL_SCORE) {
+    return 'nudity';
+  }
+  if (f['self-harm'] === true || f['self-harm/intent'] === true ||
+      f['self-harm/instructions'] === true) return 'self_harm';
+  if (f['violence/graphic'] === true ||
+      (sc.violence || 0) >= MOD_IMG_VIOLENCE_SCORE) return 'violence';
+  return null;
+}
+
+async function modImageVerdict(b64, env) {
+  const mime = modImageMime(b64);
+  if (!mime) return undefined;
+  return modImageVerdictOf(
+    await modImageResult(`data:${mime};base64,${b64}`, env));
+}
+
+// ---- Server-side video re-check (25 Oct 2026) ----
+// The phone checks a video's frames BEFORE uploading (checkVideo in
+// moderation_service.dart), but a modified app could skip that. So when
+// Bunny says a video has FINISHED encoding (webhook status 3), the Worker
+// checks it again from Bunny's own pictures of it:
+//   - the "seek" sprite sheets Bunny makes for the player's scrub bar
+//     (seek/_0.jpg, _1.jpg... each a 6x6 grid of frames, one frame every
+//     2 s - every 1 s under 10 s - so one sheet covers ~72 s), and
+//   - the cover thumbnail.
+// OpenAI downloads them straight from the Bunny CDN (BUNNY_CDN_HOSTNAME).
+// If any picture is refused, the post / story is DELETED, the Bunny video
+// is deleted, it leaves Search, and the case is logged in
+// moderationActions/{videoGuid} (no client can read or write it). If the
+// check can't run (OpenAI down, images not reachable) nothing is removed -
+// the phone already checked it; videoStatus gets modChecked: false.
+// Test it without removing anything: GET /moderation-video-test.
+const MOD_VIDEO_MAX_SHEETS = 8;
+
+// Image URLs to check for one Bunny video, or null if Bunny can't say.
+async function modBunnyVideoImageUrls(env, videoGuid) {
+  const res = await fetch(
+    `https://video.bunnycdn.com/library/${env.BUNNY_LIBRARY_ID}/videos/${videoGuid}`,
+    { headers: { AccessKey: env.BUNNY_API_KEY, Accept: 'application/json' } },
+  );
+  if (!res.ok) return null;
+  const video = await res.json();
+  const seconds = Math.max(1, Number(video.length) || 1);
+  const step = seconds < 10 ? 1 : 2;
+  const sheets = Math.max(1, Math.ceil(seconds / step / 36));
+  // Long videos: spread MOD_VIDEO_MAX_SHEETS sheets evenly over them.
+  const picked = new Set();
+  const n = Math.min(sheets, MOD_VIDEO_MAX_SHEETS);
+  for (let i = 0; i < n; i++) {
+    picked.add(n === 1 ? 0 : Math.round((i * (sheets - 1)) / (n - 1)));
+  }
+  const base = `https://${env.BUNNY_CDN_HOSTNAME}/${videoGuid}`;
+  const urls = [...picked].sort((a, b) => a - b)
+    .map((i) => `${base}/seek/_${i}.jpg`);
+  urls.push(`${base}/${video.thumbnailFileName || 'thumbnail.jpg'}`);
+  return urls;
+}
+
+// { reason: 'nudity'|'violence'|'self_harm'|null, checked: bool, items }
+async function modCheckBunnyVideo(env, videoGuid) {
+  if (!env.OPENAI_API_KEY || !env.BUNNY_CDN_HOSTNAME) {
+    return { reason: null, checked: false, items: [] };
+  }
+  const urls = await modBunnyVideoImageUrls(env, videoGuid);
+  if (!urls) return { reason: null, checked: false, items: [] };
+  const results = await Promise.all(urls.map((u) => modImageResult(u, env)));
+  const items = urls.map((url, i) => ({
+    url,
+    result: results[i],
+    verdict: modImageVerdictOf(results[i]),
+  }));
+  const blocked = items.find((x) => typeof x.verdict === 'string');
+  return {
+    reason: blocked ? blocked.verdict : null,
+    checked: items.every((x) => x.verdict !== undefined),
+    items,
+  };
+}
+
+// Removes everything that shows a refused video. Best-effort per step.
+async function modRemoveBunnyVideo(env, accessToken, videoGuid, reason) {
+  const removed = [];
+  let ownerId = '';
+  for (const collection of ['posts', 'stories']) {
+    let names = [];
+    try {
+      names = await firestoreFindByField(
+        env, accessToken, collection, 'bunnyVideoId', videoGuid);
+    } catch (_) {}
+    for (const name of names) {
+      try {
+        const doc = await firestoreGetByName(accessToken, name);
+        if (doc && doc.fields && !ownerId) ownerId = fsString(doc.fields, 'userId');
+      } catch (_) {}
+      try {
+        await fetch(`https://firestore.googleapis.com/v1/${name}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        removed.push(`${collection}/${docIdFromName(name)}`);
+      } catch (_) {}
+      if (collection === 'posts' && env.SEARCH_DB) {
+        try {
+          await env.SEARCH_DB.prepare('DELETE FROM posts WHERE post_id = ?1')
+            .bind(docIdFromName(name)).run();
+        } catch (_) {}
+      }
+    }
+  }
+  await deleteBunnyVideo(env, videoGuid);
+  try {
+    await firestorePatch(env, accessToken, `moderationActions/${videoGuid}`, {
+      kind: 'video',
+      source: 'bunny-webhook',
+      reason,
+      videoGuid,
+      userId: ownerId,
+      removed: removed.join(', '),
+      createdAt: new Date(),
+    });
+  } catch (_) {}
+  console.log('video re-check: removed', videoGuid, reason, removed.join(', '));
+}
+
+// GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=<Bunny video ID>
+// Shows what the server-side re-check sees for one video and its scores.
+// Removes NOTHING - only for Ko to check that it works.
+async function handleModerationVideoTest(env, url) {
+  const html = (body) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<body style="font-family:sans-serif;padding:16px;max-width:760px;margin:auto">${body}</body>`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
+  );
+  const token = url.searchParams.get('token');
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return html('<h2>❌ Wrong or missing token.</h2>');
+  }
+  const videoGuid = String(url.searchParams.get('video') || '').trim();
+  if (!/^[0-9a-fA-F-]{36}$/.test(videoGuid)) {
+    return html('<h2>Add &amp;video=VIDEO_ID (the Bunny Stream video ID) to the link.</h2>');
+  }
+  if (!env.BUNNY_CDN_HOSTNAME) {
+    return html('<h2>❌ BUNNY_CDN_HOSTNAME is not set on this Worker.</h2>');
+  }
+  if (!env.OPENAI_API_KEY) return html('<h2>❌ OPENAI_API_KEY is not set.</h2>');
+  // &remove=1 : runs the REAL removal on this video, as if it had been
+  // refused (deletes its post / story, the Bunny video and the Search row,
+  // logs it with reason 'test'). For testing with a harmless video - no
+  // bad video is ever needed. Cannot be undone.
+  if (url.searchParams.get('remove') === '1') {
+    const accessToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    await firestorePatch(env, accessToken, `videoStatus/${videoGuid}`, {
+      ready: false,
+      failed: true,
+      blocked: true,
+      blockReason: 'test',
+      modChecked: true,
+      updatedAt: new Date(),
+    });
+    await modRemoveBunnyVideo(env, accessToken, videoGuid, 'test');
+    return html(`<h2>🗑️ Removed as a test</h2><p>Project: <b>${env.FIREBASE_PROJECT_ID}</b> · Video: ${videoGuid}</p>` +
+      '<p>Its post / story, the Bunny video and the Search row were deleted, and it was logged in <b>moderationActions</b> (reason: test).</p>');
+  }
+  const r = await modCheckBunnyVideo(env, videoGuid);
+  if (r.items.length === 0) {
+    return html('<h2>❌ Bunny did not return this video (wrong ID, or another library?).</h2>');
+  }
+  const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+  const rows = r.items.map((x) => {
+    const sc = x.result?.category_scores || {};
+    const v = x.verdict === undefined ? '⚠️ no answer'
+      : x.verdict === null ? '✅ ok' : `⛔ ${x.verdict}`;
+    return `<tr><td><a href="${x.url}">${x.url.split('/').slice(-2).join('/')}</a></td>` +
+      `<td>${pct(sc.sexual)}</td><td>${pct(sc.violence)}</td><td>${v}</td></tr>`;
+  }).join('');
+  const head = r.reason ? `<h2>⛔ Would be REMOVED (${r.reason})</h2>`
+    : r.checked ? '<h2>✅ Passes the check</h2>'
+      : '<h2>⚠️ Could not check every picture</h2>';
+  return html(`${head}<p>Project: <b>${env.FIREBASE_PROJECT_ID}</b> · Video: ${videoGuid}</p>` +
+    `<p>Blocks at sexual ≥ ${pct(MOD_IMG_SEXUAL_SCORE)} or violence ≥ ${pct(MOD_IMG_VIOLENCE_SCORE)}. Nothing was removed.</p>` +
+    `<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Picture</th><th>Sexual</th><th>Violence</th><th>Result</th></tr>${rows}</table>`);
 }
 
 async function handleModerateImage(body, env) {
