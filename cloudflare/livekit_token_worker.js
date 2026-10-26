@@ -165,6 +165,9 @@
 //                         it also re-checks the video's pictures with
 //                         OpenAI and removes a refused post / story (see
 //                         modCheckBunnyVideo) - hack-proof moderation.
+//  POST /report           - a signed-in user reports a post, comment /
+//                         reply or user (25 Oct 2026); hides content
+//                         when the rules say so - see handleReport.
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -331,6 +334,9 @@ export default {
     }
     if (path === '/moderate-image') {
       return handleModerateImage(body, env);
+    }
+    if (path === '/report') {
+      return handleReport(body, env, caller);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -3416,6 +3422,366 @@ async function handleModerateImage(body, env) {
   }
   const checked = verdicts.every((v) => v === null);
   return jsonResponse({ ok: true, checked });
+}
+
+// ---- Reports (25-26 Oct 2026, Report system) ----
+// POST /report {targetType: 'post'|'comment'|'user', targetId,
+//               targetPath (comments/replies: their full path), reason}
+// Like Facebook / TikTok: "a report is a signal, the rules decide" - the
+// NUMBER of reports never removes anything by itself (Ko, 26 Oct: a
+// group of people who dislike someone must not be able to bring a good
+// video down by all reporting it):
+//   1. First report: the AI checks the target with the normal thresholds
+//      (post: caption + the video's frames, comment: its text). AI agrees
+//      -> HIDE.
+//   2. When 3 different people report it for the SAME reason, the AI
+//      checks again, stricter, looking only at that reason (e.g. "sexual"
+//      blocks from 25% instead of 40%). AI agrees -> HIDE.
+//   3. AI still says it's fine -> NOT hidden. A public post only LEAVES
+//      For You and Search (audience everyone -> followers, TikTok-style
+//      "limited reach": followers and friends still see it) and goes into
+//      Ko's review queue (reportTargets with needsReview: true).
+//   4. Child safety / danger to life: into the review queue from the
+//      FIRST report, priority high (the AI can't tell a person's age).
+//   5. Reports from accounts younger than 24 h (termsAcceptedAt) are
+//      kept but not counted (fake accounts made just to report).
+// Hide never deletes: a post's audience becomes 'only_me' (the old one is
+// kept in audienceBeforeHide, so every feed, query and rule hides it at
+// once - the owner still sees it), it leaves Search; a comment / reply
+// gets hidden: true. firestore.rules stop the owner from undoing a hide
+// or a limit. Users are never hidden automatically - only recorded. Every
+// hide / limit is logged in moderationActions; who reported is never
+// shown to anyone. reports / reportTargets / moderationActions have no
+// client access (reports: create only, for older app builds).
+const REPORT_REASONS = new Set([
+  'sexual', 'child_safety', 'hate', 'violence', 'self_harm', 'spam', 'other',
+]);
+const REPORT_URGENT = new Set(['child_safety', 'self_harm']);
+// Defaults; a Worker can override them with plain Text variables (only
+// for testing on fly-dev-worker with few accounts):
+//   REPORT_RECHECK_AT             (default 3)
+//   REPORT_MIN_ACCOUNT_AGE_HOURS  (default 24)
+function reportRecheckAt(env) {
+  const n = Number(env.REPORT_RECHECK_AT);
+  return Number.isInteger(n) && n >= 1 ? n : 3;
+}
+function reportMinAccountAgeMs(env) {
+  const h = Number(env.REPORT_MIN_ACCOUNT_AGE_HOURS);
+  return (Number.isFinite(h) && h >= 0 ? h : 24) * 60 * 60 * 1000;
+}
+const REPORT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const REPORT_COMMENT_PATH_RE =
+  /^posts\/[A-Za-z0-9_-]{1,128}\/comments\/[A-Za-z0-9_-]{1,128}(\/replies\/[A-Za-z0-9_-]{1,128})?$/;
+
+// The stricter second look (step 2): OpenAI category -> score that
+// already counts, per report reason. Any category OpenAI itself flags
+// counts too.
+const REPORT_STRICT = {
+  sexual: { sexual: 0.25 },
+  child_safety: { sexual: 0.15, 'sexual/minors': 0.1 },
+  violence: { violence: 0.6, 'violence/graphic': 0.3 },
+  self_harm: {
+    'self-harm': 0.3, 'self-harm/intent': 0.3, 'self-harm/instructions': 0.3,
+  },
+  hate: {
+    hate: 0.3, 'hate/threatening': 0.2,
+    harassment: 0.4, 'harassment/threatening': 0.3,
+  },
+  spam: {},
+  other: {},
+};
+
+function reportStrictHit(reason, result) {
+  if (!result) return undefined;
+  const flags = result.categories || {};
+  const scores = result.category_scores || {};
+  if (Object.values(flags).some((v) => v === true)) return true;
+  const limits = REPORT_STRICT[reason] || {};
+  return Object.entries(limits).some(([c, min]) => (scores[c] || 0) >= min);
+}
+
+// OpenAI's raw answer for a text, or undefined.
+async function modTextResult(text, env) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MOD_IMG_TIMEOUT_MS);
+  try {
+    const res = await fetch(MOD_AI_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MOD_AI_MODEL,
+        input: String(text).slice(0, MOD_AI_MAX_CHARS),
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return undefined;
+    const data = await res.json();
+    return data?.results?.[0] || undefined;
+  } catch (_) {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// true = the AI finds it bad, false = it doesn't, null = no answer.
+// [strictReason] set = the stricter second look for that reason.
+async function reportAiFlags(env, type, fields, strictReason) {
+  if (!env.OPENAI_API_KEY) return null;
+  const text = stringField(fields, type === 'comment' ? 'text' : 'caption');
+  let unanswered = false;
+  if (text.trim()) {
+    if (strictReason) {
+      const hit = reportStrictHit(strictReason, await modTextResult(text, env));
+      if (hit === true) return true;
+      if (hit === undefined) unanswered = true;
+    } else {
+      if (moderateText(text, type === 'comment' ? 'comment' : 'caption')) {
+        return true;
+      }
+      const blocked = await modAiBlocked(text, env);
+      if (blocked === true) return true;
+      if (blocked === null) unanswered = true;
+    }
+  }
+  if (type === 'post') {
+    const videoGuid = stringField(fields, 'bunnyVideoId');
+    if (/^[0-9a-fA-F-]{36}$/.test(videoGuid)) {
+      const check = await modCheckBunnyVideo(env, videoGuid);
+      if (strictReason) {
+        const hits = check.items.map((x) => reportStrictHit(strictReason, x.result));
+        if (hits.some((h) => h === true)) return true;
+        if (check.items.length === 0 || hits.some((h) => h === undefined)) {
+          unanswered = true;
+        }
+      } else {
+        if (check.reason) return true;
+        if (!check.checked) unanswered = true;
+      }
+    }
+  }
+  return unanswered ? null : false;
+}
+
+// Counted reporters of [key]: { all, byReason: {reason: n} }.
+async function reportCounts(env, accessToken, key) {
+  const response = await fetch(`${firestoreBase(env)}:runQuery`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: 'reports' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'targetKey' },
+            op: 'EQUAL',
+            value: { stringValue: key },
+          },
+        },
+        select: {
+          fields: [
+            { fieldPath: 'reporterId' },
+            { fieldPath: 'reason' },
+            { fieldPath: 'counted' },
+          ],
+        },
+        limit: 300,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`report count failed: ${await response.text()}`);
+  const rows = await response.json();
+  const all = new Set();
+  const byReason = {};
+  for (const row of rows) {
+    const f = row.document && row.document.fields;
+    const who = stringField(f, 'reporterId');
+    if (!who || (f.counted && f.counted.booleanValue === false)) continue;
+    all.add(who);
+    const r = stringField(f, 'reason') || 'other';
+    (byReason[r] ||= new Set()).add(who);
+  }
+  const out = {};
+  for (const [r, s] of Object.entries(byReason)) out[r] = s.size;
+  return { all: all.size, byReason: out };
+}
+
+function fsBool(fields, name) {
+  return !!(fields && fields[name] && fields[name].booleanValue === true);
+}
+
+function fsTimestampMs(fields, name) {
+  const v = fields && fields[name] && fields[name].timestampValue;
+  const ms = v ? Date.parse(v) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+async function handleReport(body, env, caller) {
+  const uid = caller && caller.uid;
+  if (!isSafeUid(uid)) return jsonResponse({ error: 'not allowed' }, 403);
+  const type = String(body.targetType || '');
+  const reason = REPORT_REASONS.has(body.reason) ? body.reason : 'other';
+  let targetPath;
+  if (type === 'post' && REPORT_ID_RE.test(String(body.targetId || ''))) {
+    targetPath = `posts/${body.targetId}`;
+  } else if (type === 'comment' &&
+      REPORT_COMMENT_PATH_RE.test(String(body.targetPath || ''))) {
+    targetPath = String(body.targetPath);
+  } else if (type === 'user' && isSafeUid(body.targetId)) {
+    targetPath = `users/${body.targetId}`;
+  } else {
+    return jsonResponse({ error: 'bad target' }, 400);
+  }
+  const key = `${type}~${targetPath.replace(/\//g, '~')}`;
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const [target, reporter, state] = await Promise.all([
+      firestoreGetFields(env, dbToken, targetPath),
+      firestoreGetFields(env, dbToken, `users/${uid}`),
+      firestoreGetFields(env, dbToken, `reportTargets/${key}`),
+    ]);
+    if (target === null) return jsonResponse({ ok: true, gone: true });
+    const ownerId = type === 'user'
+      ? String(body.targetId)
+      : stringField(target, 'userId');
+    if (ownerId === uid) return jsonResponse({ error: 'own content' }, 400);
+
+    // Accounts younger than 24 h: kept, not counted.
+    const joinedAt = fsTimestampMs(reporter, 'termsAcceptedAt');
+    const counted = joinedAt !== null &&
+      Date.now() - joinedAt >= reportMinAccountAgeMs(env);
+
+    // One per person per target (writing it again just updates it).
+    await firestorePatch(env, dbToken, `reports/${key}~${uid}`, {
+      targetType: type,
+      targetId: targetPath.split('/').pop(),
+      targetPath,
+      targetKey: key,
+      targetOwnerId: ownerId,
+      reporterId: uid,
+      reason,
+      counted,
+      status: 'pending',
+      source: 'worker',
+      createdAt: new Date(),
+    });
+
+    const counts = await reportCounts(env, dbToken, key);
+    const sameReason = counts.byReason[reason] || 0;
+    const urgent = REPORT_URGENT.has(reason) ||
+      [...REPORT_URGENT].some((r) => (counts.byReason[r] || 0) > 0);
+
+    const hidden = type === 'post'
+      ? fsBool(target, 'hiddenByReports')
+      : fsBool(target, 'hidden');
+    const limited = fsBool(target, 'limitedByReports');
+    const statePatch = {
+      targetType: type,
+      targetPath,
+      ownerId,
+      reports: counts.all,
+      lastReason: reason,
+      priority: urgent ? 'high' : 'normal',
+      updatedAt: new Date(),
+    };
+    for (const r of REPORT_REASONS) statePatch[`reports_${r}`] = counts.byReason[r] || 0;
+
+    let action = null; // 'hidden' | 'limited'
+    let why = null;
+    if (type !== 'user' && !hidden && counted) {
+      // 1. The normal check, once per target.
+      if (!fsBool(state, 'aiChecked')) {
+        const flagged = await reportAiFlags(env, type, target, null);
+        if (flagged !== null) statePatch.aiChecked = true;
+        if (flagged === true) { action = 'hidden'; why = 'ai_agrees'; }
+      }
+      // 2. The stricter look, once per reason, at 3 same-reason reports.
+      const strictKey = `strictChecked_${reason}`;
+      if (!action && sameReason >= reportRecheckAt(env) &&
+          !fsBool(state, strictKey)) {
+        const flagged = await reportAiFlags(env, type, target, reason);
+        if (flagged !== null) statePatch[strictKey] = true;
+        if (flagged === true) {
+          action = 'hidden';
+          why = 'ai_strict';
+        } else if (type === 'post' && !limited &&
+            (stringField(target, 'audience') || 'everyone') === 'everyone') {
+          // 3. Still fine for the AI: limited reach, and Ko decides.
+          action = 'limited';
+          why = 'many_reports';
+        }
+      }
+    }
+
+    const needsReview = type !== 'user' &&
+      (action === 'limited' || urgent || sameReason >= reportRecheckAt(env) ||
+        fsBool(state, 'needsReview')) && action !== 'hidden';
+    statePatch.needsReview = needsReview;
+    statePatch.hidden = hidden || action === 'hidden';
+    statePatch.limited = limited || action === 'limited';
+    await firestorePatch(env, dbToken, `reportTargets/${key}`, statePatch);
+
+    if (action) {
+      if (type === 'post') {
+        const audience = stringField(target, 'audience') || 'everyone';
+        if (action === 'hidden') {
+          await firestorePatch(env, dbToken, targetPath, {
+            audience: 'only_me',
+            audienceBeforeHide: limited
+              ? (stringField(target, 'audienceBeforeLimit') || audience)
+              : audience,
+            hiddenByReports: true,
+            hiddenReason: reason,
+            hiddenAt: new Date(),
+          });
+        } else {
+          await firestorePatch(env, dbToken, targetPath, {
+            audience: 'followers',
+            audienceBeforeLimit: audience,
+            limitedByReports: true,
+            limitedAt: new Date(),
+          });
+        }
+        if (env.SEARCH_DB) {
+          try {
+            await env.SEARCH_DB.prepare('DELETE FROM posts WHERE post_id = ?1')
+              .bind(targetPath.split('/').pop()).run();
+          } catch (_) {}
+        }
+      } else {
+        await firestorePatch(env, dbToken, targetPath, {
+          hidden: true,
+          hiddenAt: new Date(),
+          hiddenByReports: true,
+          hiddenReason: reason,
+        });
+      }
+      await firestorePatch(env, dbToken,
+        `moderationActions/report~${key}~${action}`, {
+          kind: type,
+          source: 'reports',
+          action,
+          why,
+          reason,
+          targetPath,
+          userId: ownerId,
+          reports: counts.all,
+          priority: urgent ? 'high' : 'normal',
+          createdAt: new Date(),
+        });
+    }
+    return jsonResponse({ ok: true });
+  } catch (err) {
+    console.log('report failed', err.message);
+    return jsonResponse({ error: 'try again' }, 503);
+  }
 }
 
 async function handleModerateText(body, env) {

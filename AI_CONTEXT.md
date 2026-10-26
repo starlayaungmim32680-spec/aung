@@ -712,6 +712,60 @@ OK). Play Console: Terms URL =
 > voice call, cancel before answer, chat push with Fly swiped away, Live
 > host + viewer._
 >
+> _26 Oct 2026 (1 am, confirmed by Ko on DEV only - prod NOT done yet):
+> **Report system step 1.** New `lib/screens/report_sheet.dart`
+> (`showReportSheet(context, type: ReportTargetType.post|comment|user,
+> targetId / targetPath)`, reasons sexual / child_safety / hate /
+> violence / self_harm / spam / other, "Your report is anonymous") used
+> by the video ⋮ menu (home_video_post.dart), the comment long-press menu
+> (home_comments.dart, sends `ref.path` so replies work) and the profile
+> menu (public_profile_screen.dart); the three old sheets that wrote
+> `reports` directly are gone. Worker `POST /report` (`handleReport`):
+> one report per person per target (`reports/{key}~{uid}`, key =
+> `type~path`), never your own content; AI asked once per target
+> (`reportAiFlags`: post caption + `modCheckBunnyVideo`, comment text),
+> state in `reportTargets/{key}`. **Rules (Ko, 26 Oct - against groups
+> ganging up on a good video; like Facebook/TikTok "the number of
+> reports never decides"):** (1) first counted report -> AI with normal
+> thresholds, agrees -> hide; (2) 3 different people with the SAME reason
+> -> AI again, stricter, for that reason only (`REPORT_STRICT`, e.g.
+> sexual >= 25%, child_safety sexual >= 15% / sexual-minors >= 10%,
+> violence >= 60%, hate >= 30%; any OpenAI flag counts) -> agrees -> hide;
+> (3) still fine -> NOT hidden: a public post gets **limited reach**
+> (`audience: 'followers'` + `audienceBeforeLimit` + `limitedByReports` +
+> `limitedAt`: leaves For You / Search / strangers, followers + friends
+> still see it) and `reportTargets.needsReview: true` for Ko; (4)
+> child_safety / self_harm -> needsReview + priority high from the first
+> report; (5) reporters whose `users.termsAcceptedAt` is < 24 h old are
+> stored with `counted: false` and ignored. Test overrides (plain Text
+> variables, fly-dev-worker only): `REPORT_RECHECK_AT` (default 3),
+> `REPORT_MIN_ACCOUNT_AGE_HOURS` (default 24). Users are only recorded,
+> never hidden. Hide = post `audience: 'only_me'` +
+> `audienceBeforeHide` + `hiddenByReports` + `hiddenReason` + `hiddenAt`
+> (so every feed / query / rule hides it; owner still sees it) and the D1
+> row is deleted; comment / reply `hidden: true` + `hiddenByReports`.
+> Logged in `moderationActions/report~{key}` (priority high for
+> child_safety / self_harm). firestore.rules: `reportFields()` (incl. the
+> limit fields); nobody but the Worker may set them; the owner can't
+> change the audience of a hidden or limited post; the post owner can't
+> unhide a comment hidden by reports;
+> client-written `reports` may not carry `targetKey` (only Worker reports
+> count). Tested on dev with the first version (count-based: 2 Child
+> safety reports hid it): the video vanished for the reporters, the owner
+> still sees it - but as "🔒 Only me" (confusing). The anti-brigading
+> rules above replaced that version the same night (Worker + rules only)
+> and were **confirmed on dev on 27 Oct** (with REPORT_RECHECK_AT=2 /
+> REPORT_MIN_ACCOUNT_AGE_HOURS=0 on fly-dev-worker): B and C (not a
+> follower) both reported Spam -> the AI still said fine -> the post got
+> `limitedByReports: true`, `audience: followers`, `needsReview: true`;
+> it vanished for C, the owner still sees it. Planned (agreed with Ko 27
+> Oct): Restore by Ko marks the post "reviewed" so the same brigading
+> can't limit it again (only the AI can then), and reporters whose
+> reports Ko rejects 3 times stop being counted. **Next = step 2:** "Under
+> review" for the owner instead of Only me + a notification with the
+> reason + Appeal; then step 3 admin page (remove / restore -> restore
+> puts audienceBeforeHide back). Roll steps 1+2 to prod together._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2578,7 +2632,8 @@ others only see it once encoded (Bunny webhook).
     Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
     Store blockers first - (1) server-side video re-check DONE, (2) the
     two Worker security holes (`/token` any room, `/call-push` callerId)
-    DONE 25 Oct, **(3) Report system (next)** + admin page, (4) Google Play Child Safety
+    DONE 25 Oct, **(3) Report system (step 1 on dev 26 Oct - next step 2
+    "Under review" + Appeal, then step 3 admin page, then prod)** + admin page, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and

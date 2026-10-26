@@ -16,6 +16,7 @@ import '../block_service.dart';
 import '../friend_service.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'post_audience.dart' show postsOfUserQuery;
+import 'report_sheet.dart';
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -42,7 +43,8 @@ class PublicProfileScreen extends StatelessWidget {
                 if (value == 'block') {
                   _confirmBlockUser(context, userId);
                 } else if (value == 'report') {
-                  _showReportUserSheet(context, userId);
+                  showReportSheet(context,
+                      type: ReportTargetType.user, targetId: userId);
                 }
               },
               itemBuilder: (ctx) => const [
@@ -808,85 +810,6 @@ Future<void> _confirmBlockUser(
           const SnackBar(content: Text('Could not block user. Try again.')));
     }
   }
-}
-
-// Shows a reason picker and writes a 'reports' document for this user.
-void _showReportUserSheet(BuildContext context, String userIdToReport) {
-  const List<String> reasons = [
-    'Nudity or sexual content',
-    'Hate speech or harassment',
-    'Violence or dangerous content',
-    'Spam or scam',
-    'Something else',
-  ];
-
-  showModalBottomSheet(
-    context: context,
-    backgroundColor: const Color(0xFF1E1E1E),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-    ),
-    builder: (sheetContext) {
-      return SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Report this user',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold)),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ...reasons.map((reason) => ListTile(
-                  title: Text(reason,
-                      style: const TextStyle(color: Colors.white70)),
-                  onTap: () async {
-                    Navigator.pop(sheetContext);
-                    final String? myId = FirebaseAuth.instance.currentUser?.uid;
-                    if (myId == null) return;
-                    try {
-                      await FirebaseFirestore.instance
-                          .collection('reports')
-                          .add({
-                        'targetType': 'user',
-                        'targetId': userIdToReport,
-                        'parentPostId': null,
-                        'targetOwnerId': userIdToReport,
-                        'reporterId': myId,
-                        'reason': reason,
-                        'status': 'pending',
-                        'createdAt': FieldValue.serverTimestamp(),
-                      });
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Report submitted. Thank you.')),
-                        );
-                      }
-                    } catch (_) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content:
-                                  Text('Could not submit report. Try again.')),
-                        );
-                      }
-                    }
-                  },
-                )),
-            const SizedBox(height: 8),
-          ],
-        ),
-      );
-    },
-  );
 }
 
 // Add Friend / Requested / Respond / Friends button (4 Oct 2026, see

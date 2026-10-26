@@ -604,7 +604,11 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                   style: const TextStyle(color: Colors.white70)),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _showCommentReportSheet(ref, data);
+                showReportSheet(
+                  context,
+                  type: ReportTargetType.comment,
+                  targetPath: ref.path,
+                );
               },
             ),
         ];
@@ -676,88 +680,6 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         const SnackBar(content: Text("Couldn't delete it. Please try again.")),
       );
     }
-  }
-
-  // Shows a reason picker and writes a 'reports' document for a comment.
-  void _showCommentReportSheet(
-      DocumentReference commentRef, Map<String, dynamic> data) {
-    const List<String> reasons = [
-      'Nudity or sexual content',
-      'Hate speech or harassment',
-      'Violence or dangerous content',
-      'Spam or scam',
-      'Something else',
-    ];
-    final String commentOwnerId = data['userId'] ?? '';
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Report this comment',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold)),
-                ),
-              ),
-              const SizedBox(height: 8),
-              ...reasons.map((reason) => ListTile(
-                    title: Text(reason,
-                        style: const TextStyle(color: Colors.white70)),
-                    onTap: () async {
-                      Navigator.pop(sheetContext);
-                      final String? myId =
-                          FirebaseAuth.instance.currentUser?.uid;
-                      if (myId == null) return;
-                      try {
-                        await FirebaseFirestore.instance
-                            .collection('reports')
-                            .add({
-                          'targetType': 'comment',
-                          'targetId': commentRef.id,
-                          'parentPostId': widget.postId,
-                          'targetOwnerId': commentOwnerId,
-                          'reporterId': myId,
-                          'reason': reason,
-                          'status': 'pending',
-                          'createdAt': FieldValue.serverTimestamp(),
-                        });
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('Report submitted. Thank you.')),
-                          );
-                        }
-                      } catch (_) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text(
-                                    'Could not submit report. Try again.')),
-                          );
-                        }
-                      }
-                    },
-                  )),
-              const SizedBox(height: 8),
-            ],
-          ),
-        );
-      },
-    );
   }
 
   // Header count ("12 comments"). A ValueNotifier so only the header

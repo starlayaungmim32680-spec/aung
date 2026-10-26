@@ -46,6 +46,13 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
+    // Fields only the Worker writes when reports hide something (25 Oct
+    // 2026, POST /report).
+    function reportFields() {
+      return ['hiddenByReports', 'hiddenReason', 'audienceBeforeHide',
+              'limitedByReports', 'audienceBeforeLimit', 'limitedAt'];
+    }
+
     // Only changes the caller's own entry inside a `reactions` map
     // (posts, comments, replies: {'reactions.<uid>': type}).
     function onlyMyReaction() {
@@ -240,14 +247,25 @@ service cloud.firestore {
     match /posts/{postId} {
       // 25 Oct 2026: only the people the post's audience allows.
       allow read: if canSeePost(resource.data);
+      // 25-26 Oct 2026 (Report system): a post hidden by reports has
+      // hiddenByReports: true and audience 'only_me'; one with "limited
+      // reach" has limitedByReports: true and audience 'followers' (both
+      // set by the Worker, /report). Nobody but the Worker may set those
+      // report fields, and the owner can't change the audience of a
+      // hidden / limited post (that would undo it).
       allow create: if signedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.get('audience', 'everyone')
-             in ['everyone', 'followers', 'friends', 'only_me'];
+             in ['everyone', 'followers', 'friends', 'only_me']
+        && !request.resource.data.keys().hasAny(reportFields());
       allow update: if signedIn() && (
         (resource.data.userId == request.auth.uid
           && request.resource.data.get('audience', 'everyone')
-               in ['everyone', 'followers', 'friends', 'only_me'])
+               in ['everyone', 'followers', 'friends', 'only_me']
+          && !changedKeys().hasAny(reportFields())
+          && ((resource.data.get('hiddenByReports', false) != true
+              && resource.data.get('limitedByReports', false) != true)
+            || !changedKeys().hasAny(['audience'])))
         || (canSeePost(resource.data) && onlyMyReaction())
       );
       allow delete: if signedIn() && resource.data.userId == request.auth.uid;
@@ -277,13 +295,16 @@ service cloud.firestore {
         allow create: if signedIn()
           && request.resource.data.userId == request.auth.uid
           && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt'])
+          && !request.resource.data.keys().hasAny(reportFields())
           && canSeePostId(postId);
         allow update: if signedIn() && (
           (resource.data.userId == request.auth.uid
-            && !changedKeys().hasAny(['hidden', 'hiddenAt']))
+            && !changedKeys().hasAny(['hidden', 'hiddenAt'])
+            && !changedKeys().hasAny(reportFields()))
           || onlyMyReaction()
           || (isPostOwner(postId)
-            && changedKeys().hasOnly(['hidden', 'hiddenAt']))
+            && changedKeys().hasOnly(['hidden', 'hiddenAt'])
+            && resource.data.get('hiddenByReports', false) != true)
         );
         allow delete: if signedIn() && (
           resource.data.userId == request.auth.uid || isPostOwner(postId)
@@ -294,13 +315,16 @@ service cloud.firestore {
           allow create: if signedIn()
             && request.resource.data.userId == request.auth.uid
             && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt'])
+            && !request.resource.data.keys().hasAny(reportFields())
             && canSeePostId(postId);
           allow update: if signedIn() && (
             (resource.data.userId == request.auth.uid
-              && !changedKeys().hasAny(['hidden', 'hiddenAt']))
+              && !changedKeys().hasAny(['hidden', 'hiddenAt'])
+              && !changedKeys().hasAny(reportFields()))
             || onlyMyReaction()
             || (isPostOwner(postId)
-              && changedKeys().hasOnly(['hidden', 'hiddenAt']))
+              && changedKeys().hasOnly(['hidden', 'hiddenAt'])
+              && resource.data.get('hiddenByReports', false) != true)
           );
           allow delete: if signedIn() && (
             resource.data.userId == request.auth.uid || isPostOwner(postId)
@@ -374,9 +398,13 @@ service cloud.firestore {
 
     // ================= reports =================
     // Write-only from the app; reviewed in the Firebase Console.
+    // New app builds report through the Worker (POST /report), which
+    // writes these itself. Direct creates stay for older builds, but may
+    // not carry targetKey (only Worker-written reports are counted).
     match /reports/{reportId} {
       allow create: if signedIn()
-        && request.resource.data.reporterId == request.auth.uid;
+        && request.resource.data.reporterId == request.auth.uid
+        && !request.resource.data.keys().hasAny(['targetKey']);
       allow read, update, delete: if false;
     }
 
