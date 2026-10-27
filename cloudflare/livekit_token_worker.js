@@ -170,6 +170,15 @@
 //                         when the rules say so - see handleReport.
 //  POST /appeal           - the owner of a hidden / limited post asks Ko
 //                         to look again (27 Oct 2026) - see handleAppeal.
+//  GET  /admin            - (27 Oct 2026, Report system step 3) Ko's review
+//                         queue page: Restore / Remove reported posts and
+//                         comments. Ko types SEARCH_ADMIN_TOKEN on the page
+//                         (never in the link). Its calls go to
+//  POST /admin-api        - header X-Admin-Token = SEARCH_ADMIN_TOKEN. See
+//                         handleAdminApi. Strikes live in
+//                         moderationStrikes/{uid}, reporters' rejected /
+//                         accepted counts in reporterStanding/{uid}
+//                         (Worker-only collections).
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -270,6 +279,14 @@ export default {
     }
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
+    }
+    // Report system step 3 (27 Oct 2026): Ko's review page + its API
+    // (SEARCH_ADMIN_TOKEN in a header, not a Firebase sign-in).
+    if (request.method === 'GET' && url.pathname === '/admin') {
+      return new Response(ADMIN_PAGE_HTML, { headers: ADMIN_PAGE_HEADERS });
+    }
+    if (request.method === 'POST' && url.pathname === '/admin-api') {
+      return handleAdminApi(request, env);
     }
 
     if (request.method !== 'POST') {
@@ -3462,6 +3479,13 @@ const REPORT_REASONS = new Set([
   'sexual', 'child_safety', 'hate', 'violence', 'self_harm', 'spam', 'other',
 ]);
 const REPORT_URGENT = new Set(['child_safety', 'self_harm']);
+// Step 3 (27 Oct 2026): a report Ko already decided on the admin page.
+// 'rejected' = Ko restored / kept the content, 'accepted' = Ko removed it,
+// 'dismissed' = the content was already gone.
+const REPORT_DECIDED = new Set(['rejected', 'accepted', 'dismissed']);
+// Reporters with this many rejected reports (reporterStanding/{uid}) are
+// still recorded but no longer counted.
+const REPORT_MAX_REJECTED = 3;
 // Defaults; a Worker can override them with plain Text variables (only
 // for testing on fly-dev-worker with few accounts):
 //   REPORT_RECHECK_AT             (default 3)
@@ -3594,6 +3618,7 @@ async function reportCounts(env, accessToken, key) {
             { fieldPath: 'reporterId' },
             { fieldPath: 'reason' },
             { fieldPath: 'counted' },
+            { fieldPath: 'status' },
           ],
         },
         limit: 300,
@@ -3608,6 +3633,8 @@ async function reportCounts(env, accessToken, key) {
     const f = row.document && row.document.fields;
     const who = stringField(f, 'reporterId');
     if (!who || (f.counted && f.counted.booleanValue === false)) continue;
+    // Step 3: reports Ko already decided don't count any more.
+    if (REPORT_DECIDED.has(stringField(f, 'status'))) continue;
     all.add(who);
     const r = stringField(f, 'reason') || 'other';
     (byReason[r] ||= new Set()).add(who);
@@ -3647,10 +3674,12 @@ async function handleReport(body, env, caller) {
 
   try {
     const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
-    const [target, reporter, state] = await Promise.all([
+    const [target, reporter, state, standing, previous] = await Promise.all([
       firestoreGetFields(env, dbToken, targetPath),
       firestoreGetFields(env, dbToken, `users/${uid}`),
       firestoreGetFields(env, dbToken, `reportTargets/${key}`),
+      firestoreGetFields(env, dbToken, `reporterStanding/${uid}`),
+      firestoreGetFields(env, dbToken, `reports/${key}~${uid}`),
     ]);
     if (target === null) return jsonResponse({ ok: true, gone: true });
     const ownerId = type === 'user'
@@ -3658,10 +3687,21 @@ async function handleReport(body, env, caller) {
       : stringField(target, 'userId');
     if (ownerId === uid) return jsonResponse({ error: 'own content' }, 400);
 
-    // Accounts younger than 24 h: kept, not counted.
+    // Step 3 (27 Oct 2026): Ko already decided this person's report on
+    // this target - reporting it again changes nothing (otherwise a
+    // restored post could be re-reported by the same group and counted
+    // again).
+    if (REPORT_DECIDED.has(stringField(previous, 'status'))) {
+      return jsonResponse({ ok: true });
+    }
+
+    // Accounts younger than 24 h: kept, not counted. Step 3: neither are
+    // reporters whose reports Ko rejected 3 times (reporterStanding is a
+    // Worker-only collection - the app can't read or change it).
     const joinedAt = fsTimestampMs(reporter, 'termsAcceptedAt');
     const counted = joinedAt !== null &&
-      Date.now() - joinedAt >= reportMinAccountAgeMs(env);
+      Date.now() - joinedAt >= reportMinAccountAgeMs(env) &&
+      fsInt(standing, 'rejected') < REPORT_MAX_REJECTED;
 
     // One per person per target (writing it again just updates it).
     await firestorePatch(env, dbToken, `reports/${key}~${uid}`, {
@@ -3717,8 +3757,11 @@ async function handleReport(body, env, caller) {
           action = 'hidden';
           why = 'ai_strict';
         } else if (type === 'post' && !limited &&
+            !fsBool(state, 'reviewedOk') &&
             (stringField(target, 'audience') || 'everyone') === 'everyone') {
           // 3. Still fine for the AI: limited reach, and Ko decides.
+          //    Not after Ko restored it (reviewedOk) - then only the AI
+          //    can still hide it.
           action = 'limited';
           why = 'many_reports';
         }
@@ -3866,6 +3909,511 @@ async function handleAppeal(body, env, caller) {
     console.log('appeal failed', err.message);
     return jsonResponse({ error: 'try again' }, 503);
   }
+}
+
+// ---------------------------------------------------------------------
+// Report system step 3 (27 Oct 2026): Ko's admin page
+// ---------------------------------------------------------------------
+// GET  /admin      - the review page (no token in the link; Ko types
+//                    SEARCH_ADMIN_TOKEN on the page, it stays in that
+//                    browser tab only - sessionStorage).
+// POST /admin-api  - the page's calls, header `X-Admin-Token`, body
+//                    {action: 'queue'} or {action: 'restore' | 'remove',
+//                    key}. Not a Firebase route: no app can call it.
+//
+// Queue = reportTargets with needsReview: true (appeals first, then
+// priority high, then newest). Who reported is never shown.
+//   Restore - a post gets its audience back (audienceBeforeHide /
+//             audienceBeforeLimit), the report fields are cleared, Search
+//             gets it back if it is public again; a comment / reply gets
+//             hidden: false. reportTargets.reviewedOk = true: the same kind
+//             of brigading can't limit it again (only the AI can still
+//             hide it). Every open report on it becomes 'rejected' and each
+//             reporter gets rejected +1 in reporterStanding/{uid} (3 ->
+//             their reports stop counting). The owner gets a "Fly" note.
+//             For content that was never hidden / limited the page calls
+//             this "Keep" - same thing.
+//   Remove  - deletes the post (+ its Bunny video, Search row; its sound
+//             becomes 'removed') or the comment / reply; strike +1 in
+//             moderationStrikes/{owner}; reports 'accepted', reporters
+//             accepted +1; the owner gets a "Fly" note (no postId - the
+//             post is gone).
+// moderationStrikes and reporterStanding have NO rule in firestore.rules,
+// so no app can read or write them - only this Worker. Strikes are only
+// counted for now (no automatic ban yet).
+// Few subrequests on purpose (free plan: 50 per request): one batchGet
+// for the queue, one commit for all writes of a decision.
+
+const ADMIN_PAGE_HEADERS = {
+  'Content-Type': 'text/html; charset=utf-8',
+  'Cache-Control': 'no-store',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
+  // Inline page only; it may call this Worker, show https pictures and
+  // embed Bunny's player - nothing else (the token can't leak anywhere).
+  'Content-Security-Policy':
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+    "img-src https: data:; connect-src 'self'; " +
+    'frame-src https://iframe.mediadelivery.net; ' +
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+};
+
+const ADMIN_REASON_LABELS = {
+  sexual: 'Nudity or sexual content',
+  child_safety: 'Child safety',
+  hate: 'Hate speech or harassment',
+  violence: 'Violence or dangerous content',
+  self_harm: 'Suicide, self-harm or danger to life',
+  spam: 'Spam or scam',
+  other: 'Something else',
+};
+
+// The post fields the Report system adds; a Restore deletes all of them.
+const REPORT_POST_FIELDS = [
+  'audienceBeforeHide', 'hiddenByReports', 'hiddenReason', 'hiddenAt',
+  'audienceBeforeLimit', 'limitedByReports', 'limitedReason', 'limitedAt',
+  'appealStatus', 'appealedAt',
+];
+const POST_AUDIENCES = new Set(['everyone', 'followers', 'friends', 'only_me']);
+const ADMIN_KEY_RE =
+  /^(post|comment)~posts~[A-Za-z0-9_-]{1,128}(~comments~[A-Za-z0-9_-]{1,128}(~replies~[A-Za-z0-9_-]{1,128})?)?$/;
+
+function fsInt(fields, name) {
+  const v = fields && fields[name];
+  if (!v) return 0;
+  const n = Number(v.integerValue ?? v.doubleValue ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function fsDocName(env, path) {
+  return `projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`;
+}
+
+// A commit "update" write: sets [fields] and DELETES [deleteNames]
+// (a field in the mask but not in the body is removed). Creates the doc
+// if it doesn't exist.
+function fsUpdateWrite(env, path, fields, deleteNames = []) {
+  return {
+    update: { name: fsDocName(env, path), fields: toFirestoreFields(fields) },
+    updateMask: { fieldPaths: [...Object.keys(fields), ...deleteNames] },
+  };
+}
+
+// Same, plus `[counter] += 1` done by Firestore itself (no read needed).
+function fsIncrementWrite(env, path, fields, counter) {
+  return {
+    ...fsUpdateWrite(env, path, fields),
+    updateTransforms: [{ fieldPath: counter, increment: { integerValue: '1' } }],
+  };
+}
+
+// Applies [writes] atomically, 400 per call.
+async function firestoreCommit(env, accessToken, writes) {
+  for (let i = 0; i < writes.length; i += 400) {
+    const response = await fetch(`${firestoreBase(env)}:commit`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ writes: writes.slice(i, i + 400) }),
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore commit failed: ${await response.text()}`);
+    }
+  }
+}
+
+// {path: fields | null} for many docs in ONE request.
+async function firestoreBatchGet(env, accessToken, paths) {
+  const out = {};
+  const unique = [...new Set(paths)];
+  if (unique.length === 0) return out;
+  const prefix = fsDocName(env, '');
+  const response = await fetch(`${firestoreBase(env)}:batchGet`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ documents: unique.map((p) => fsDocName(env, p)) }),
+  });
+  if (!response.ok) {
+    throw new Error(`Firestore batchGet failed: ${await response.text()}`);
+  }
+  for (const row of await response.json()) {
+    if (row.found) {
+      out[row.found.name.slice(prefix.length)] = row.found.fields || {};
+    } else if (row.missing) {
+      out[row.missing.slice(prefix.length)] = null;
+    }
+  }
+  return out;
+}
+
+// Docs of a collection where [field] == [value] (bool or string).
+async function firestoreQueryEq(env, accessToken, collection, field, value, limit) {
+  const response = await fetch(`${firestoreBase(env)}:runQuery`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: collection }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: field },
+            op: 'EQUAL',
+            value: toFirestoreValue(value),
+          },
+        },
+        limit,
+      },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Firestore query failed: ${await response.text()}`);
+  }
+  return (await response.json())
+    .filter((row) => row.document)
+    .map((row) => ({
+      id: docIdFromName(row.document.name),
+      name: row.document.name,
+      fields: row.document.fields || {},
+    }));
+}
+
+function adminTokenOk(request, env) {
+  const token = request.headers.get('X-Admin-Token') || '';
+  return !!env.SEARCH_ADMIN_TOKEN && token.length > 0 &&
+    token === env.SEARCH_ADMIN_TOKEN;
+}
+
+// The reason a decision is "about": the hide / limit reason, else the
+// most-reported one.
+function adminMainReason(state, target) {
+  const direct = stringField(target, 'hiddenReason') ||
+    stringField(target, 'limitedReason');
+  if (direct) return direct;
+  let best = stringField(state, 'lastReason') || 'other';
+  let bestCount = -1;
+  for (const r of REPORT_REASONS) {
+    const n = fsInt(state, `reports_${r}`);
+    if (n > bestCount) { best = r; bestCount = n; }
+  }
+  return bestCount > 0 ? best : (stringField(state, 'lastReason') || 'other');
+}
+
+function adminTargetPathOk(type, path) {
+  if (type === 'post') return /^posts\/[A-Za-z0-9_-]{1,128}$/.test(path);
+  if (type === 'comment') return REPORT_COMMENT_PATH_RE.test(path);
+  return false;
+}
+
+async function handleAdminApi(request, env) {
+  if (!adminTokenOk(request, env)) {
+    return jsonResponse({ error: 'wrong token' }, 401);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ error: 'bad json' }, 400);
+  }
+  try {
+    if (body.action === 'queue') return jsonResponse(await adminQueue(env));
+    if (body.action === 'restore' || body.action === 'remove') {
+      const key = String(body.key || '');
+      if (!ADMIN_KEY_RE.test(key)) return jsonResponse({ error: 'bad key' }, 400);
+      return adminDecide(env, key, body.action);
+    }
+    return jsonResponse({ error: 'unknown action' }, 400);
+  } catch (err) {
+    console.log('admin failed', err.message);
+    return jsonResponse({ error: err.message }, 500);
+  }
+}
+
+async function adminQueue(env) {
+  const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+  const rows = (await firestoreQueryEq(
+    env, dbToken, 'reportTargets', 'needsReview', true, 100))
+    .filter((r) => ADMIN_KEY_RE.test(r.id));
+
+  const paths = [];
+  for (const r of rows) {
+    const type = stringField(r.fields, 'targetType');
+    const path = stringField(r.fields, 'targetPath');
+    const owner = stringField(r.fields, 'ownerId');
+    if (adminTargetPathOk(type, path)) paths.push(path);
+    if (isSafeUid(owner)) {
+      paths.push(`users/${owner}`, `moderationStrikes/${owner}`);
+    }
+  }
+  const docs = await firestoreBatchGet(env, dbToken, paths);
+
+  const items = rows.map((r) => {
+    const s = r.fields;
+    const type = stringField(s, 'targetType');
+    const path = stringField(s, 'targetPath');
+    const ownerId = stringField(s, 'ownerId');
+    const t = adminTargetPathOk(type, path) ? docs[path] : null;
+    const owner = isSafeUid(ownerId) ? docs[`users/${ownerId}`] : null;
+    const strikes = isSafeUid(ownerId) ? docs[`moderationStrikes/${ownerId}`] : null;
+    const reasons = {};
+    for (const reason of REPORT_REASONS) {
+      const n = fsInt(s, `reports_${reason}`);
+      if (n > 0) reasons[reason] = n;
+    }
+    const strict = [...REPORT_REASONS].filter((x) => fsBool(s, `strictChecked_${x}`));
+    const hidden = type === 'post'
+      ? fsBool(t, 'hiddenByReports')
+      : fsBool(t, 'hiddenByReports') && fsBool(t, 'hidden');
+    return {
+      key: r.id,
+      type,
+      path,
+      gone: !t,
+      ownerId,
+      ownerName: stringField(owner, 'displayName') || '(no name)',
+      ownerPhoto: stringField(owner, 'photoUrl'),
+      strikes: fsInt(strikes, 'strikes'),
+      reports: fsInt(s, 'reports'),
+      reasons,
+      lastReason: stringField(s, 'lastReason'),
+      priority: stringField(s, 'priority') || 'normal',
+      appealed: fsBool(s, 'appealed'),
+      appealMessage: stringField(s, 'appealMessage'),
+      hidden,
+      limited: type === 'post' && fsBool(t, 'limitedByReports'),
+      reviewedOk: fsBool(s, 'reviewedOk'),
+      aiChecked: fsBool(s, 'aiChecked'),
+      strictChecked: strict,
+      text: type === 'post' ? stringField(t, 'caption') : stringField(t, 'text'),
+      audience: stringField(t, 'audience') || (type === 'post' ? 'everyone' : ''),
+      videoGuid: type === 'post' ? stringField(t, 'bunnyVideoId') : '',
+      videoUrl: type === 'post' ? stringField(t, 'videoUrl') : '',
+      createdAt: fsTimestampMs(t, 'createdAt'),
+      updatedAt: fsTimestampMs(s, 'updatedAt') || fsTimestampMs(s, 'appealedAt'),
+    };
+  });
+
+  // Appeals first, then priority high, then the newest.
+  items.sort((a, b) =>
+    (Number(b.appealed) - Number(a.appealed)) ||
+    (Number(b.priority === 'high') - Number(a.priority === 'high')) ||
+    ((b.updatedAt || 0) - (a.updatedAt || 0)));
+
+  return {
+    project: env.FIREBASE_PROJECT_ID || '',
+    cdn: env.BUNNY_CDN_HOSTNAME || '',
+    library: env.BUNNY_LIBRARY_ID || '',
+    reasonLabels: ADMIN_REASON_LABELS,
+    items: items.slice(0, 60),
+    more: Math.max(0, items.length - 60),
+  };
+}
+
+async function adminDecide(env, key, decision) {
+  const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+  const state = await firestoreGetFields(env, dbToken, `reportTargets/${key}`);
+  if (state === null) return jsonResponse({ error: 'not in the queue' }, 404);
+  const type = stringField(state, 'targetType');
+  const targetPath = stringField(state, 'targetPath');
+  if (!adminTargetPathOk(type, targetPath) ||
+      `${type}~${targetPath.replace(/\//g, '~')}` !== key) {
+    return jsonResponse({ error: 'bad target' }, 400);
+  }
+  const [target, reportRows] = await Promise.all([
+    firestoreGetFields(env, dbToken, targetPath),
+    firestoreQueryEq(env, dbToken, 'reports', 'targetKey', key, 300),
+  ]);
+  const now = new Date();
+  const open = reportRows.filter(
+    (r) => !REPORT_DECIDED.has(stringField(r.fields, 'status')));
+  const reporters = [...new Set(
+    open.map((r) => stringField(r.fields, 'reporterId')).filter(isSafeUid))];
+  const reportsPath = (r) => `reports/${r.id}`;
+  const writes = [];
+
+  // Already deleted (by its owner): just take it out of the queue.
+  if (target === null) {
+    for (const r of open) {
+      writes.push(fsUpdateWrite(env, reportsPath(r), { status: 'dismissed', decidedAt: now }));
+    }
+    writes.push(fsUpdateWrite(env, `reportTargets/${key}`, {
+      needsReview: false, decision: 'gone', decidedAt: now, updatedAt: now,
+    }));
+    await firestoreCommit(env, dbToken, writes);
+    return jsonResponse({ ok: true, gone: true });
+  }
+
+  const ownerId = stringField(target, 'userId') || stringField(state, 'ownerId');
+  const postId = targetPath.split('/')[1];
+  const reason = adminMainReason(state, target);
+  const reasonLabel = ADMIN_REASON_LABELS[reason] || ADMIN_REASON_LABELS.other;
+  const what = type === 'post' ? 'video' : 'comment';
+
+  if (decision === 'restore') {
+    let wasActioned = false;
+    let newAudience = '';
+    if (type === 'post') {
+      const hidden = fsBool(target, 'hiddenByReports');
+      const limited = fsBool(target, 'limitedByReports');
+      wasActioned = hidden || limited;
+      const fields = {};
+      if (wasActioned) {
+        const before = hidden
+          ? stringField(target, 'audienceBeforeHide')
+          : stringField(target, 'audienceBeforeLimit');
+        newAudience = POST_AUDIENCES.has(before) ? before : 'everyone';
+        fields.audience = newAudience;
+      }
+      const present = REPORT_POST_FIELDS.filter((f) => target[f] !== undefined);
+      if (Object.keys(fields).length || present.length) {
+        writes.push(fsUpdateWrite(env, targetPath, fields, present));
+      }
+    } else if (fsBool(target, 'hiddenByReports')) {
+      // Only undo a hide the REPORTS made (not one the video owner made).
+      wasActioned = fsBool(target, 'hidden');
+      writes.push(fsUpdateWrite(env, targetPath, { hidden: false },
+        ['hiddenAt', 'hiddenByReports', 'hiddenReason']));
+    }
+    for (const r of open) {
+      writes.push(fsUpdateWrite(env, reportsPath(r), { status: 'rejected', decidedAt: now }));
+    }
+    for (const uid of reporters) {
+      writes.push(fsIncrementWrite(env, `reporterStanding/${uid}`,
+        { updatedAt: now }, 'rejected'));
+    }
+    writes.push(fsUpdateWrite(env, `reportTargets/${key}`, {
+      needsReview: false,
+      hidden: false,
+      limited: false,
+      reviewedOk: true,
+      decision: 'restored',
+      appealDecision: fsBool(state, 'appealed') ? 'approved' : '',
+      decidedAt: now,
+      updatedAt: now,
+    }));
+    writes.push(fsUpdateWrite(env, `moderationActions/report~${key}~restored`, {
+      kind: type,
+      source: 'admin',
+      action: 'restored',
+      reason,
+      targetPath,
+      userId: ownerId,
+      rejectedReports: open.length,
+      createdAt: now,
+    }));
+    if (wasActioned && isSafeUid(ownerId)) {
+      writes.push(fsUpdateWrite(env, `users/${ownerId}/notifications/mod~${key}~restored`, {
+        type: 'moderation',
+        fromId: 'fly',
+        fromName: 'Fly',
+        fromPhoto: '',
+        // A post's sheet then says "Everything is back to normal".
+        postId: type === 'post' ? postId : '',
+        action: 'restored',
+        reason,
+        text: type === 'post'
+          ? 'Good news! A person from the Fly team reviewed your video and it is back to normal. Thanks for your patience.'
+          : 'Good news! A person from the Fly team reviewed your comment and it is visible again.',
+        seen: false,
+        createdAt: now,
+      }));
+    }
+    await firestoreCommit(env, dbToken, writes);
+
+    // Public again -> back into Search.
+    if (type === 'post' && newAudience === 'everyone' && env.SEARCH_DB) {
+      try {
+        const merged = { ...target, audience: { stringValue: 'everyone' } };
+        if (!fsBool(merged, 'videoFailed')) {
+          await searchUpsertPost(env, postId, merged);
+        }
+      } catch (_) {}
+    }
+    return jsonResponse({ ok: true, decision: 'restored', audience: newAudience });
+  }
+
+  // ---- Remove ----
+  // The post (its Bunny video + Search row go after the commit) or the
+  // comment / reply itself.
+  writes.push({ delete: fsDocName(env, targetPath) });
+  for (const r of open) {
+    writes.push(fsUpdateWrite(env, reportsPath(r), { status: 'accepted', decidedAt: now }));
+  }
+  for (const uid of reporters) {
+    writes.push(fsIncrementWrite(env, `reporterStanding/${uid}`,
+      { updatedAt: now }, 'accepted'));
+  }
+  if (isSafeUid(ownerId)) {
+    writes.push(fsIncrementWrite(env, `moderationStrikes/${ownerId}`, {
+      userId: ownerId,
+      lastStrikeAt: now,
+      lastReason: reason,
+      lastTargetPath: targetPath,
+      updatedAt: now,
+    }, 'strikes'));
+    writes.push(fsUpdateWrite(env, `users/${ownerId}/notifications/mod~${key}~removed`, {
+      type: 'moderation',
+      fromId: 'fly',
+      fromName: 'Fly',
+      fromPhoto: '',
+      postId: '', // gone - tapping opens nothing
+      action: 'removed',
+      reason,
+      text: `Your ${what} was removed because it breaks our Community Guidelines (${reasonLabel}). Repeated violations can limit your account.`,
+      seen: false,
+      createdAt: now,
+    }));
+  }
+  writes.push(fsUpdateWrite(env, `reportTargets/${key}`, {
+    needsReview: false,
+    removed: true,
+    hidden: true,
+    decision: 'removed',
+    appealDecision: fsBool(state, 'appealed') ? 'rejected' : '',
+    decidedAt: now,
+    updatedAt: now,
+  }));
+  writes.push(fsUpdateWrite(env, `moderationActions/report~${key}~removed`, {
+    kind: type,
+    source: 'admin',
+    action: 'removed',
+    reason,
+    targetPath,
+    userId: ownerId,
+    acceptedReports: open.length,
+    videoGuid: type === 'post' ? stringField(target, 'bunnyVideoId') : '',
+    createdAt: now,
+  }));
+  await firestoreCommit(env, dbToken, writes);
+
+  if (type === 'post') {
+    const videoGuid = stringField(target, 'bunnyVideoId');
+    if (/^[0-9a-fA-F-]{36}$/.test(videoGuid)) await deleteBunnyVideo(env, videoGuid);
+    if (env.SEARCH_DB) {
+      try {
+        await env.SEARCH_DB.prepare('DELETE FROM posts WHERE post_id = ?1')
+          .bind(postId).run();
+      } catch (_) {}
+    }
+    // A sound made from this video stops being usable.
+    try {
+      const sound = await firestoreGetFields(env, dbToken, `sounds/${postId}`);
+      if (sound !== null) {
+        await firestorePatch(env, dbToken, `sounds/${postId}`, {
+          status: 'removed', removedAt: now,
+        });
+      }
+    } catch (_) {}
+  }
+  return jsonResponse({ ok: true, decision: 'removed' });
 }
 
 async function handleModerateText(body, env) {
@@ -4501,6 +5049,533 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
 
   <footer>Fly · Terms of Use</footer>
 </div>
+</body>
+</html>
+`;
+// Report system step 3 (27 Oct 2026): Ko's review page, served by
+// GET /admin. Everything people wrote (captions, comments, names, appeal
+// messages) is put on the page with textContent - never as HTML.
+// No "${" or backticks inside on purpose (this is a String.raw template).
+const ADMIN_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Fly Review</title>
+<style>
+:root{
+  --bg:#0d0a14;--card:#17121f;--card2:#1e1829;--line:rgba(255,255,255,.08);
+  --text:#f4f1fa;--muted:#a49cb3;--dim:#6f6780;
+  --pink:#ff4b6e;--purple:#9c4dff;--blue:#3a8dff;--green:#24d17e;--orange:#ff9f1c;--red:#ff4757;
+  --grad:linear-gradient(120deg,#ff4b6e,#9c4dff 55%,#3a8dff);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{min-height:100vh;background:
+  radial-gradient(600px 300px at 10% -10%,rgba(255,75,110,.18),transparent 70%),
+  radial-gradient(600px 300px at 100% 0%,rgba(58,141,255,.14),transparent 70%),var(--bg)}
+button{font:inherit;cursor:pointer;border:0;color:inherit}
+.hide{display:none!important}
+.grad-text{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* Login */
+#login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.login-box{width:100%;max-width:360px;text-align:center;padding:32px 24px;border-radius:24px;
+  background:rgba(23,18,31,.75);backdrop-filter:blur(18px);border:1px solid var(--line);
+  box-shadow:0 20px 60px rgba(0,0,0,.45);animation:pop .45s cubic-bezier(.2,1.4,.4,1)}
+.logo{font-size:44px;font-weight:900;letter-spacing:-1px;margin:0}
+.logo-bird{font-size:40px;display:inline-block;animation:flap 2.4s ease-in-out infinite}
+.login-box p{color:var(--muted);margin:6px 0 22px}
+.login-box input{width:100%;padding:14px 16px;border-radius:14px;border:1px solid var(--line);
+  background:#0f0b16;color:var(--text);font-size:16px;outline:none;transition:border-color .2s}
+.login-box input:focus{border-color:var(--purple)}
+.btn-grad{width:100%;margin-top:12px;padding:14px;border-radius:14px;background:var(--grad);
+  font-weight:700;font-size:16px;transition:transform .15s}
+.btn-grad:active{transform:scale(.97)}
+.err{color:var(--red);font-size:14px;min-height:20px;margin-top:10px}
+.shake{animation:shake .4s}
+
+/* Header */
+header{position:sticky;top:0;z-index:5;padding:14px 16px 10px;
+  background:rgba(13,10,20,.78);backdrop-filter:blur(16px);border-bottom:1px solid var(--line)}
+.bar{max-width:760px;margin:0 auto;display:flex;align-items:center;gap:10px}
+.bar h1{font-size:22px;margin:0;font-weight:850;flex:1;letter-spacing:-.3px}
+.proj{font-size:11px;font-weight:800;padding:4px 8px;border-radius:8px;letter-spacing:.5px;
+  background:rgba(36,209,126,.15);color:var(--green)}
+.proj.dev{background:rgba(255,71,87,.18);color:var(--red)}
+.icon-btn{width:38px;height:38px;border-radius:12px;background:var(--card2);display:grid;place-items:center;
+  font-size:17px;transition:transform .15s}
+.icon-btn:active{transform:scale(.9)}
+.spin{animation:spin .8s linear infinite}
+.chips{max-width:760px;margin:10px auto 0;display:flex;gap:8px;overflow-x:auto;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;padding:7px 12px;border-radius:999px;background:var(--card2);color:var(--muted);
+  font-size:13px;font-weight:600;border:1px solid transparent;transition:all .2s}
+.chip b{color:var(--text);margin-left:4px}
+.chip.on{background:rgba(156,77,255,.18);border-color:rgba(156,77,255,.6);color:var(--text)}
+
+main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
+.note{color:var(--dim);font-size:13px;text-align:center;margin:6px 0 14px}
+
+/* Card */
+.card{display:flex;gap:14px;padding:14px;margin-bottom:12px;border-radius:20px;background:var(--card);
+  border:1px solid var(--line);animation:rise .35s cubic-bezier(.2,1.2,.4,1) both;
+  transition:transform .35s cubic-bezier(.5,-.3,.6,1),opacity .35s,max-height .4s .2s,margin .4s .2s,padding .4s .2s}
+.card.appeal{border-color:rgba(156,77,255,.55);box-shadow:0 0 0 1px rgba(156,77,255,.15),0 8px 30px rgba(156,77,255,.12)}
+.card.high{border-color:rgba(255,71,87,.5)}
+.card.out-ok{transform:translateX(110%) rotate(4deg);opacity:0}
+.card.out-rm{transform:scale(.6);opacity:0;filter:blur(4px)}
+.card.gone{max-height:0!important;margin:0;padding-top:0;padding-bottom:0;overflow:hidden;border-width:0}
+.media{flex:none;width:92px;height:164px;border-radius:14px;overflow:hidden;position:relative;
+  background:linear-gradient(160deg,#2a2236,#141019);display:grid;place-items:center}
+.media img{width:100%;height:100%;object-fit:cover;display:block}
+.media .play{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;
+  background:linear-gradient(transparent 55%,rgba(0,0,0,.55));color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+.media.comment{font-size:36px;height:92px}
+.body{flex:1;min-width:0}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.badge{font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;letter-spacing:.3px;text-transform:uppercase}
+.b-appeal{background:rgba(156,77,255,.2);color:#c9a4ff}
+.b-high{background:rgba(255,71,87,.18);color:#ff8b95}
+.b-hidden{background:rgba(255,159,28,.18);color:var(--orange)}
+.b-limited{background:rgba(58,141,255,.18);color:#86b8ff}
+.b-visible{background:rgba(36,209,126,.15);color:var(--green)}
+.b-gone{background:rgba(255,255,255,.08);color:var(--muted)}
+.b-type{background:rgba(255,255,255,.06);color:var(--muted)}
+.owner{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.avatar{width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--grad);flex:none}
+.owner .name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strike{font-size:12px;font-weight:700;color:var(--orange);white-space:nowrap}
+.strike.zero{color:var(--dim);font-weight:500}
+.text{color:#ddd6ea;margin:0 0 10px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  word-break:break-word;cursor:pointer}
+.text.open{-webkit-line-clamp:unset}
+.text.empty{color:var(--dim);font-style:italic}
+.reasons{margin:4px 0 8px}
+.r-row{display:flex;align-items:center;gap:8px;font-size:12.5px;margin:3px 0}
+.r-label{width:46%;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r-bar{flex:1;height:7px;border-radius:5px;background:rgba(255,255,255,.06);overflow:hidden}
+.r-bar i{display:block;height:100%;border-radius:5px;background:var(--grad);transform-origin:left;animation:grow .6s cubic-bezier(.2,1,.3,1) both}
+.r-n{width:22px;text-align:right;font-weight:700}
+.meta{font-size:12px;color:var(--dim);margin-bottom:10px}
+.appeal-msg{border-left:3px solid var(--purple);background:rgba(156,77,255,.08);padding:8px 10px;border-radius:0 10px 10px 0;
+  font-size:13.5px;margin:0 0 10px;color:#e6dcf7;word-break:break-word}
+.appeal-msg small{display:block;color:#b996f5;font-weight:700;font-size:11px;letter-spacing:.4px;text-transform:uppercase;margin-bottom:2px}
+.actions{display:flex;gap:8px}
+.act{flex:1;padding:11px 10px;border-radius:13px;font-weight:750;font-size:14px;transition:transform .15s,filter .15s}
+.act:active{transform:scale(.95)}
+.act[disabled]{filter:grayscale(1) opacity(.5);pointer-events:none}
+.act.ok{background:rgba(36,209,126,.16);color:var(--green);border:1px solid rgba(36,209,126,.35)}
+.act.rm{background:rgba(255,71,87,.14);color:#ff7a86;border:1px solid rgba(255,71,87,.35)}
+.act.clear{background:var(--card2);color:var(--muted)}
+
+/* Empty / error */
+.empty-state{text-align:center;padding:70px 20px;color:var(--muted)}
+.empty-state .big{font-size:64px;display:inline-block;animation:bounce 1.8s ease-in-out infinite}
+.empty-state h2{color:var(--text);margin:10px 0 4px}
+
+/* Sheet (confirm + player) */
+.scrim{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.55);backdrop-filter:blur(6px);
+  display:flex;align-items:flex-end;justify-content:center;animation:fade .2s}
+.sheet{width:100%;max-width:480px;background:var(--card);border-radius:24px 24px 0 0;padding:10px 20px 24px;
+  border:1px solid var(--line);animation:up .32s cubic-bezier(.2,1.2,.4,1)}
+@media(min-width:560px){.scrim{align-items:center}.sheet{border-radius:24px}}
+.grab{width:40px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:0 auto 14px}
+.sheet h3{margin:0 0 8px;font-size:19px}
+.sheet ul{margin:0 0 18px;padding-left:20px;color:var(--muted);font-size:14px}
+.sheet li{margin:4px 0}
+.player{width:100%;aspect-ratio:9/16;max-height:70vh;border:0;border-radius:16px;background:#000;display:block;margin:0 auto 12px}
+.link{color:#8ab4ff;font-size:13px;word-break:break-all}
+
+/* Toast */
+#toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,140%);z-index:30;padding:12px 18px;border-radius:14px;
+  background:rgba(30,24,41,.92);backdrop-filter:blur(12px);border:1px solid var(--line);font-weight:650;
+  box-shadow:0 10px 30px rgba(0,0,0,.4);transition:transform .35s cubic-bezier(.2,1.4,.4,1),opacity .25s,visibility .35s;max-width:90vw;
+  opacity:0;visibility:hidden}
+#toast.show{transform:translate(-50%,0);opacity:1;visibility:visible}
+
+@keyframes pop{from{transform:scale(.85);opacity:0}}
+@keyframes rise{from{transform:translateY(14px);opacity:0}}
+@keyframes up{from{transform:translateY(60px);opacity:0}}
+@keyframes fade{from{opacity:0}}
+@keyframes grow{from{transform:scaleX(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes shake{20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}
+@keyframes bounce{50%{transform:translateY(-12px) rotate(-6deg)}}
+@keyframes flap{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-6px) rotate(-8deg)}}
+@media (max-width:420px){.media{width:78px;height:139px}.r-label{width:40%}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<section id="login">
+  <form class="login-box" id="loginForm" autocomplete="off">
+    <div class="logo-bird">🐦</div>
+    <h1 class="logo grad-text">Fly Review</h1>
+    <p>Reported videos and comments, one tap away.</p>
+    <input id="token" type="password" placeholder="Admin token" autocomplete="off" spellcheck="false">
+    <button class="btn-grad" type="submit">Open the queue</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</section>
+
+<section id="app" class="hide">
+  <header>
+    <div class="bar">
+      <h1><span class="grad-text">Review queue</span></h1>
+      <span class="proj" id="proj"></span>
+      <button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh">↻</button>
+      <button class="icon-btn" id="lock" title="Lock" aria-label="Lock">🔒</button>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+  <main>
+    <div class="note">Appeals first, then high priority, then newest. Who reported is never shown.</div>
+    <div id="list"></div>
+  </main>
+</section>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var KEY = 'flyAdminToken';
+  var token = '';
+  try { token = sessionStorage.getItem(KEY) || ''; } catch (e) {}
+  var data = null;
+  var filter = 'all';
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate(12); } catch (e) {} }
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { t.classList.remove('show'); }, 2600);
+  }
+  function ago(ms) {
+    if (!ms) return '';
+    var s = Math.max(1, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return s + 's ago';
+    var m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+    var h = Math.round(m / 60); if (h < 48) return h + 'h ago';
+    return Math.round(h / 24) + 'd ago';
+  }
+
+  function api(body) {
+    return fetch('/admin-api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': token },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (r.status === 401) { var e = new Error('token'); e.code = 401; throw e; }
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+        return j;
+      });
+    });
+  }
+
+  // ---- Login ----
+  $('loginForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    token = $('token').value.trim();
+    if (!token) return;
+    load(true);
+  });
+  $('lock').addEventListener('click', function () {
+    try { sessionStorage.removeItem(KEY); } catch (e) {}
+    token = ''; data = null;
+    $('token').value = '';
+    $('app').classList.add('hide');
+    $('login').classList.remove('hide');
+  });
+  $('refresh').addEventListener('click', function () { buzz(); load(false); });
+
+  function load(fromLogin) {
+    $('refresh').classList.add('spin');
+    return api({ action: 'queue' }).then(function (j) {
+      data = j;
+      try { sessionStorage.setItem(KEY, token); } catch (e) {}
+      $('login').classList.add('hide');
+      $('app').classList.remove('hide');
+      var dev = /dev/i.test(j.project || '');
+      $('proj').textContent = dev ? 'DEV' : 'PROD';
+      $('proj').title = j.project || '';
+      $('proj').className = 'proj' + (dev ? ' dev' : '');
+      render();
+    }).catch(function (e) {
+      if (e.code === 401) {
+        try { sessionStorage.removeItem(KEY); } catch (x) {}
+        $('app').classList.add('hide');
+        $('login').classList.remove('hide');
+        $('loginErr').textContent = fromLogin ? 'That token is not right.' : 'Please sign in again.';
+        var box = $('loginForm');
+        box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
+      } else {
+        toast('😵 Could not load: ' + e.message);
+      }
+    }).then(function () { $('refresh').classList.remove('spin'); });
+  }
+
+  // ---- Render ----
+  function matches(it) {
+    if (filter === 'appeal') return it.appealed;
+    if (filter === 'high') return it.priority === 'high';
+    if (filter === 'post') return it.type === 'post';
+    if (filter === 'comment') return it.type === 'comment';
+    return true;
+  }
+  function renderChips() {
+    var items = data.items;
+    var defs = [
+      ['all', 'All', items.length],
+      ['appeal', '🙋 Appeals', items.filter(function (i) { return i.appealed; }).length],
+      ['high', '🚨 High', items.filter(function (i) { return i.priority === 'high'; }).length],
+      ['post', '🎬 Videos', items.filter(function (i) { return i.type === 'post'; }).length],
+      ['comment', '💬 Comments', items.filter(function (i) { return i.type === 'comment'; }).length]
+    ];
+    var box = $('chips');
+    box.textContent = '';
+    defs.forEach(function (d) {
+      var c = el('button', 'chip' + (filter === d[0] ? ' on' : ''), d[1]);
+      c.appendChild(el('b', null, d[2]));
+      c.addEventListener('click', function () { buzz(); filter = d[0]; render(); });
+      box.appendChild(c);
+    });
+  }
+  function render() {
+    renderChips();
+    var list = $('list');
+    list.textContent = '';
+    var shown = data.items.filter(matches);
+    if (!shown.length) {
+      var e = el('div', 'empty-state');
+      e.appendChild(el('div', 'big', data.items.length ? '🔍' : '🎉'));
+      e.appendChild(el('h2', null, data.items.length ? 'Nothing in this filter' : 'All clear!'));
+      e.appendChild(el('div', null, data.items.length ? 'Try another chip above.' : 'Nothing is waiting for review. Fly on 🐦'));
+      list.appendChild(e);
+      return;
+    }
+    shown.forEach(function (it, i) {
+      var c = card(it);
+      c.style.animationDelay = Math.min(i, 8) * 40 + 'ms';
+      list.appendChild(c);
+    });
+    if (data.more) list.appendChild(el('div', 'note', '+' + data.more + ' more - decide these first, then refresh.'));
+  }
+
+  function card(it) {
+    var c = el('div', 'card' + (it.appealed ? ' appeal' : '') + (it.priority === 'high' ? ' high' : ''));
+
+    // Media
+    var m = el('div', 'media' + (it.type === 'comment' ? ' comment' : ''));
+    if (it.type === 'post' && it.videoGuid && data.cdn) {
+      var img = el('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      img.src = 'https://' + data.cdn + '/' + it.videoGuid + '/thumbnail.jpg';
+      img.onerror = function () { img.remove(); };
+      m.appendChild(img);
+      m.appendChild(el('div', 'play', '▶'));
+      m.style.cursor = 'pointer';
+      m.addEventListener('click', function () { buzz(); openPlayer(it); });
+    } else {
+      m.textContent = it.type === 'comment' ? '💬' : '🎬';
+    }
+    c.appendChild(m);
+
+    var b = el('div', 'body');
+    var badges = el('div', 'badges');
+    if (it.appealed) badges.appendChild(el('span', 'badge b-appeal', 'Appeal'));
+    if (it.priority === 'high') badges.appendChild(el('span', 'badge b-high', 'High priority'));
+    if (it.gone) badges.appendChild(el('span', 'badge b-gone', 'Already deleted'));
+    else if (it.hidden) badges.appendChild(el('span', 'badge b-hidden', 'Hidden'));
+    else if (it.limited) badges.appendChild(el('span', 'badge b-limited', 'Limited reach'));
+    else badges.appendChild(el('span', 'badge b-visible', 'Visible'));
+    badges.appendChild(el('span', 'badge b-type', it.type === 'post' ? 'Video' : (it.path.indexOf('/replies/') > 0 ? 'Reply' : 'Comment')));
+    if (it.reviewedOk) badges.appendChild(el('span', 'badge b-visible', 'Restored before'));
+    b.appendChild(badges);
+
+    var o = el('div', 'owner');
+    var av = el('img', 'avatar');
+    av.alt = '';
+    av.referrerPolicy = 'no-referrer';
+    if (it.ownerPhoto && /^https:\/\//.test(it.ownerPhoto)) av.src = it.ownerPhoto;
+    else av.style.visibility = 'visible';
+    av.onerror = function () { av.removeAttribute('src'); };
+    o.appendChild(av);
+    o.appendChild(el('span', 'name', it.ownerName));
+    o.appendChild(el('span', 'strike' + (it.strikes ? '' : ' zero'),
+      it.strikes ? '⚠️ ' + it.strikes + ' strike' + (it.strikes > 1 ? 's' : '') : 'no strikes'));
+    b.appendChild(o);
+
+    var t = el('p', 'text' + (it.text ? '' : ' empty'), it.text || (it.type === 'post' ? 'No caption' : '(empty)'));
+    t.title = 'Tap to show all';
+    t.addEventListener('click', function () { t.classList.toggle('open'); });
+    b.appendChild(t);
+
+    if (it.appealed) {
+      var am = el('div', 'appeal-msg');
+      am.appendChild(el('small', null, 'Owner says'));
+      am.appendChild(document.createTextNode(it.appealMessage || '(no message - just asked for a review)'));
+      b.appendChild(am);
+    }
+
+    var rs = el('div', 'reasons');
+    var keys = Object.keys(it.reasons || {}).sort(function (x, y) { return it.reasons[y] - it.reasons[x]; });
+    var max = 1;
+    keys.forEach(function (k) { if (it.reasons[k] > max) max = it.reasons[k]; });
+    keys.forEach(function (k) {
+      var row = el('div', 'r-row');
+      row.appendChild(el('span', 'r-label', (data.reasonLabels && data.reasonLabels[k]) || k));
+      var bar = el('span', 'r-bar');
+      var fill = el('i');
+      fill.style.width = Math.round(it.reasons[k] / max * 100) + '%';
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      row.appendChild(el('span', 'r-n', it.reasons[k]));
+      rs.appendChild(row);
+    });
+    if (keys.length) b.appendChild(rs);
+
+    var ai = it.aiChecked ? 'AI: checked, found nothing' : 'AI: not checked yet';
+    if (it.strictChecked && it.strictChecked.length) ai += ' · strict look: ' + it.strictChecked.join(', ');
+    var meta = [it.reports + ' counted report' + (it.reports === 1 ? '' : 's'), ai];
+    if (it.updatedAt) meta.push('updated ' + ago(it.updatedAt));
+    if (it.type === 'post' && it.audience && !it.gone) meta.push('audience: ' + it.audience);
+    b.appendChild(el('div', 'meta', meta.join(' · ')));
+
+    var acts = el('div', 'actions');
+    if (it.gone) {
+      var clr = el('button', 'act clear', '🧹 Clear from queue');
+      clr.addEventListener('click', function () { decide(it, 'restore', c, [clr]); });
+      acts.appendChild(clr);
+    } else {
+      var actioned = it.hidden || it.limited;
+      var ok = el('button', 'act ok', actioned ? '✅ Restore' : '👍 Keep up');
+      var rm = el('button', 'act rm', '🗑️ Remove');
+      ok.addEventListener('click', function () { buzz(); confirmSheet(it, 'restore', function () { decide(it, 'restore', c, [ok, rm]); }); });
+      rm.addEventListener('click', function () { buzz(); confirmSheet(it, 'remove', function () { decide(it, 'remove', c, [ok, rm]); }); });
+      acts.appendChild(ok);
+      acts.appendChild(rm);
+    }
+    b.appendChild(acts);
+    c.appendChild(b);
+    return c;
+  }
+
+  // ---- Sheets ----
+  function openSheet(build) {
+    var scrim = el('div', 'scrim');
+    var sh = el('div', 'sheet');
+    sh.appendChild(el('div', 'grab'));
+    function close() { scrim.remove(); document.removeEventListener('keydown', onKey); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    build(sh, close);
+    scrim.appendChild(sh);
+    scrim.addEventListener('click', function (e) { if (e.target === scrim) close(); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(scrim);
+  }
+
+  function confirmSheet(it, action, go) {
+    var what = it.type === 'post' ? 'video' : 'comment';
+    openSheet(function (sh, close) {
+      var lines;
+      if (action === 'restore') {
+        sh.appendChild(el('h3', null, (it.hidden || it.limited) ? '✅ Restore this ' + what + '?' : '👍 Keep this ' + what + ' up?'));
+        lines = [];
+        if (it.hidden || it.limited) lines.push(it.type === 'post' ? 'Its audience goes back to what the owner chose.' : 'Everyone can see it again.');
+        lines.push('The open reports are marked as rejected (3 rejections = that reporter stops counting).');
+        if (it.type === 'post') lines.push('The same reports can not limit it again - only the AI can still hide it.');
+        if (it.hidden || it.limited) lines.push('The owner gets a "good news" note from Fly.');
+      } else {
+        sh.appendChild(el('h3', null, '🗑️ Remove this ' + what + ' for good?'));
+        lines = [
+          it.type === 'post' ? 'The post, its video file and its Search entry are deleted. This can not be undone.' : 'The ' + what + ' is deleted. This can not be undone.',
+          'The owner gets a strike (now ' + it.strikes + ' → ' + (it.strikes + 1) + ') and a note from Fly with the reason.',
+          'The reporters are thanked silently (their report counts as accepted).'
+        ];
+      }
+      var ul = el('ul');
+      lines.forEach(function (l) { ul.appendChild(el('li', null, l)); });
+      sh.appendChild(ul);
+      var row = el('div', 'actions');
+      var no = el('button', 'act clear', 'Cancel');
+      var yes = el('button', 'act ' + (action === 'restore' ? 'ok' : 'rm'), action === 'restore' ? 'Yes, restore' : 'Yes, remove');
+      no.addEventListener('click', close);
+      yes.addEventListener('click', function () { buzz(); close(); go(); });
+      row.appendChild(no);
+      row.appendChild(yes);
+      sh.appendChild(row);
+    });
+  }
+
+  function openPlayer(it) {
+    openSheet(function (sh, close) {
+      if (data.library) {
+        var f = el('iframe', 'player');
+        f.src = 'https://iframe.mediadelivery.net/embed/' + encodeURIComponent(data.library) + '/' +
+          encodeURIComponent(it.videoGuid) + '?autoplay=true&preload=true';
+        f.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+        f.setAttribute('allowfullscreen', '');
+        f.referrerPolicy = 'no-referrer';
+        sh.appendChild(f);
+      }
+      if (it.videoUrl) {
+        var p = el('div', 'meta', 'Player blank? Open the stream directly: ');
+        var a = el('a', 'link', it.videoUrl);
+        a.href = it.videoUrl;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        p.appendChild(a);
+        sh.appendChild(p);
+      }
+      var x = el('button', 'act clear', 'Close');
+      x.style.width = '100%';
+      x.addEventListener('click', close);
+      sh.appendChild(x);
+    });
+  }
+
+  // ---- Decide ----
+  function decide(it, action, cardEl, buttons) {
+    buttons.forEach(function (bt) { bt.disabled = true; });
+    api({ action: action, key: it.key }).then(function (j) {
+      cardEl.style.maxHeight = cardEl.offsetHeight + 'px';
+      cardEl.classList.add(action === 'remove' ? 'out-rm' : 'out-ok');
+      setTimeout(function () { cardEl.classList.add('gone'); }, 300);
+      setTimeout(function () {
+        data.items = data.items.filter(function (x) { return x.key !== it.key; });
+        render();
+      }, 750);
+      if (j.gone) toast('🧹 Cleared - it was already deleted');
+      else if (action === 'remove') toast('🗑️ Removed · strike added · owner told');
+      else toast((it.hidden || it.limited) ? '✅ Restored · owner told' : '👍 Kept up · reports rejected');
+    }).catch(function (e) {
+      buttons.forEach(function (bt) { bt.disabled = false; });
+      if (e.code === 401) { toast('🔒 Please sign in again'); $('lock').click(); return; }
+      toast('😵 Did not work: ' + e.message);
+    });
+  }
+
+  if (token) load(false);
+  else $('token').focus();
+})();
+</script>
 </body>
 </html>
 `;

@@ -806,6 +806,55 @@ OK). Play Console: Terms URL =
 > copy the fly-dev-only REPORT_RECHECK_AT / REPORT_MIN_ACCOUNT_AGE_HOURS
 > variables to prod)._
 >
+> _27 Oct 2026 (evening, confirmed by Ko on DEV only - prod NOT done yet;
+> Worker only, no APK, no rules change): **Report system step 3 - admin
+> page.** Worker `GET /admin` = Ko's review page (Fly gradient, DEV / PROD
+> pill from FIREBASE_PROJECT_ID). Ko types `SEARCH_ADMIN_TOKEN` on the page
+> (never in the link; kept in that tab's sessionStorage, 🔒 forgets it);
+> its calls go to `POST /admin-api` (header `X-Admin-Token`, actions
+> `queue` / `restore` / `remove` with `key`), routed before the Firebase
+> check. Strict CSP (connect-src 'self', frame-src only Bunny's
+> iframe.mediadelivery.net player), everything people wrote is shown with
+> textContent, reporter ids never reach the page. Queue = `reportTargets`
+> with `needsReview: true` (posts + comments; user reports are still only
+> recorded), appeals first, then priority high, then newest; each card:
+> thumbnail (tap = Bunny embed player), owner + strikes, caption /
+> comment, "Owner says" appeal text, reason bars, AI result, filter chips.
+> **Restore** (called "Keep up" when nothing was hidden / limited): post
+> audience back from audienceBeforeHide / audienceBeforeLimit, ALL report
+> fields deleted (REPORT_POST_FIELDS incl. appealStatus), back into D1
+> Search if public; a comment hidden BY REPORTS gets hidden: false (a hide
+> by the video owner is left alone); `reportTargets.reviewedOk: true` (on
+> reportTargets, NOT the post - the owner could set a post field) -> later
+> report waves can't limit it again, only the AI's strict look can still
+> hide it; its open reports -> status `rejected`, each reporter
+> `reporterStanding/{uid}.rejected +1`; owner note `mod~{key}~restored`
+> ("Good news! ...", postId so the sheet says "not under review").
+> **Remove**: deletes the post (+ Bunny video, D1 row, `sounds/{postId}`
+> -> status removed) or the comment / reply; `moderationStrikes/{owner}`
+> strikes +1 (+ lastReason / lastTargetPath / lastStrikeAt); reports
+> `accepted`, reporters accepted +1; owner note `mod~{key}~removed` with
+> the reason and NO postId (the post is gone). An already-deleted target
+> is just cleared ("Clear from queue", reports `dismissed`). **Ko's rule
+> (27 Oct): strikes and reporter counts never go in `users/{uid}` (the
+> user can edit their own doc) - only in `moderationStrikes` /
+> `reporterStanding`, which have no rule = no app access.** handleReport
+> changes: a reporter with 3 rejected reports is stored `counted: false`;
+> a report Ko already decided (`REPORT_DECIDED` rejected / accepted /
+> dismissed) is not reset by reporting again and no longer counts in
+> reportCounts. Writes use one Firestore `:commit` (with `increment`
+> transforms) and the queue one `:batchGet` - few subrequests (free plan
+> = 50). Tested on dev: queue showed both test posts (appeal + high
+> priority first), Bunny player plays, Restore -> "Good news" notification
+> + "Your video is not under review", Under review chip gone; Remove ->
+> video gone. Note: B and C couldn't re-report the restored video - it is
+> covered for them by ReportedCover (they reported it, step 2), as
+> designed. Known: removing a comment leaves its replies in Firestore
+> (invisible in the app); strikes are only counted (no ban yet). **Next:**
+> roll steps 1+2+3 to prod together (Worker + firestore.rules + APK; do
+> NOT copy REPORT_RECHECK_AT / REPORT_MIN_ACCOUNT_AGE_HOURS to prod), then
+> what strikes do (e.g. 3 -> no posting for a while)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2485,6 +2534,19 @@ screen needs to be created from scratch — it may already exist there.)_
 - `reports/{id}`: { targetType ('post'|'comment'|'user'|'sound'), targetId,
   targetOwnerId, parentPostId?, reporterId, reason, status, createdAt } —
   write-only from the app; reviewed in the Console.
+  Since 26 Oct 2026 the Worker writes them (`reports/{key}~{uid}`, +
+  targetKey, targetPath, counted, source 'worker'); status pending ->
+  rejected / accepted / dismissed by Ko's admin page (27 Oct).
+- `reportTargets/{key}` (26-27 Oct 2026, Worker only, no rule): one per
+  reported thing - counts per reason, priority, needsReview, hidden /
+  limited, aiChecked / strictChecked_<reason>, appealed / appealMessage,
+  reviewedOk, decision ('restored' | 'removed' | 'gone'), decidedAt.
+- `moderationStrikes/{uid}` (27 Oct 2026, Worker only, no rule): { strikes,
+  lastStrikeAt, lastReason, lastTargetPath } - +1 per Remove on /admin.
+- `reporterStanding/{uid}` (27 Oct 2026, Worker only, no rule): {
+  rejected, accepted } - 3 rejected = that person's reports stop counting.
+- `moderationActions/{id}` (Worker only, no rule): log of every automatic
+  removal, report hide / limit, appeal and admin decision.
 - `videoStatus/{bunnyVideoGuid}` (Sep 2026): { ready, failed, status,
   updatedAt } — written only by the Worker's Bunny webhook.
 - `deletionRequests/{uuid}` (3 Oct 2026): { email (lower-cased),
@@ -2672,8 +2734,8 @@ others only see it once encoded (Bunny webhook).
     Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
     Store blockers first - (1) server-side video re-check DONE, (2) the
     two Worker security holes (`/token` any room, `/call-push` callerId)
-    DONE 25 Oct, **(3) Report system (steps 1 + 2 on dev 26-27 Oct - next step 3 admin
-    page, then prod)** + admin page, (4) Google Play Child Safety
+    DONE 25 Oct, **(3) Report system (steps 1 + 2 + 3 admin page done on dev 26-27 Oct -
+    next: prod for all three, then what strikes do)**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
