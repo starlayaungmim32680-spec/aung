@@ -8,6 +8,7 @@ import 'chat_screen.dart';
 import 'public_profile_screen.dart';
 import 'friend_requests_screen.dart';
 import 'home_screen.dart' show PostFromNotificationScreen;
+import 'report_review.dart' show showReviewSheet;
 
 // Shows the current user's notifications (reactions, comments, replies,
 // messages, follows, friend requests / accepted requests)
@@ -62,6 +63,10 @@ class NotificationsScreen extends StatelessWidget {
         return 'sent you a friend request';
       case 'friend_accept':
         return 'accepted your friend request 🎉';
+      case 'moderation':
+        // 27 Oct 2026 (Report system step 2) - written by the Worker,
+        // shown as "Fly - Your video ...".
+        return '- $text';
       default:
         return 'did something';
     }
@@ -85,6 +90,8 @@ class NotificationsScreen extends StatelessWidget {
         return Icons.group_add;
       case 'friend_accept':
         return Icons.people_alt;
+      case 'moderation':
+        return Icons.shield_outlined;
       default:
         return Icons.notifications;
     }
@@ -107,6 +114,8 @@ class NotificationsScreen extends StatelessWidget {
       case 'friend_request':
       case 'friend_accept':
         return const Color(0xFFFF4B6E);
+      case 'moderation':
+        return const Color(0xFFFF9F1C);
       default:
         return Colors.grey;
     }
@@ -119,6 +128,12 @@ class NotificationsScreen extends StatelessWidget {
   void _openNotification(BuildContext context, Map<String, dynamic> data) {
     final String type = data['type'] ?? '';
     final String fromId = (data['fromId'] as String?) ?? '';
+    if (type == 'moderation') {
+      // "Your video is under review" - why, and Appeal.
+      final String postId = (data['postId'] as String?) ?? '';
+      if (postId.isNotEmpty) showReviewSheet(context, postId);
+      return;
+    }
     if (fromId.isEmpty) return;
     if (type == 'message') {
       Navigator.push(

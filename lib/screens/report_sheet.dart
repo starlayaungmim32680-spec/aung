@@ -14,12 +14,65 @@
 //   - users are never hidden automatically.
 // Who reported is never shown to anyone. Older app builds still write
 // `reports` directly (kept by firestore.rules), but those don't count.
+//
+// 27 Oct 2026 (step 2): like Facebook / TikTok, a video I reported is
+// covered for ME right away ("You won't see this video again"), whatever
+// the Worker decides - [ReportedPosts], kept on this phone.
 import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../app_config.dart';
 import 'worker_auth.dart';
+
+/// The posts I reported, per account, on this phone (newest last, max
+/// [_max]). 27 Oct 2026 fix: kept per signed-in account - before, a second
+/// account on the same phone also saw the cover.
+class ReportedPosts {
+  ReportedPosts._() {
+    FirebaseAuth.instance.authStateChanges().listen((user) {
+      if (user?.uid != _uid) _load(user?.uid);
+    });
+    _load(FirebaseAuth.instance.currentUser?.uid);
+  }
+  static final ReportedPosts instance = ReportedPosts._();
+
+  static const String _prefsKeyBase = 'reported_posts_v2_';
+  static const int _max = 500;
+
+  final ValueNotifier<Set<String>> ids = ValueNotifier<Set<String>>(<String>{});
+  String? _uid;
+
+  bool contains(String? postId) =>
+      postId != null && postId.isNotEmpty && ids.value.contains(postId);
+
+  Future<void> _load(String? uid) async {
+    _uid = uid;
+    ids.value = <String>{};
+    if (uid == null) return;
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final List<String> saved =
+          prefs.getStringList('$_prefsKeyBase$uid') ?? const [];
+      if (_uid == uid && saved.isNotEmpty) ids.value = {...ids.value, ...saved};
+    } catch (_) {}
+  }
+
+  Future<void> add(String postId) async {
+    final String? uid = _uid;
+    if (uid == null || postId.isEmpty || ids.value.contains(postId)) return;
+    final List<String> list = [...ids.value, postId];
+    final List<String> kept =
+        list.length > _max ? list.sublist(list.length - _max) : list;
+    ids.value = kept.toSet();
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('$_prefsKeyBase$uid', kept);
+    } catch (_) {}
+  }
+}
 
 enum ReportTargetType { post, comment, user }
 
@@ -110,6 +163,9 @@ Future<void> showReportSheet(
     targetPath: targetPath,
     reason: reason,
   );
+  if (ok && type == ReportTargetType.post && targetId != null) {
+    ReportedPosts.instance.add(targetId);
+  }
   messenger.showSnackBar(SnackBar(
     content: Text(ok
         ? "Thanks for reporting. We'll review it."

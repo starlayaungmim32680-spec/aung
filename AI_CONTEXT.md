@@ -766,6 +766,46 @@ OK). Play Console: Terms URL =
 > reason + Appeal; then step 3 admin page (remove / restore -> restore
 > puts audienceBeforeHide back). Roll steps 1+2 to prod together._
 >
+> _27 Oct 2026 (confirmed by Ko on DEV only - prod NOT done yet):
+> **Report system step 2.** New `lib/screens/report_review.dart`:
+> `isUnderReview(post)` (hiddenByReports or limitedByReports),
+> `ReviewBadge` (orange tappable "Under review" chip shown on MY video in
+> home_video_post.dart instead of the Only me / Followers chip),
+> `showReviewSheet(context, postId)` (live post doc: hidden -> "Your video
+> is hidden", limited -> "Your video is only shown to your followers",
+> "Reported for: <reason>" from hiddenReason / limitedReason - never who,
+> Community Guidelines link, one Appeal with an optional 300-char
+> message -> "✅ Appeal sent" once appealStatus is set), and
+> `ReportedCover` (blurred "Thanks for reporting - You won't see this
+> video again" + Next video, over a video I reported; the player stays
+> paused - `_reportedByMe` guards autoplay / loop replay). `ReportedPosts`
+> (report_sheet.dart): the posts I reported, **per account**
+> (SharedPreferences `reported_posts_v2_{uid}`, reloads on auth change -
+> v1 was per phone and a 2nd account on the same phone saw the cover too,
+> fixed the same night). Worker: on a post hide / limit it writes
+> `users/{owner}/notifications/mod~{key}~{action}` (type `moderation`,
+> fromId `fly`, fromName `Fly`, postId, action, reason, text); a limit now
+> also stores `limitedReason`; new `POST /appeal {postId, message}`
+> (`handleAppeal`: owner only, post must be hidden or limited, one per
+> post -> post `appealStatus: 'pending'` + `appealedAt`,
+> `reportTargets/{key}` appealed / appealMessage / needsReview /
+> priority high, logged in moderationActions). notifications_screen.dart:
+> type `moderation` ("Fly - <text>", orange shield) opens
+> showReviewSheet. firestore.rules: `reportFields()` now also has
+> limitedReason, appealStatus, appealedAt. Tested on dev (A + B + C):
+> notification arrived, sheet said "Reported for: Spam or scam", Appeal
+> -> "Appeal sent"; the reporter's cover. Known: the chip sits at
+> padding.top + 60, which overlaps the Stories bar on Home (the old
+> Only me chip did too) - move it later. **Next = step 3:** admin page on
+> the Worker (ADMIN token): the review queue from reportTargets
+> (needsReview, appeals and priority high first) with Restore (puts
+> audienceBeforeHide / audienceBeforeLimit back, clears the report fields,
+> marks the post reviewed so the same brigading can't limit it again,
+> notifies the owner) and Remove (delete + strike); reporters rejected 3
+> times stop counting. Then prod: Worker + rules + APK together (do NOT
+> copy the fly-dev-only REPORT_RECHECK_AT / REPORT_MIN_ACCOUNT_AGE_HOURS
+> variables to prod)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2632,8 +2672,8 @@ others only see it once encoded (Bunny webhook).
     Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
     Store blockers first - (1) server-side video re-check DONE, (2) the
     two Worker security holes (`/token` any room, `/call-push` callerId)
-    DONE 25 Oct, **(3) Report system (step 1 on dev 26 Oct - next step 2
-    "Under review" + Appeal, then step 3 admin page, then prod)** + admin page, (4) Google Play Child Safety
+    DONE 25 Oct, **(3) Report system (steps 1 + 2 on dev 26-27 Oct - next step 3 admin
+    page, then prod)** + admin page, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and

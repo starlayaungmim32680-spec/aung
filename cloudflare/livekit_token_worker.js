@@ -168,6 +168,8 @@
 //  POST /report           - a signed-in user reports a post, comment /
 //                         reply or user (25 Oct 2026); hides content
 //                         when the rules say so - see handleReport.
+//  POST /appeal           - the owner of a hidden / limited post asks Ko
+//                         to look again (27 Oct 2026) - see handleAppeal.
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -337,6 +339,9 @@ export default {
     }
     if (path === '/report') {
       return handleReport(body, env, caller);
+    }
+    if (path === '/appeal') {
+      return handleAppeal(body, env, caller);
     }
     if (path === '/create-video') {
       return handleCreateVideo(body, env);
@@ -3746,6 +3751,7 @@ async function handleReport(body, env, caller) {
             audience: 'followers',
             audienceBeforeLimit: audience,
             limitedByReports: true,
+            limitedReason: reason,
             limitedAt: new Date(),
           });
         }
@@ -3776,10 +3782,88 @@ async function handleReport(body, env, caller) {
           priority: urgent ? 'high' : 'normal',
           createdAt: new Date(),
         });
+      // Step 2 (27 Oct 2026): tell the owner of a post why (never who).
+      if (type === 'post' && isSafeUid(ownerId)) {
+        try {
+          await firestorePatch(env, dbToken,
+            `users/${ownerId}/notifications/mod~${key}~${action}`, {
+              type: 'moderation',
+              fromId: 'fly',
+              fromName: 'Fly',
+              fromPhoto: '',
+              postId: targetPath.split('/').pop(),
+              action,
+              reason,
+              text: action === 'hidden'
+                ? 'Your video was hidden because it may break our Community Guidelines. Tap to see why or to appeal.'
+                : 'Your video is only shown to your followers for now while we review some reports. Tap to see why or to appeal.',
+              seen: false,
+              createdAt: new Date(),
+            });
+        } catch (_) {}
+      }
     }
     return jsonResponse({ ok: true });
   } catch (err) {
     console.log('report failed', err.message);
+    return jsonResponse({ error: 'try again' }, 503);
+  }
+}
+
+// POST /appeal {postId, message} (27 Oct 2026, Report system step 2):
+// the OWNER of a post hidden or limited by reports asks for a person to
+// look again. One appeal per post. It goes to the top of Ko's review
+// queue (reportTargets: appealed + priority high); the post gets
+// appealStatus 'pending' (firestore.rules: only the Worker writes it).
+async function handleAppeal(body, env, caller) {
+  const uid = caller && caller.uid;
+  const postId = String(body.postId || '');
+  if (!isSafeUid(uid) || !REPORT_ID_RE.test(postId)) {
+    return jsonResponse({ error: 'bad request' }, 400);
+  }
+  const message = String(body.message || '').trim().slice(0, 500);
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const path = `posts/${postId}`;
+    const post = await firestoreGetFields(env, dbToken, path);
+    if (post === null) return jsonResponse({ error: 'gone' }, 404);
+    if (stringField(post, 'userId') !== uid) {
+      return jsonResponse({ error: 'not your post' }, 403);
+    }
+    if (!fsBool(post, 'hiddenByReports') && !fsBool(post, 'limitedByReports')) {
+      return jsonResponse({ error: 'nothing to appeal' }, 400);
+    }
+    if (stringField(post, 'appealStatus')) {
+      return jsonResponse({ ok: true, already: true });
+    }
+    const key = `post~${path.replace(/\//g, '~')}`;
+    await firestorePatch(env, dbToken, path, {
+      appealStatus: 'pending',
+      appealedAt: new Date(),
+    });
+    await firestorePatch(env, dbToken, `reportTargets/${key}`, {
+      targetType: 'post',
+      targetPath: path,
+      ownerId: uid,
+      appealed: true,
+      appealMessage: message,
+      appealedAt: new Date(),
+      needsReview: true,
+      priority: 'high',
+      updatedAt: new Date(),
+    });
+    await firestorePatch(env, dbToken, `moderationActions/report~${key}~appeal`, {
+      kind: 'post',
+      source: 'appeal',
+      action: 'appeal',
+      targetPath: path,
+      userId: uid,
+      message,
+      createdAt: new Date(),
+    });
+    return jsonResponse({ ok: true });
+  } catch (err) {
+    console.log('appeal failed', err.message);
     return jsonResponse({ error: 'try again' }, 503);
   }
 }

@@ -50,7 +50,8 @@ service cloud.firestore {
     // 2026, POST /report).
     function reportFields() {
       return ['hiddenByReports', 'hiddenReason', 'audienceBeforeHide',
-              'limitedByReports', 'audienceBeforeLimit', 'limitedAt'];
+              'limitedByReports', 'audienceBeforeLimit', 'limitedAt',
+              'limitedReason', 'appealStatus', 'appealedAt'];
     }
 
     // Only changes the caller's own entry inside a `reactions` map

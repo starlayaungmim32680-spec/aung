@@ -174,6 +174,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
           .doc(widget.postId)
           .snapshots();
     }
+    ReportedPosts.instance.ids.addListener(_onReportedChanged);
     _initializeVideo();
     _recordView();
     if (widget.openCommentsOnStart || widget.burstEmojiOnStart != null) {
@@ -234,6 +235,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
   bool _appBackgrounded = false;
 
   bool get _isAway => _routeCovered || _appBackgrounded;
+
+  // 27 Oct 2026: a video I reported stays paused under its cover.
+  bool get _reportedByMe => ReportedPosts.instance.contains(widget.postId);
+
+  void _onReportedChanged() {
+    if (_reportedByMe) _controller?.pause();
+  }
 
   void _pauseForNavigation() {
     if (_isAway) return; // already paused for an earlier reason
@@ -503,7 +511,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
         // Stay paused (the seek above already drew the frame).
       } else if (_isAway) {
         _wasPlayingBeforeLeaving = true;
-      } else {
+      } else if (!_reportedByMe) {
         controller.play();
       }
       controller.addListener(_onVideoProgress);
@@ -660,9 +668,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
         // swiping away themselves — move on to the next one.
         widget.onVideoEnd();
       } else {
-        // Replay it for another loop.
+        // Replay it for another loop (not one I reported - it's covered).
         controller.seekTo(Duration.zero);
-        controller.play();
+        if (!_reportedByMe) controller.play();
         // Give the seek a moment to land before watching for the end
         // again, so the same loop isn't counted twice.
         Future.delayed(const Duration(milliseconds: 300), () {
@@ -1461,6 +1469,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
 
   @override
   void dispose() {
+    ReportedPosts.instance.ids.removeListener(_onReportedChanged);
     flyRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _processingRetryTimer?.cancel();
@@ -2536,7 +2545,19 @@ class _VideoPostItemState extends State<_VideoPostItem>
               // "Who can watch" chip on MY non-public videos (24 Oct 2026,
               // post_audience.dart), so I can see at a glance who else can
               // watch this one. Nothing for Everyone videos.
+              // 27 Oct 2026 (Report system step 2): a video that reports
+              // hid or limited shows a tappable "Under review" chip instead
+              // (report_review.dart) - its audience was changed by the
+              // Worker, not by me.
               if (user != null &&
+                  widget.userId == user.uid &&
+                  isUnderReview(livePostData))
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 60,
+                  left: 12,
+                  child: ReviewBadge(postId: widget.postId),
+                )
+              else if (user != null &&
                   widget.userId == user.uid &&
                   !audienceOf(livePostData).isPublic)
                 Positioned(
@@ -2544,6 +2565,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   left: 12,
                   child: IgnorePointer(
                     child: AudienceBadge(audience: audienceOf(livePostData)),
+                  ),
+                ),
+              // A video I reported is covered for me right away (27 Oct
+              // 2026, like Facebook / TikTok) - report_review.dart.
+              if (user == null || widget.userId != user.uid)
+                Positioned.fill(
+                  child: ValueListenableBuilder<Set<String>>(
+                    valueListenable: ReportedPosts.instance.ids,
+                    builder: (context, reported, _) =>
+                        reported.contains(widget.postId)
+                            ? ReportedCover(onNext: widget.onVideoEnd)
+                            : const IgnorePointer(child: SizedBox.shrink()),
                   ),
                 ),
             ],
