@@ -855,6 +855,29 @@ OK). Play Console: Terms URL =
 > NOT copy REPORT_RECHECK_AT / REPORT_MIN_ACCOUNT_AGE_HOURS to prod), then
 > what strikes do (e.g. 3 -> no posting for a while)._
 >
+> _28-29 Oct 2026 (confirmed by Ko on PROD with two phones): **Report
+> system steps 1 + 2 + 3 are live on prod.** Order used: prod Worker
+> `livekit-token-worker` (same file as commit `b8c358b`; Ko confirmed no
+> dashboard edits since `6083b08`) -> prod rules on `aung-1756e` (check:
+> the Rules page contains `appealStatus`) -> prod APK `Fly-28Oct-report.apk`
+> (built WITH `--build-number`, string check `Your video is not under
+> review` = True). REPORT_RECHECK_AT / REPORT_MIN_ACCOUNT_AGE_HOURS were
+> NOT added to prod (defaults 3 / 24 h apply). Prod `/admin`
+> (`livekit-token-worker.chakaboycom.workers.dev/admin`, green PROD pill)
+> showed "All clear", then a Child safety report from a second account ->
+> one card HIGH PRIORITY + VISIBLE (post not hidden), Keep up -> All clear.
+> Lessons: (1) the first prod APK was built WITHOUT `--build-number`
+> (versionCode 1 = lower than the installed app) and the phone said
+> "package appears to be invalid" / "problem while parsing the package" -
+> the assistant first blamed the Drive copy; always use the build command
+> in §7 step 5. (2) "Could not send the report" when Ko reported from the
+> post owner's own account - the Worker correctly answered 400 `own
+> content`, but the app still offers "Report post" on my own post and
+> shows one generic error (To-do). (3) On prod the card said "AI: not
+> checked yet" (reportAiFlags returned null: OpenAI timeout or a video
+> picture that couldn't be checked) - the post is then not hidden and
+> the next report retries; look at the Worker logs (To-do)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2734,8 +2757,14 @@ others only see it once encoded (Bunny webhook).
     Worker's `/upload-image`. **Launch order agreed with Ko (25 Oct):**
     Store blockers first - (1) server-side video re-check DONE, (2) the
     two Worker security holes (`/token` any room, `/call-push` callerId)
-    DONE 25 Oct, **(3) Report system (steps 1 + 2 + 3 admin page done on dev 26-27 Oct -
-    next: prod for all three, then what strikes do)**, (4) Google Play Child Safety
+    DONE 25 Oct, **(3) Report system DONE (steps 1 + 2 + 3 on dev 26-27 Oct, on prod
+    28-29 Oct). Follow-ups: (a) hide "Report post" on my own post (video
+    ••• sheet in home_video_post.dart) and show "You can't report your own
+    post" instead of the generic error (sendReport only returns a bool);
+    (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
+    while); (c) prod "AI: not checked yet" - check the Worker logs for
+    why reportAiFlags returned null; (d) move the Under review chip off
+    the Stories bar**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
@@ -2878,8 +2907,14 @@ or point at the real error. Pre-existing, harmless noise to ignore:
 class" error (old template test, doesn't affect the APK). Mention which
 new infos came from your own code if any.
 
-**5. Build + test checklist.** Then `flutter build apk --release --flavor
-prod` (→ `app-prod-release.apk`; `--flavor dev` for Fly Dev), install
+**5. Build + test checklist.** Then build - **ALWAYS with a build
+number** (`pubspec.yaml` is `1.0.0+1`; without it Android refuses the
+update: "package appears to be invalid" / "problem while parsing the
+package", 27-28 Oct 2026):
+`$bn = Get-Date -Format "MMddHHmm"; flutter build apk --release --flavor prod --build-number=$bn`
+(→ `app-prod-release.apk`; `--flavor dev` → `app-dev-release.apk` for
+Fly Dev). Copy it under a unique name before sending it to a phone
+(`Fly-28Oct-report.apk`, `FlyDev-bn<number>.apk`), install
 on **both** test phones (A and B, vivo), and give a numbered A/B test
 script with the exact expected result for each step ("B: close Fly from
 Recents → A sends → B gets 🔔 …, A shows ●✓ Delivered"). Mention vivo
