@@ -2288,28 +2288,33 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      const SizedBox(height: 6),
-                      // More options (Report / Block)
-                      GestureDetector(
-                        onTap: () => _showReportBlockSheet(context),
-                        child: _FlyActionGlow(
-                          active: false,
-                          child: const SizedBox(
-                            width: 40,
-                            height: 40,
-                            child: Center(
-                              child: Icon(
-                                Icons.more_horiz,
-                                color: Colors.white,
-                                size: 26,
-                                shadows: [
-                                  Shadow(color: Colors.black, blurRadius: 8),
-                                ],
+                      // More options (Report / Reply / Block) - only on
+                      // other people's videos (29 Oct 2026: nobody can
+                      // report their own video, so on mine this button
+                      // would open an empty sheet).
+                      if (!_isMyPost) ...[
+                        const SizedBox(height: 6),
+                        GestureDetector(
+                          onTap: () => _showReportBlockSheet(context),
+                          child: _FlyActionGlow(
+                            active: false,
+                            child: const SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: Center(
+                                child: Icon(
+                                  Icons.more_horiz,
+                                  color: Colors.white,
+                                  size: 26,
+                                  shadows: [
+                                    Shadow(color: Colors.black, blurRadius: 8),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -2437,15 +2442,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         },
                       ),
                       const Spacer(),
-                      GestureDetector(
-                        onTap: () => _showReportBlockSheet(context),
-                        child: const Icon(
-                          Icons.more_horiz,
-                          color: Colors.white,
-                          size: 22,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      if (!_isMyPost)
+                        GestureDetector(
+                          onTap: () => _showReportBlockSheet(context),
+                          child: const Icon(
+                            Icons.more_horiz,
+                            color: Colors.white,
+                            size: 22,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 6)
+                            ],
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
@@ -2601,11 +2609,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
-  // Shows a bottom sheet with "Report" (always) and "Block user" (only for
-  // other people's posts) options.
-  void _showReportBlockSheet(BuildContext context) {
+  /// True when the signed-in user posted this video (29 Oct 2026: the
+  /// ••• button with Report / Reply / Block is hidden on my own videos).
+  bool get _isMyPost {
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
-    final bool isOwnPost = myId != null && myId == widget.userId;
+    return myId != null && myId == widget.userId;
+  }
+
+  // Shows a bottom sheet with "Report post", "Reply with video" and "Block
+  // user". Only opened for other people's posts (see [_isMyPost]); the
+  // isOwnPost checks below stay as a safety net.
+  void _showReportBlockSheet(BuildContext context) {
+    final bool isOwnPost = _isMyPost;
 
     showModalBottomSheet(
       context: context,
@@ -2628,19 +2643,20 @@ class _VideoPostItemState extends State<_VideoPostItem>
                 ),
               ),
               const SizedBox(height: 8),
-              ListTile(
-                leading: const Icon(Icons.flag_outlined, color: Colors.white),
-                title: const Text('Report post',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  showReportSheet(
-                    context,
-                    type: ReportTargetType.post,
-                    targetId: widget.postId,
-                  );
-                },
-              ),
+              if (!isOwnPost)
+                ListTile(
+                  leading: const Icon(Icons.flag_outlined, color: Colors.white),
+                  title: const Text('Report post',
+                      style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    showReportSheet(
+                      context,
+                      type: ReportTargetType.post,
+                      targetId: widget.postId,
+                    );
+                  },
+                ),
               if (!isOwnPost)
                 ListTile(
                   leading: const Icon(Icons.reply, color: Color(0xFF35E1F2)),

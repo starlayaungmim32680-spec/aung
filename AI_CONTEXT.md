@@ -898,6 +898,22 @@ OK). Play Console: Terms URL =
 > (home_video_post.dart ••• sheet: A = "Under review - see why" + "Delete
 > video", or B = no ••• on my own video - Ko to choose), then prod APK._
 >
+> _29 Oct 2026 (late, confirmed by Ko on DEV only - prod NOT done yet):
+> **no ••• on my own video.** `home_video_post.dart`: new getter
+> `_isMyPost` (signed-in uid == widget.userId); the ••• button under the
+> right-side rail AND the one in the repost row are only built when
+> `!_isMyPost`, so "Report post" can't appear on my own video; inside
+> `_showReportBlockSheet` "Report post" also got `if (!isOwnPost)` as a
+> safety net (Reply with video / Block were already guarded). Ko chose
+> plan A in steps, one at a time: step 1 = hide ••• (this); step 2 (next)
+> = bring ••• back on MY video with "Under review - see why" (only when
+> isUnderReview) + "Delete video" (confirm dialog, like profile_screen.dart
+> `_confirmDelete`). Built with the full APK recipe (5a clean, 5b
+> `FlyDev-bn10292238.apk`, 5c pair: this change adds/removes no text, so
+> the 29 Oct report strings were used - NEW True / OLD False - to prove the
+> build isn't stale). Tested: no ••• on my video, ••• + Report / Reply /
+> Block on someone else's. No Worker / rules change._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2779,9 +2795,9 @@ others only see it once encoded (Bunny webhook).
     two Worker security holes (`/token` any room, `/call-push` callerId)
     DONE 25 Oct, **(3) Report system DONE (steps 1 + 2 + 3 on dev 26-27 Oct, on prod
     28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
-    (prod APK not yet); still open: hide "Report post" on my own post
-    (video ••• sheet in home_video_post.dart, option A or B - see the 29
-    Oct note);
+    (prod APK not yet); ••• hidden on my own video DONE on dev 29 Oct;
+    still open: step 2 = ••• on MY video with "Under review - see why" +
+    "Delete video", then ONE prod APK for all of 29 Oct;
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
@@ -2963,7 +2979,10 @@ of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
   report. Please try again.`). NEW True + OLD True = stale build: go back
   to 5a. Don't send the APK until it is True / False. If a change only
   adds code and removes no text, pick an OLD string from the previous
-  version of a changed file that is really gone.
+  version of a changed file that is really gone. If the change adds and
+  removes no text at all (e.g. only hides a button), use the pair from
+  the last text change - it still proves the build isn't stale - and the
+  phone test (5e) is the proof of the change itself.
 
   **5d. Send exactly that file.** Never send `app-dev-release.apk` /
   `app-prod-release.apk` / `app-debug.apk` (Drive and Downloads keep old
