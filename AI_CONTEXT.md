@@ -914,6 +914,27 @@ OK). Play Console: Terms URL =
 > build isn't stale). Tested: no ••• on my video, ••• + Report / Reply /
 > Block on someone else's. No Worker / rules change._
 >
+> _29 Oct 2026 (night, confirmed by Ko on DEV only - prod NOT done yet):
+> **plan A step 2 - my own video's ••• menu.** `home_video_post.dart`: the
+> ••• button is back on every video (side rail + repost row); on MY video
+> it opens `_showMyPostSheet(context, livePostData)` instead of
+> `_showReportBlockSheet`: "🛡️ Under review - see why" (only when
+> `isUnderReview(post)`, opens `showReviewSheet`) and "🗑️ Delete video"
+> (`_confirmDeleteMyPost`: same "Delete video?" dialog and
+> `posts/{id}.delete()` as Profile's `_confirmDelete`; every feed listens
+> to its query, so the video just leaves the list; snackbar "Video
+> deleted"). Report post never shows on my own video. Like Profile's
+> delete, the Bunny file and the D1 Search row are NOT removed (known
+> gap, same as before). APK recipe: `FlyDev-bn10292326.apk`, 5c NEW `What
+> happened, and how to appeal` True / OLD `Could not send the report.
+> Please try again.` False. Tested: my video ••• = Delete video only,
+> someone else's = Report / Reply / Block, Delete with Cancel and with
+> Delete ("Video deleted", gone). NOT tested yet: the Under review row
+> (needs B + C to report the same video Spam on dev, then Restore in dev
+> /admin). No Worker / rules change. **Next:** test the Under review row,
+> then ONE prod APK for all three 29 Oct changes (report errors, ••• on
+> my video)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2795,9 +2816,9 @@ others only see it once encoded (Bunny webhook).
     two Worker security holes (`/token` any room, `/call-push` callerId)
     DONE 25 Oct, **(3) Report system DONE (steps 1 + 2 + 3 on dev 26-27 Oct, on prod
     28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
-    (prod APK not yet); ••• hidden on my own video DONE on dev 29 Oct;
-    still open: step 2 = ••• on MY video with "Under review - see why" +
-    "Delete video", then ONE prod APK for all of 29 Oct;
+    (prod APK not yet); my own video's ••• = "Under review - see
+    why" + "Delete video" (never Report) DONE on dev 29 Oct (Under review
+    row not tested yet); then ONE prod APK for all of 29 Oct;
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off

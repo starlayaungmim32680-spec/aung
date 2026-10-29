@@ -2288,33 +2288,33 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           );
                         },
                       ),
-                      // More options (Report / Reply / Block) - only on
-                      // other people's videos (29 Oct 2026: nobody can
-                      // report their own video, so on mine this button
-                      // would open an empty sheet).
-                      if (!_isMyPost) ...[
-                        const SizedBox(height: 6),
-                        GestureDetector(
-                          onTap: () => _showReportBlockSheet(context),
-                          child: _FlyActionGlow(
-                            active: false,
-                            child: const SizedBox(
-                              width: 40,
-                              height: 40,
-                              child: Center(
-                                child: Icon(
-                                  Icons.more_horiz,
-                                  color: Colors.white,
-                                  size: 26,
-                                  shadows: [
-                                    Shadow(color: Colors.black, blurRadius: 8),
-                                  ],
-                                ),
+                      // More options. Someone else's video: Report / Reply /
+                      // Block. My own video (29 Oct 2026): "Under review -
+                      // see why" (only while reports hid / limited it) and
+                      // Delete video - never Report.
+                      const SizedBox(height: 6),
+                      GestureDetector(
+                        onTap: () => _isMyPost
+                            ? _showMyPostSheet(context, livePostData)
+                            : _showReportBlockSheet(context),
+                        child: _FlyActionGlow(
+                          active: false,
+                          child: const SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: Center(
+                              child: Icon(
+                                Icons.more_horiz,
+                                color: Colors.white,
+                                size: 26,
+                                shadows: [
+                                  Shadow(color: Colors.black, blurRadius: 8),
+                                ],
                               ),
                             ),
                           ),
                         ),
-                      ],
+                      ),
                     ],
                   ),
                 ),
@@ -2442,18 +2442,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         },
                       ),
                       const Spacer(),
-                      if (!_isMyPost)
-                        GestureDetector(
-                          onTap: () => _showReportBlockSheet(context),
-                          child: const Icon(
-                            Icons.more_horiz,
-                            color: Colors.white,
-                            size: 22,
-                            shadows: [
-                              Shadow(color: Colors.black, blurRadius: 6)
-                            ],
-                          ),
+                      GestureDetector(
+                        onTap: () => _isMyPost
+                            ? _showMyPostSheet(context, livePostData)
+                            : _showReportBlockSheet(context),
+                        child: const Icon(
+                          Icons.more_horiz,
+                          color: Colors.white,
+                          size: 22,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
                         ),
+                      ),
                     ],
                   ),
                 ),
@@ -2609,11 +2608,116 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
   }
 
-  /// True when the signed-in user posted this video (29 Oct 2026: the
-  /// ••• button with Report / Reply / Block is hidden on my own videos).
+  /// True when the signed-in user posted this video (29 Oct 2026: my own
+  /// video's ••• opens [_showMyPostSheet], never Report).
   bool get _isMyPost {
     final String? myId = FirebaseAuth.instance.currentUser?.uid;
     return myId != null && myId == widget.userId;
+  }
+
+  // ••• on MY OWN video (29 Oct 2026, step 2 of plan A): "Under review -
+  // see why" while reports hid or limited it (report_review.dart), and
+  // "Delete video" behind a confirm dialog (same as Profile). [post] is
+  // the live post document from the StreamBuilder in build().
+  void _showMyPostSheet(BuildContext context, Map<String, dynamic>? post) {
+    HapticFeedback.selectionClick();
+    final bool underReview = isUnderReview(post);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (underReview)
+                ListTile(
+                  leading: const Icon(Icons.shield_outlined,
+                      color: Color(0xFFFF9F1C)),
+                  title: const Text('Under review - see why',
+                      style: TextStyle(color: Colors.white)),
+                  subtitle: const Text('What happened, and how to appeal',
+                      style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    showReviewSheet(context, widget.postId);
+                  },
+                ),
+              ListTile(
+                leading:
+                    const Icon(Icons.delete_outline, color: Colors.redAccent),
+                title: const Text('Delete video',
+                    style: TextStyle(color: Colors.redAccent)),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _confirmDeleteMyPost();
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Same dialog and delete as Profile's _confirmDelete (profile_screen.dart).
+  // Every feed listens to its query, so the video simply leaves the list.
+  Future<void> _confirmDeleteMyPost() async {
+    if (!_isMyPost || widget.postId.isEmpty) return;
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title:
+            const Text('Delete video?', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently remove this video.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child:
+                const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    try {
+      await FirebaseFirestore.instance
+          .collection('posts')
+          .doc(widget.postId)
+          .delete();
+      HapticFeedback.mediumImpact();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Video deleted')),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+            content: Text('Could not delete the video. Please try again.')),
+      );
+    }
   }
 
   // Shows a bottom sheet with "Report post", "Reply with video" and "Block
