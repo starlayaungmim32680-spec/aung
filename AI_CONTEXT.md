@@ -929,11 +929,14 @@ OK). Play Console: Terms URL =
 > happened, and how to appeal` True / OLD `Could not send the report.
 > Please try again.` False. Tested: my video ••• = Delete video only,
 > someone else's = Report / Reply / Block, Delete with Cancel and with
-> Delete ("Video deleted", gone). NOT tested yet: the Under review row
-> (needs B + C to report the same video Spam on dev, then Restore in dev
-> /admin). No Worker / rules change. **Next:** test the Under review row,
-> then ONE prod APK for all three 29 Oct changes (report errors, ••• on
-> my video)._
+> Delete ("Video deleted", gone). 30 Oct (00:20) also tested the Under
+> review row on dev: B + C reported a new test video of A as Spam -> A got
+> the "only shown to your followers" note, ••• showed "Under review - see
+> why" + "Delete video", the row opened the review sheet (Reported for:
+> Spam or scam + Appeal), Restore in dev /admin -> ••• back to Delete
+> video only. No Worker / rules change. **Next:** ONE prod APK for all
+> three 29 Oct changes (report errors, no Report on my video, my video's
+> ••• menu) - APK recipe 5a-5e with `--flavor prod`._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2817,8 +2820,8 @@ others only see it once encoded (Bunny webhook).
     DONE 25 Oct, **(3) Report system DONE (steps 1 + 2 + 3 on dev 26-27 Oct, on prod
     28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
     (prod APK not yet); my own video's ••• = "Under review - see
-    why" + "Delete video" (never Report) DONE on dev 29 Oct (Under review
-    row not tested yet); then ONE prod APK for all of 29 Oct;
+    why" + "Delete video" (never Report) DONE on dev 29-30 Oct (all tested);
+    next: ONE prod APK for all of 29 Oct;
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
