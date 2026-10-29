@@ -878,6 +878,26 @@ OK). Play Console: Terms URL =
 > picture that couldn't be checked) - the post is then not hidden and
 > the next report retries; look at the Worker logs (To-do)._
 >
+> _29 Oct 2026 (confirmed by Ko on DEV only - prod NOT done yet): **Report
+> errors say what happened.** `report_sheet.dart`: `sendReport` now returns
+> `ReportResult` (sent / ownContent / gone / failed) instead of a bool -
+> Worker 400 `own content` -> "You can't report your own video." (comment /
+> account likewise), `{ok, gone}` -> "This video was already removed.
+> Thanks!", anything else / no network -> "Could not send the report.
+> Check your connection and try again."; the "You won't see this video
+> again" cover only after `sent`. No Worker / rules change. Tested on dev:
+> own video, someone else's video, airplane mode. **APK lesson (Ko asked
+> for it to be written down so it never happens again):** the first build
+> (362 s, string check NEW = True) still showed the OLD text on the phone -
+> a second check found NEW = True AND OLD = True in the same libapp.so
+> (stale build cache), and the phone had also installed an old
+> `app-dev-release.apk` from Drive. Fixed by the full clean (5a) -> NEW
+> True / OLD False. §7 step 5 is now a fixed APK recipe (5a-5e): always
+> clean, build + copy in one line, always a True/False pair, send only the
+> uniquely named file. **Next:** hide "Report post" on my own video
+> (home_video_post.dart ••• sheet: A = "Under review - see why" + "Delete
+> video", or B = no ••• on my own video - Ko to choose), then prod APK._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2758,9 +2778,10 @@ others only see it once encoded (Bunny webhook).
     Store blockers first - (1) server-side video re-check DONE, (2) the
     two Worker security holes (`/token` any room, `/call-push` callerId)
     DONE 25 Oct, **(3) Report system DONE (steps 1 + 2 + 3 on dev 26-27 Oct, on prod
-    28-29 Oct). Follow-ups: (a) hide "Report post" on my own post (video
-    ••• sheet in home_video_post.dart) and show "You can't report your own
-    post" instead of the generic error (sendReport only returns a bool);
+    28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
+    (prod APK not yet); still open: hide "Report post" on my own post
+    (video ••• sheet in home_video_post.dart, option A or B - see the 29
+    Oct note);
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
@@ -2907,26 +2928,64 @@ or point at the real error. Pre-existing, harmless noise to ignore:
 class" error (old template test, doesn't affect the APK). Mention which
 new infos came from your own code if any.
 
-**5. Build + test checklist.** Then build - **ALWAYS with a build
-number** (`pubspec.yaml` is `1.0.0+1`; without it Android refuses the
-update: "package appears to be invalid" / "problem while parsing the
-package", 27-28 Oct 2026):
-`$bn = Get-Date -Format "MMddHHmm"; flutter build apk --release --flavor prod --build-number=$bn`
-(→ `app-prod-release.apk`; `--flavor dev` → `app-dev-release.apk` for
-Fly Dev). Copy it under a unique name before sending it to a phone
-(`Fly-28Oct-report.apk`, `FlyDev-bn<number>.apk`), install
-on **both** test phones (A and B, vivo), and give a numbered A/B test
-script with the exact expected result for each step ("B: close Fly from
-Recents → A sends → B gets 🔔 …, A shows ●✓ Delivered"). Mention vivo
-quirks (Settings → Battery → Fly → allow background activity) when push
-or background work is involved.
-If a fix "doesn't work" on the phone, first prove the phone runs the new
-build (9 Oct 2026: an old APK cost a whole evening). Check a string
-that only the new code has, inside the built APK:
-`Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk $env:TEMP\flydev.zip -Force; Expand-Archive $env:TEMP\flydev.zip $env:TEMP\flydev -Force; Select-String -Path $env:TEMP\flydev\lib\arm64-v8a\libapp.so -Pattern '<unique string>' -SimpleMatch -Quiet`
-→ `True`. Then copy the APK under a unique name (e.g.
-`FlyDev-8Oct-v2.apk`) so the phone can't pick an older
-`app-dev-release.apk`, uninstall, and install that one.
+**5. Build + test checklist - THE APK RECIPE (Ko's rule, 29 Oct 2026:
+"no more APK problems").** Every APK that goes to a phone follows these
+steps, in this order, one block at a time, reading Ko's output in
+between. Never shorten it, never skip the clean, never send only half
+of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
+18 and 29 Oct 2026, and a missing build number on 27-28 Oct.
+
+  **5a. Clean first - ALWAYS** (not only "when something looks stale";
+  on 29 Oct a normal 362 s build still shipped the OLD report text):
+  `cd android; .\gradlew --stop; cd ..`
+  `Get-Process java, javaw -ErrorAction SilentlyContinue | Stop-Process -Force`
+  `Remove-Item build -Recurse -Force` → `Test-Path build` must be `False`
+  (still `True`: `Start-Sleep -Seconds 5; Remove-Item build -Recurse -Force`)
+  → `flutter clean` (no "Failed" line) → `flutter pub get`.
+
+  **5b. Build + copy in ONE line** (so `$bn` can't be lost - in a new
+  terminal `$bn` is empty and the copy became `FlyDev-bn-clean.apk` on
+  29 Oct). The build number is mandatory: `pubspec.yaml` is `1.0.0+1`,
+  and without `--build-number` Android refuses the update ("package
+  appears to be invalid" / "There was a problem while parsing the
+  package", 27-28 Oct). Dev:
+  `$bn = Get-Date -Format "MMddHHmm"; flutter build apk --release --flavor dev --build-number=$bn; Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk "FlyDev-bn$bn.apk" -Force; Write-Output "FlyDev-bn$bn.apk"`
+  Prod: the same with `--flavor prod`, `app-prod-release.apk` and
+  `"Fly-bn$bn.apk"`. The printed name must contain the number.
+
+  **5c. String check = ALWAYS A PAIR, on the copied file** (one block,
+  the assistant fills in both strings - ASCII only, a whole sentence):
+  `Remove-Item $env:TEMP\flycheck -Recurse -Force -ErrorAction SilentlyContinue; Copy-Item FlyDev-bn<number>.apk $env:TEMP\flycheck.zip -Force; Expand-Archive $env:TEMP\flycheck.zip $env:TEMP\flycheck -Force`
+  `Select-String -Path $env:TEMP\flycheck\lib\arm64-v8a\libapp.so -Pattern '<NEW string>' -SimpleMatch -CaseSensitive -Quiet` → must be `True`
+  `Select-String -Path $env:TEMP\flycheck\lib\arm64-v8a\libapp.so -Pattern '<OLD string>' -SimpleMatch -CaseSensitive -Quiet` → must be `False`
+  The OLD string is text the change removed or replaced (e.g. 29 Oct:
+  NEW `Check your connection and try again`, OLD `Could not send the
+  report. Please try again.`). NEW True + OLD True = stale build: go back
+  to 5a. Don't send the APK until it is True / False. If a change only
+  adds code and removes no text, pick an OLD string from the previous
+  version of a changed file that is really gone.
+
+  **5d. Send exactly that file.** Never send `app-dev-release.apk` /
+  `app-prod-release.apk` / `app-debug.apk` (Drive and Downloads keep old
+  copies with the same name - on 29 Oct the phone installed an old
+  `app-dev-release.apk` from Drive). Drive: wait for "upload complete" on
+  the PC; on the phone Drive → the file's ⋮ → **Download** (tapping the
+  file only previews it) → wait for "Download complete" → Files →
+  Downloads → tap it → **Update** → "App installed". Never uninstall the
+  prod app (real data). Afterwards delete old APKs from Drive, so the
+  next one can't be mixed up. (USB "File transfer" into the phone's
+  Download folder also works.)
+
+  **5e. Prove the phone runs it.** Close the app from Recents, reopen;
+  Fly Dev shows the red DEV ribbon (prod doesn't). If the phone still
+  shows OLD text, the phone did not get this APK or the APK is stale -
+  re-check 5c and 5d before touching any code.
+
+Then install on **both** test phones (A and B, vivo) and give a
+numbered A/B test script with the exact expected result for each step
+("B: close Fly from Recents → A sends → B gets 🔔 …, A shows ●✓
+Delivered"). Mention vivo quirks (Settings → Battery → Fly → allow
+background activity) when push or background work is involved.
 String-check gotchas (11 Oct 2026): add **`-CaseSensitive`** (without it
 a short word like `Creator` matches some library's "creator" and gives
 a false `True`); a Dart string with any emoji / non-ASCII character is

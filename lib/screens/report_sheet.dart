@@ -18,6 +18,10 @@
 // 27 Oct 2026 (step 2): like Facebook / TikTok, a video I reported is
 // covered for ME right away ("You won't see this video again"), whatever
 // the Worker decides - [ReportedPosts], kept on this phone.
+//
+// 29 Oct 2026: [sendReport] returns a [ReportResult] instead of a bool, so
+// the snackbar says what really happened (my own content, already gone,
+// no connection) instead of one generic "Could not send the report".
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -157,24 +161,51 @@ Future<void> showReportSheet(
   if (reason == null || !context.mounted) return;
   HapticFeedback.lightImpact();
   final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
-  final bool ok = await sendReport(
+  final ReportResult result = await sendReport(
     type: type,
     targetId: targetId,
     targetPath: targetPath,
     reason: reason,
   );
-  if (ok && type == ReportTargetType.post && targetId != null) {
+  if (result == ReportResult.sent &&
+      type == ReportTargetType.post &&
+      targetId != null) {
     ReportedPosts.instance.add(targetId);
   }
-  messenger.showSnackBar(SnackBar(
-    content: Text(ok
-        ? "Thanks for reporting. We'll review it."
-        : 'Could not send the report. Please try again.'),
-  ));
+  final String noun = switch (type) {
+    ReportTargetType.post => 'video',
+    ReportTargetType.comment => 'comment',
+    ReportTargetType.user => 'account',
+  };
+  final String message = switch (result) {
+    ReportResult.sent => "Thanks for reporting. We'll review it.",
+    ReportResult.ownContent => type == ReportTargetType.user
+        ? "You can't report your own account."
+        : "You can't report your own $noun.",
+    ReportResult.gone => 'This $noun was already removed. Thanks!',
+    ReportResult.failed =>
+      'Could not send the report. Check your connection and try again.',
+  };
+  messenger.showSnackBar(SnackBar(content: Text(message)));
 }
 
-/// Sends one report to the Worker. True when it was received.
-Future<bool> sendReport({
+/// What happened to a report.
+enum ReportResult {
+  /// The Worker received it.
+  sent,
+
+  /// It is my own post / comment / account (Worker: 400 "own content").
+  ownContent,
+
+  /// The post / comment no longer exists (Worker: {ok: true, gone: true}).
+  gone,
+
+  /// No connection, timeout, or any other Worker answer.
+  failed,
+}
+
+/// Sends one report to the Worker (POST /report).
+Future<ReportResult> sendReport({
   required ReportTargetType type,
   String? targetId,
   String? targetPath,
@@ -196,13 +227,23 @@ Future<bool> sendReport({
           }),
         )
         .timeout(const Duration(seconds: 30));
-    if (res.statusCode != 200) {
-      debugPrint('report: HTTP ${res.statusCode} ${res.body}');
-      return false;
+    Map<String, dynamic> body = const {};
+    try {
+      final dynamic decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) body = decoded;
+    } catch (_) {
+      // Not JSON (e.g. "Unauthorized") - handled by the status code below.
     }
-    return true;
+    if (res.statusCode == 200) {
+      return body['gone'] == true ? ReportResult.gone : ReportResult.sent;
+    }
+    debugPrint('report: HTTP ${res.statusCode} ${res.body}');
+    if (res.statusCode == 400 && body['error'] == 'own content') {
+      return ReportResult.ownContent;
+    }
+    return ReportResult.failed;
   } catch (e) {
     debugPrint('report: failed ($e)');
-    return false;
+    return ReportResult.failed;
   }
 }
