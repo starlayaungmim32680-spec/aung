@@ -131,6 +131,18 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // Videos I reported (30 Oct 2026). A copy of ReportedPosts.ids, taken
+  // only when the feed starts over (app start / sign-in, For You <->
+  // Following, Back to the top) - never at the moment I report, so the
+  // feed doesn't jump; until then the "Thanks for reporting" cover shows.
+  Set<String> _hiddenReported = Set.of(ReportedPosts.instance.ids.value);
+  void _refreshHiddenReported() {
+    if (mounted) {
+      setState(
+          () => _hiddenReported = Set.of(ReportedPosts.instance.ids.value));
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -138,6 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
     WakelockPlus.enable();
     homeFeedScrollToTopSignal.addListener(_onScrollToTopSignal);
     BlockService.instance.hidden.addListener(_onBlockedChanged);
+    ReportedPosts.instance.loaded.addListener(_refreshHiddenReported);
     // 25 Oct 2026 ("Who can watch" step B2): only Everyone posts, newest
     // kHomeFeedLimit - before, every post in the database was downloaded
     // on every phone. Needs the composite index posts: audience Asc +
@@ -181,6 +194,7 @@ class _HomeScreenState extends State<HomeScreen> {
     homeFeedScrollToTopSignal.removeListener(_onScrollToTopSignal);
     _followingSub?.cancel();
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    ReportedPosts.instance.loaded.removeListener(_refreshHiddenReported);
     _circle.dispose();
     _pageController.dispose();
     super.dispose();
@@ -191,11 +205,15 @@ class _HomeScreenState extends State<HomeScreen> {
   // to the very first video, Facebook-style.
   void _onScrollToTopSignal() {
     if (!mounted || !_pageController.hasClients) return;
-    _pageController.animateToPage(
-      0,
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeOut,
-    );
+    _pageController
+        .animateToPage(
+          0,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOut,
+        )
+        // Back at the top = the feed starts over: leave out what I
+        // reported since (30 Oct 2026).
+        .then((_) => _refreshHiddenReported());
   }
 
   void _goToNextVideo(int totalCount) {
@@ -214,7 +232,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return GestureDetector(
       onTap: () {
         if (_followingOnly == followingTab) return;
-        setState(() => _followingOnly = followingTab);
+        setState(() {
+          _followingOnly = followingTab;
+          // The other tab starts from the top - leave out what I reported.
+          _hiddenReported = Set.of(ReportedPosts.instance.ids.value);
+        });
         // Start the newly selected feed from the top.
         if (_pageController.hasClients) {
           _pageController.jumpToPage(0);
@@ -305,16 +327,24 @@ class _HomeScreenState extends State<HomeScreen> {
                         return true;
                       }).toList();
 
+                // Videos I reported leave the feed the next time it starts
+                // over (see _hiddenReported) - reposts of them too.
+                final List<_FeedItem> unreportedItems = _hiddenReported.isEmpty
+                    ? unblockedItems
+                    : unblockedItems
+                        .where((item) => !_hiddenReported.contains(item.postId))
+                        .toList();
+
                 // On the Following tab, keep only videos from accounts you
                 // follow - either the original poster, or whoever shared it.
                 final List<_FeedItem> visibleItems = _followingOnly
-                    ? unblockedItems.where((item) {
+                    ? unreportedItems.where((item) {
                         if (item.isRepost) {
                           return _followingIds.contains(item.sharedByUserId);
                         }
                         return _followingIds.contains(item.originalUserId);
                       }).toList()
-                    : unblockedItems;
+                    : unreportedItems;
 
                 // Every 5 real videos swiped, insert a YouTube-style "Shorts
                 // shelf" page: a horizontal strip previewing a few of the

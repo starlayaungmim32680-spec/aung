@@ -19,6 +19,12 @@
 // covered for ME right away ("You won't see this video again"), whatever
 // the Worker decides - [ReportedPosts], kept on this phone.
 //
+// 30 Oct 2026: the big feeds (Home For You / Following, Shorts) also LEAVE
+// OUT videos I reported - not at once (that would make the feed jump under
+// my finger), but the next time the feed is loaded: app start / sign-in
+// ([ReportedPosts.loaded]), switching For You <-> Following, Back to the
+// top, or opening Shorts. Until then the cover shows.
+//
 // 29 Oct 2026: [sendReport] returns a [ReportResult] instead of a bool, so
 // the snackbar says what really happened (my own content, already gone,
 // no connection) instead of one generic "Could not send the report".
@@ -47,6 +53,11 @@ class ReportedPosts {
   static const int _max = 500;
 
   final ValueNotifier<Set<String>> ids = ValueNotifier<Set<String>>(<String>{});
+
+  /// Fires once this account's list has been read from the phone (app
+  /// start, sign-in, account switch) - the feeds then take a fresh copy of
+  /// [ids] to leave out. Reporting a video does NOT change it (30 Oct 2026).
+  final ValueNotifier<int> loaded = ValueNotifier<int>(0);
   String? _uid;
 
   bool contains(String? postId) =>
@@ -55,13 +66,17 @@ class ReportedPosts {
   Future<void> _load(String? uid) async {
     _uid = uid;
     ids.value = <String>{};
-    if (uid == null) return;
+    if (uid == null) {
+      loaded.value++;
+      return;
+    }
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       final List<String> saved =
           prefs.getStringList('$_prefsKeyBase$uid') ?? const [];
       if (_uid == uid && saved.isNotEmpty) ids.value = {...ids.value, ...saved};
     } catch (_) {}
+    if (_uid == uid) loaded.value++;
   }
 
   Future<void> add(String postId) async {

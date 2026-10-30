@@ -158,10 +158,22 @@ class _ShortsScreenState extends State<ShortsScreen> {
     }
   }
 
+  // Videos I reported (30 Oct 2026): copied when Shorts opens or the
+  // account's list loads - not when I report (the feed would jump), so
+  // a video I just reported keeps its cover until Shorts opens again.
+  Set<String> _hiddenReported = Set.of(ReportedPosts.instance.ids.value);
+  void _refreshHiddenReported() {
+    if (mounted) {
+      setState(
+          () => _hiddenReported = Set.of(ReportedPosts.instance.ids.value));
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
+    ReportedPosts.instance.loaded.addListener(_refreshHiddenReported);
     // 25 Oct 2026 ("Who can watch" step B2): Shorts is a discovery feed -
     // Everyone posts only, newest kHomeFeedLimit. Needs the composite index
     // posts: videoType Asc + audience Asc + createdAt Desc.
@@ -185,6 +197,7 @@ class _ShortsScreenState extends State<ShortsScreen> {
   void dispose() {
     WakelockPlus.disable();
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    ReportedPosts.instance.loaded.removeListener(_refreshHiddenReported);
     _pageController.dispose();
     super.dispose();
   }
@@ -247,21 +260,26 @@ class _ShortsScreenState extends State<ShortsScreen> {
                 ...repostDocs.map((d) => _FeedItem.repost(d)),
               ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-              // Never show reels from accounts you've blocked.
-              final List<_FeedItem> visibleItems = _blockedIds.isEmpty
-                  ? feedItems
-                  : feedItems.where((item) {
-                      final String posterId = (item.isRepost
-                              ? item.sharedByUserId
-                              : item.originalUserId) ??
-                          '';
-                      if (_blockedIds.contains(posterId)) return false;
-                      if (item.isRepost &&
-                          _blockedIds.contains(item.originalUserId)) {
-                        return false;
-                      }
-                      return true;
-                    }).toList();
+              // Never show reels from accounts you've blocked, nor (30 Oct
+              // 2026) the ones I reported - see _hiddenReported.
+              final List<_FeedItem> visibleItems =
+                  _blockedIds.isEmpty && _hiddenReported.isEmpty
+                      ? feedItems
+                      : feedItems.where((item) {
+                          if (_hiddenReported.contains(item.postId)) {
+                            return false;
+                          }
+                          final String posterId = (item.isRepost
+                                  ? item.sharedByUserId
+                                  : item.originalUserId) ??
+                              '';
+                          if (_blockedIds.contains(posterId)) return false;
+                          if (item.isRepost &&
+                              _blockedIds.contains(item.originalUserId)) {
+                            return false;
+                          }
+                          return true;
+                        }).toList();
 
               // Get a head start on the next two videos so even several
               // fast swipes in a row (before onPageChanged has caught up)

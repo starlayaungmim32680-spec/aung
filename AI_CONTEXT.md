@@ -938,6 +938,31 @@ OK). Play Console: Terms URL =
 > three 29 Oct changes (report errors, no Report on my video, my video's
 > ••• menu) - APK recipe 5a-5e with `--flavor prod`._
 >
+> _30 Oct 2026 (confirmed by Ko on DEV only - prod NOT done yet): **videos
+> I reported leave the big feeds.** Before, a reported video only got the
+> "Thanks for reporting" cover and stayed in the feed for good (after an
+> app restart it sat at the top of For You as a big cover). Now
+> `ReportedPosts` (report_sheet.dart) has a `loaded` ValueNotifier that
+> fires when an account's list has been read from the phone (app start /
+> sign-in / account switch - NOT when I report). Home (`home_screen.dart`)
+> and Shorts (`home_feeds.dart` `_ShortsScreenState`) keep a COPY
+> `_hiddenReported` of `ReportedPosts.ids` and drop those postIds (posts
+> and reposts of them - a repost's postId is its originalPostId) right
+> after the block filter. The copy is refreshed only when the feed starts
+> over: `loaded` fires, For You <-> Following, Back-to-top
+> (`_onScrollToTopSignal`), or Shorts opens - never at the moment of
+> reporting, so the feed doesn't jump under my finger; until then the
+> cover shows (TikTok-like). Profile / saved / notification / single
+> video screens still show the cover instead (I opened them on purpose).
+> Kept only on this phone (SharedPreferences, per account) - a reinstall
+> forgets it. APK recipe: `FlyDev-bn10300054.apk`, 5c pair from the last
+> text change (NEW `What happened, and how to appeal` True / OLD `Could
+> not send the report. Please try again.` False). Tested on phone B:
+> report -> cover, no jump; Following -> For You = gone; app restart =
+> gone; Shorts = gone; A's profile = cover. No Worker / rules change.
+> **Next:** ONE prod APK for all of 29-30 Oct (report errors, my video's
+> ••• menu, reported videos leave the feeds)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2821,7 +2846,8 @@ others only see it once encoded (Bunny webhook).
     28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
     (prod APK not yet); my own video's ••• = "Under review - see
     why" + "Delete video" (never Report) DONE on dev 29-30 Oct (all tested);
-    next: ONE prod APK for all of 29 Oct;
+    reported videos leave Home / Shorts DONE on dev 30 Oct; next: ONE
+    prod APK for all of 29-30 Oct;
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
