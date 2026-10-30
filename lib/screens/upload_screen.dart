@@ -16,6 +16,7 @@ import 'moderation_service.dart';
 import 'post_audience.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
+import 'posting_ban.dart';
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -520,6 +521,12 @@ class _UploadScreenState extends State<UploadScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 30 Oct 2026 (strikes): while posting is paused, show why and until
+    // when (posting_ban.dart) instead of letting me record for nothing.
+    return PostingBanGate(child: _buildUpload(context));
+  }
+
+  Widget _buildUpload(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(

@@ -978,6 +978,57 @@ OK). Play Console: Terms URL =
 > "A new version of Flutter is available" box - don't `flutter upgrade`
 > in the middle of a release._
 >
+> _30-31 Oct 2026 (confirmed by Ko on DEV only - prod NOT done yet):
+> **strikes do something now (TikTok / YouTube style, Ko: "like them but
+> neater").** Ladder: every Remove on /admin = one strike item that counts
+> for **90 days**; active strikes 1 = warning, **2 = no new videos /
+> stories for 7 days**, **3+ = 30 days**, **child_safety = 30 days on the
+> first strike**; 3+ or child safety also marks the account "Check
+> account" on /admin. An existing longer pause is never shortened.
+> Watching, likes, comments, chat and calls keep working.
+> **Step A (Worker + rules):** `adminDecide` Remove writes
+> `moderationStrikes/{uid}/items/{key}` {kind, reason, targetPath, severe,
+> createdAt, expiresAt} and the summary `moderationStrikes/{uid}`
+> {strikes (active count at that moment), postBanUntil, lastBanDays,
+> lastReason, lastTargetPath, lastStrikeAt, needsAccountReview} in the
+> same commit (`activeStrikeCount` lists items, `strikeOutcome` builds the
+> ladder + the notification text with the exact end date, e.g. "...2nd
+> strike, so you can't post videos or stories until 6 Nov 2026...").
+> `/upload-video` answers 403 `{error: 'posting_banned', until}` while
+> postBanUntil is in the future (`postingBanUntilMs`); firestore.rules
+> `postingBanned()` (get moderationStrikes/{me}.postBanUntil >
+> request.time) on posts AND stories create; `moderationStrikes/{uid}`
+> + `items` = owner READ only, no writes (Ko: never in users/{uid});
+> `reporterStanding` still has no rule (not even read). /admin shows "🚫
+> no posting until ...", the "Check account" badge, and Remove's confirm
+> sheet says what the strike will do (`removeOutcome`, from the queue's
+> new `mainReason` / `postBanUntil` / `checkAccount`). Old dev strike
+> docs from before (count only, no items) are simply recounted from the
+> items from now on. **Step B (app):** new `lib/screens/posting_ban.dart`
+> - `PostingBanGate` wraps UploadScreen (`build` -> `_buildUpload`): while
+> paused it shows a full "Posting is paused" panel instead of the camera
+> (Fly-gradient shield, "6 days 22 hours left" countdown, "You can post
+> videos and stories again on Fri, 6 Nov · 11:17 PM" in phone time, Why =
+> last reason, a 3-step gradient strike meter "2 in the last 90 days",
+> "You can still" card, Community Guidelines link); it listens live to
+> the summary + items and re-checks every 30 s, so it lifts by itself.
+> `ensureCanPost()` (Create story, `addStory` in story_screen.dart) shows
+> the same as a sheet before any picking. Fallbacks: `VideoUploadException`
+> got `isPostingBan` (Worker 403) and post_upload_manager.dart /
+> story_screen.dart turn a Firestore `permission-denied` into
+> `postingBanShortText` when a pause is the reason (no more raw
+> "[cloud_firestore/permission-denied]"). Lesson: Dart has no `catch (e)
+> when (...)` - one such line made the whole file fail to analyze; use an
+> `if` inside `catch`. APK recipe: `FlyDev-bn10310010.apk` (379 s), 5c NEW
+> `Watch videos, like, comment, chat and call your friends.` True / OLD
+> `Could not send the report. Please try again.` False. Tested on dev: 2
+> Removes on A's test videos -> warning, then 7 days; A's story refused
+> by the rules (step A, before B: raw error); after B the Upload tab shows
+> the panel exactly as designed; deleting postBanUntil in the Console ->
+> the camera came back by itself and a video posted. **Next:** prod
+> (Worker -> rules -> APK), then step C = an "Account status" screen
+> (Profile -> settings) with the strike list and when each one expires._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2664,8 +2715,12 @@ screen needs to be created from scratch — it may already exist there.)_
   reported thing - counts per reason, priority, needsReview, hidden /
   limited, aiChecked / strictChecked_<reason>, appealed / appealMessage,
   reviewedOk, decision ('restored' | 'removed' | 'gone'), decidedAt.
-- `moderationStrikes/{uid}` (27 Oct 2026, Worker only, no rule): { strikes,
-  lastStrikeAt, lastReason, lastTargetPath } - +1 per Remove on /admin.
+- `moderationStrikes/{uid}` (27 / 30 Oct 2026, Worker writes, OWNER may
+  read): { strikes (active at the last strike), postBanUntil,
+  lastBanDays, lastReason, lastTargetPath, lastStrikeAt,
+  needsAccountReview, userId, updatedAt }; `.../items/{reportKey}`: {
+  kind, reason, targetPath, severe, createdAt, expiresAt (+90 days) } -
+  one per Remove on /admin. See the 30-31 Oct note for the ladder.
 - `reporterStanding/{uid}` (27 Oct 2026, Worker only, no rule): {
   rejected, accepted } - 3 rejected = that person's reports stop counting.
 - `moderationActions/{id}` (Worker only, no rule): log of every automatic
@@ -2863,8 +2918,8 @@ others only see it once encoded (Bunny webhook).
     why" + "Delete video" (never Report) DONE on dev 29-30 Oct (all tested);
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
-    (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
-    while); (c) prod "AI: not checked yet" - check the Worker logs for
+    (b) what strikes do - DONE on dev 30-31 Oct (steps A + B, see the
+    note; prod next, then step C "Account status" screen); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
     the Stories bar**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account

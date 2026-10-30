@@ -54,6 +54,18 @@ service cloud.firestore {
               'limitedReason', 'appealStatus', 'appealedAt'];
     }
 
+    // 30 Oct 2026 (strikes): true while the Worker has turned off posting
+    // for me - moderationStrikes/{uid}.postBanUntil is in the future (set
+    // when Ko removes my content on /admin: 2 strikes in 90 days = 7 days,
+    // 3+ or child safety = 30 days). Videos and stories can't be created
+    // then; watching, liking, commenting and chat still work.
+    function postingBanned() {
+      let p = /databases/$(database)/documents/moderationStrikes/$(request.auth.uid);
+      return exists(p)
+        && get(p).data.get('postBanUntil', null) is timestamp
+        && get(p).data.postBanUntil > request.time;
+    }
+
     // Only changes the caller's own entry inside a `reactions` map
     // (posts, comments, replies: {'reactions.<uid>': type}).
     function onlyMyReaction() {
@@ -258,7 +270,8 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.get('audience', 'everyone')
              in ['everyone', 'followers', 'friends', 'only_me']
-        && !request.resource.data.keys().hasAny(reportFields());
+        && !request.resource.data.keys().hasAny(reportFields())
+        && !postingBanned();
       allow update: if signedIn() && (
         (resource.data.userId == request.auth.uid
           && request.resource.data.get('audience', 'everyone')
@@ -348,7 +361,8 @@ service cloud.firestore {
     match /stories/{storyId} {
       allow read: if signedIn();
       allow create: if signedIn()
-        && request.resource.data.userId == request.auth.uid;
+        && request.resource.data.userId == request.auth.uid
+        && !postingBanned();
       // The owner may only flip videoReady (after Bunny finished encoding).
       allow update: if signedIn()
         && resource.data.userId == request.auth.uid
@@ -395,6 +409,20 @@ service cloud.firestore {
       );
 
       allow delete: if false;
+    }
+
+    // ================= moderationStrikes =================
+    // 30 Oct 2026: written ONLY by the Worker (/admin Remove). The owner may
+    // READ their own summary and strike list (Account status screen,
+    // upload countdown) - nobody can write. reporterStanding,
+    // reportTargets and moderationActions have no rule = no app access.
+    match /moderationStrikes/{uid} {
+      allow read: if isMe(uid);
+      allow write: if false;
+      match /items/{itemId} {
+        allow read: if isMe(uid);
+        allow write: if false;
+      }
     }
 
     // ================= reports =================

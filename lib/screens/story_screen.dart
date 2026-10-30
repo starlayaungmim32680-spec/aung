@@ -28,6 +28,7 @@ import 'media_utils.dart' show cloudinaryThumbUrl;
 import '../block_service.dart';
 import '../friend_service.dart';
 import '../app_config.dart';
+import 'posting_ban.dart';
 
 // Reaction emojis available on stories
 const Map<String, String> kStoryReactions = {
@@ -53,6 +54,10 @@ const Duration kStoryLifetime = Duration(hours: 14);
 // Add a story: pick a photo or video, upload to Bunny, create the doc
 // ---------------------------------------------------------------------------
 Future<void> addStory(BuildContext context) async {
+  // 30 Oct 2026 (strikes): while posting is paused, explain why and until
+  // when right away - before picking and editing anything.
+  if (!await ensureCanPost(context)) return;
+  if (!context.mounted) return;
   final String? kind = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: const Color(0xFF161616),
@@ -372,12 +377,23 @@ Future<void> addStory(BuildContext context) async {
       );
     }
   } catch (e) {
+    // 30 Oct 2026: a posting pause (strikes) gets one clear sentence, not
+    // "permission-denied" (the Worker refused the video, or the rules
+    // refused the story itself).
+    String? banText;
+    if (e is VideoUploadException && e.isPostingBan) {
+      banText = e.message;
+    } else if (e is FirebaseException && e.code == 'permission-denied') {
+      banText = await postingBanLabelIfBanned();
+    }
     if (context.mounted) {
       Navigator.pop(context);
+      final bool plain = e is _StoryRejected || banText != null;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(e is _StoryRejected ? e.message : 'Story failed: $e'),
-          duration: Duration(seconds: e is _StoryRejected ? 6 : 4),
+          content: Text(banText ??
+              (e is _StoryRejected ? e.message : 'Story failed: $e')),
+          duration: Duration(seconds: plain ? 6 : 4),
         ),
       );
     }

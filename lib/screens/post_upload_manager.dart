@@ -40,6 +40,7 @@ import 'local_video_cache.dart';
 import 'moderation_service.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
+import 'posting_ban.dart' show postingBanLabelIfBanned;
 
 // Everything the pipeline needs, copied out of UploadScreen's state at the
 // moment Post is tapped (so the screen can reset itself right away).
@@ -165,6 +166,23 @@ class PostUploadManager {
     } on _PostRejected catch (e) {
       _set(PostUploadState(PostUploadPhase.failed, label: e.message));
     } catch (e) {
+      // 30 Oct 2026: posting is paused by strikes - the Worker refused the
+      // video; say why and until when (retrying won't help).
+      if (e is VideoUploadException && e.isPostingBan) {
+        _set(PostUploadState(PostUploadPhase.failed, label: e.message));
+        _job = null;
+        return;
+      }
+      // 30 Oct 2026: the rules refused the post - if it's a posting pause
+      // (strikes), say so plainly instead of "permission-denied".
+      if (e is FirebaseException && e.code == 'permission-denied') {
+        final String? banLabel = await postingBanLabelIfBanned();
+        if (banLabel != null) {
+          _set(PostUploadState(PostUploadPhase.failed, label: banLabel));
+          _job = null;
+          return;
+        }
+      }
       final bool network = _isNetworkError(e);
       // One quiet automatic retry for a connectivity blip, like before.
       if (network && !isAutoRetry) {

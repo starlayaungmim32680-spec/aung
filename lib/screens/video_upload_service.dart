@@ -28,6 +28,7 @@ import 'package:video_player/video_player.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 import 'post_audience.dart' show canSeeAudience;
+import 'posting_ban.dart' show postingBanShortText;
 
 // Cloudflare's request-body limit on the free Workers plan is 100 MB.
 const int kMaxVideoUploadBytes = 95 * 1024 * 1024;
@@ -95,8 +96,13 @@ class VideoUploadException implements Exception {
   // True for connectivity problems (worth retrying), false for problems
   // retrying the same request won't fix (file too big, server rejected).
   final bool isNetworkIssue;
+  // 30 Oct 2026: the Worker refused because posting is paused by strikes
+  // (403 {error: 'posting_banned', until}) - [message] already says why
+  // and until when (posting_ban.dart).
+  final bool isPostingBan;
 
-  const VideoUploadException(this.message, {this.isNetworkIssue = false});
+  const VideoUploadException(this.message,
+      {this.isNetworkIssue = false, this.isPostingBan = false});
 
   @override
   String toString() => message;
@@ -271,6 +277,20 @@ Future<String> uploadVideoToBunny({
         await client.send(request).timeout(uploadTimeoutFor(totalBytes));
     final String body = await response.stream.bytesToString();
 
+    if (response.statusCode == 403 && body.contains('posting_banned')) {
+      DateTime? until;
+      try {
+        until = DateTime.tryParse(
+            (jsonDecode(body) as Map<String, dynamic>)['until'] as String? ??
+                '');
+      } catch (_) {}
+      throw VideoUploadException(
+        until != null
+            ? postingBanShortText(until)
+            : 'Posting is paused for now because of Community Guidelines strikes.',
+        isPostingBan: true,
+      );
+    }
     if (response.statusCode != 200) {
       throw VideoUploadException('Upload failed (${response.statusCode}): '
           '${body.length > 200 ? body.substring(0, 200) : body}');

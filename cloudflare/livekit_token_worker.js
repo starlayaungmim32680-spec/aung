@@ -179,6 +179,14 @@
 //                         moderationStrikes/{uid}, reporters' rejected /
 //                         accepted counts in reporterStanding/{uid}
 //                         (Worker-only collections).
+//                         30 Oct 2026 (strikes, TikTok / YouTube style):
+//                         each Remove adds moderationStrikes/{uid}/items/
+//                         {key} that counts for 90 days; 1 active strike =
+//                         warning, 2 = no posting for 7 days, 3+ or child
+//                         safety = 30 days (postBanUntil). /upload-video and
+//                         firestore.rules (posts / stories create) refuse
+//                         while it lasts. The owner may READ their own
+//                         moderationStrikes doc + items (rules).
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -311,6 +319,14 @@ export default {
     // These two carry a raw binary body, not JSON - handle them before
     // the JSON-body paths below even attempt to parse anything.
     if (path === '/upload-video') {
+      // 30 Oct 2026: no new videos while posting is turned off by strikes.
+      const banUntil = await postingBanUntilMs(env, caller.uid);
+      if (banUntil) {
+        return jsonResponse({
+          error: 'posting_banned',
+          until: new Date(banUntil).toISOString(),
+        }, 403);
+      }
       return handleUploadVideo(request, env);
     }
     if (path === '/upload-image') {
@@ -4181,6 +4197,9 @@ async function adminQueue(env) {
       ownerName: stringField(owner, 'displayName') || '(no name)',
       ownerPhoto: stringField(owner, 'photoUrl'),
       strikes: fsInt(strikes, 'strikes'),
+      postBanUntil: fsTimestampMs(strikes, 'postBanUntil') || 0,
+      checkAccount: fsBool(strikes, 'needsAccountReview'),
+      mainReason: t ? adminMainReason(s, t) : '',
       reports: fsInt(s, 'reports'),
       reasons,
       lastReason: stringField(s, 'lastReason'),
@@ -4351,14 +4370,40 @@ async function adminDecide(env, key, decision) {
     writes.push(fsIncrementWrite(env, `reporterStanding/${uid}`,
       { updatedAt: now }, 'accepted'));
   }
+  let outcome = null;
   if (isSafeUid(ownerId)) {
-    writes.push(fsIncrementWrite(env, `moderationStrikes/${ownerId}`, {
+    // 30 Oct 2026: one strike item per removed thing (counts 90 days); the
+    // summary doc says how many still count and until when posting is off.
+    const [activeBefore, summary] = await Promise.all([
+      activeStrikeCount(env, dbToken, ownerId, now.getTime()),
+      firestoreGetFields(env, dbToken, `moderationStrikes/${ownerId}`),
+    ]);
+    outcome = strikeOutcome(activeBefore, reason, now.getTime(),
+      fsTimestampMs(summary, 'postBanUntil'), what, reasonLabel);
+    writes.push(fsUpdateWrite(env, `moderationStrikes/${ownerId}/items/${key}`, {
+      kind: type,
+      reason,
+      targetPath,
+      severe: outcome.severe,
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + STRIKE_DAYS * DAY_MS),
+    }));
+    const summaryFields = {
       userId: ownerId,
+      strikes: outcome.active,
       lastStrikeAt: now,
       lastReason: reason,
       lastTargetPath: targetPath,
+      lastBanDays: outcome.banDays,
       updatedAt: now,
-    }, 'strikes'));
+    };
+    if (outcome.banUntilMs) {
+      summaryFields.postBanUntil = new Date(outcome.banUntilMs);
+    }
+    if (outcome.severe || outcome.active >= 3) {
+      summaryFields.needsAccountReview = true;
+    }
+    writes.push(fsUpdateWrite(env, `moderationStrikes/${ownerId}`, summaryFields));
     writes.push(fsUpdateWrite(env, `users/${ownerId}/notifications/mod~${key}~removed`, {
       type: 'moderation',
       fromId: 'fly',
@@ -4367,7 +4412,9 @@ async function adminDecide(env, key, decision) {
       postId: '', // gone - tapping opens nothing
       action: 'removed',
       reason,
-      text: `Your ${what} was removed because it breaks our Community Guidelines (${reasonLabel}). Repeated violations can limit your account.`,
+      strikes: outcome.active,
+      banDays: outcome.banDays,
+      text: outcome.text,
       seen: false,
       createdAt: now,
     }));
@@ -4390,6 +4437,8 @@ async function adminDecide(env, key, decision) {
     userId: ownerId,
     acceptedReports: open.length,
     videoGuid: type === 'post' ? stringField(target, 'bunnyVideoId') : '',
+    strikes: outcome ? outcome.active : 0,
+    banDays: outcome ? outcome.banDays : 0,
     createdAt: now,
   }));
   await firestoreCommit(env, dbToken, writes);
@@ -4413,7 +4462,87 @@ async function adminDecide(env, key, decision) {
       }
     } catch (_) {}
   }
-  return jsonResponse({ ok: true, decision: 'removed' });
+  return jsonResponse({
+    ok: true,
+    decision: 'removed',
+    strikes: outcome ? outcome.active : 0,
+    banDays: outcome ? outcome.banDays : 0,
+    banUntil: outcome && outcome.banUntilMs
+      ? new Date(outcome.banUntilMs).toISOString() : '',
+  });
+}
+
+// ---------------------------------------------------------------------
+// Strikes (30 Oct 2026) - TikTok / YouTube style, see the header.
+// ---------------------------------------------------------------------
+const STRIKE_DAYS = 90;          // each strike counts for 90 days
+const STRIKE_BAN_DAYS_2 = 7;     // 2 active strikes
+const STRIKE_BAN_DAYS_3 = 30;    // 3+ active strikes, or a severe one
+const STRIKE_SEVERE = new Set(['child_safety']);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// "6 Nov 2026" (UTC) for notification texts.
+function strikeDay(ms) {
+  const d = new Date(ms);
+  const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()];
+  return `${d.getUTCDate()} ${m} ${d.getUTCFullYear()}`;
+}
+
+// Strikes of [uid] that still count at [nowMs] (expiresAt in the future).
+async function activeStrikeCount(env, accessToken, uid, nowMs) {
+  const response = await fetch(
+    `${firestoreBase(env)}/moderationStrikes/${uid}/items?pageSize=100`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (response.status === 404) return 0;
+  if (!response.ok) {
+    throw new Error(`strike list failed: ${await response.text()}`);
+  }
+  const data = await response.json();
+  return (data.documents || []).filter((d) => {
+    const until = fsTimestampMs(d.fields, 'expiresAt');
+    return until !== null && until > nowMs;
+  }).length;
+}
+
+// When posting is turned off for [uid], the end time in ms - else null.
+// Any error -> null (firestore.rules still refuse the post itself).
+async function postingBanUntilMs(env, uid) {
+  if (!isSafeUid(uid)) return null;
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const doc = await firestoreGetFields(env, dbToken, `moderationStrikes/${uid}`);
+    const until = fsTimestampMs(doc, 'postBanUntil');
+    return until !== null && until > Date.now() ? until : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// What a new strike means: {active, banDays, banUntilMs, severe, text}.
+function strikeOutcome(activeBefore, reason, nowMs, existingBanMs, what, reasonLabel) {
+  const active = activeBefore + 1;
+  const severe = STRIKE_SEVERE.has(reason);
+  let banDays = 0;
+  if (severe || active >= 3) banDays = STRIKE_BAN_DAYS_3;
+  else if (active === 2) banDays = STRIKE_BAN_DAYS_2;
+  let banUntilMs = null;
+  if (banDays) {
+    banUntilMs = Math.max(nowMs + banDays * DAY_MS, existingBanMs || 0);
+  }
+  const head = `Your ${what} was removed because it breaks our Community Guidelines (${reasonLabel}).`;
+  let text;
+  if (!banDays) {
+    text = `${head} This is a warning (1 strike) - strikes go away after ${STRIKE_DAYS} days. A 2nd strike means 7 days without posting.`;
+  } else if (severe) {
+    text = `${head} Because this involves child safety, you can't post videos or stories until ${strikeDay(banUntilMs)}. Our team will also look at your account.`;
+  } else if (active === 2) {
+    text = `${head} This is your 2nd strike, so you can't post videos or stories until ${strikeDay(banUntilMs)}. One more strike within ${STRIKE_DAYS} days means 30 days.`;
+  } else {
+    text = `${head} You now have ${active} strikes, so you can't post videos or stories until ${strikeDay(banUntilMs)}. Our team will also look at your account.`;
+  }
+  return { active, banDays, banUntilMs, severe, text };
 }
 
 async function handleModerateText(body, env) {
@@ -5273,6 +5402,25 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
     return Math.round(h / 24) + 'd ago';
   }
 
+  function dayText(ms) {
+    try {
+      return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch (e) { return new Date(ms).toDateString(); }
+  }
+  // What Remove will do to the owner (same ladder as the Worker:
+  // 1 = warning, 2 = 7 days, 3+ or child safety = 30 days). The count is
+  // the one saved at the owner's last strike, so an expired one may still
+  // be included here - the Worker counts exactly.
+  function removeOutcome(it) {
+    var next = (it.strikes || 0) + 1;
+    if (it.mainReason === 'child_safety') {
+      return 'Child safety: the owner gets a strike and can\'t post for 30 days. The account is marked "Check account".';
+    }
+    if (next >= 3) return 'The owner gets strike ' + next + ' and can\'t post for 30 days. The account is marked "Check account".';
+    if (next === 2) return 'The owner gets a 2nd strike and can\'t post videos or stories for 7 days.';
+    return 'The owner gets 1 strike = a warning (no posting limit yet). Strikes count for 90 days.';
+  }
+
   function api(body) {
     return fetch('/admin-api', {
       method: 'POST',
@@ -5420,6 +5568,10 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
     o.appendChild(el('span', 'name', it.ownerName));
     o.appendChild(el('span', 'strike' + (it.strikes ? '' : ' zero'),
       it.strikes ? '⚠️ ' + it.strikes + ' strike' + (it.strikes > 1 ? 's' : '') : 'no strikes'));
+    if (it.postBanUntil && it.postBanUntil > Date.now()) {
+      o.appendChild(el('span', 'strike', '🚫 no posting until ' + dayText(it.postBanUntil)));
+    }
+    if (it.checkAccount) badges.appendChild(el('span', 'badge b-high', 'Check account'));
     b.appendChild(o);
 
     var t = el('p', 'text' + (it.text ? '' : ' empty'), it.text || (it.type === 'post' ? 'No caption' : '(empty)'));
@@ -5506,7 +5658,7 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
         sh.appendChild(el('h3', null, '🗑️ Remove this ' + what + ' for good?'));
         lines = [
           it.type === 'post' ? 'The post, its video file and its Search entry are deleted. This can not be undone.' : 'The ' + what + ' is deleted. This can not be undone.',
-          'The owner gets a strike (now ' + it.strikes + ' → ' + (it.strikes + 1) + ') and a note from Fly with the reason.',
+          removeOutcome(it),
           'The reporters are thanked silently (their report counts as accepted).'
         ];
       }
@@ -5563,7 +5715,11 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
         render();
       }, 750);
       if (j.gone) toast('🧹 Cleared - it was already deleted');
-      else if (action === 'remove') toast('🗑️ Removed · strike added · owner told');
+      else if (action === 'remove') {
+        toast(j.banDays
+          ? '🗑️ Removed · strike ' + j.strikes + ' · no posting for ' + j.banDays + ' days'
+          : '🗑️ Removed · strike 1 = warning · owner told');
+      }
       else toast((it.hidden || it.limited) ? '✅ Restored · owner told' : '👍 Kept up · reports rejected');
     }).catch(function (e) {
       buttons.forEach(function (bt) { bt.disabled = false; });
