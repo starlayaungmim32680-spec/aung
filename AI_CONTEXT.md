@@ -963,6 +963,21 @@ OK). Play Console: Terms URL =
 > **Next:** ONE prod APK for all of 29-30 Oct (report errors, my video's
 > ••• menu, reported videos leave the feeds)._
 >
+> _30 Oct 2026 (evening, confirmed by Ko on PROD with phones A and B):
+> **the 29-30 Oct app changes are live on prod** - clear report errors, no
+> Report on my own video, my video's ••• menu (Under review / Delete
+> video), reported videos leave Home / Shorts. APK only (no Worker / rules
+> change): full APK recipe with `--flavor prod` -> `Fly-bn10302018.apk`
+> (348 s, `assembleProdRelease`), 5c NEW `What happened, and how to
+> appeal` True / OLD `Could not send the report. Please try again.`
+> False; installed as an update on both phones (no uninstall). Tested on
+> prod: A's own video ••• = Delete video only (not pressed); B reported
+> A's video "Something else" -> "Thanks for reporting" + cover; Following
+> -> For You = gone; airplane mode -> "Check your connection". The APK
+> recipe worked first time on all four builds of 29-30 Oct. Ignore the
+> "A new version of Flutter is available" box - don't `flutter upgrade`
+> in the middle of a release._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2846,8 +2861,8 @@ others only see it once encoded (Bunny webhook).
     28-29 Oct). Follow-ups: (a) clear report errors DONE on dev 29 Oct
     (prod APK not yet); my own video's ••• = "Under review - see
     why" + "Delete video" (never Report) DONE on dev 29-30 Oct (all tested);
-    reported videos leave Home / Shorts DONE on dev 30 Oct; next: ONE
-    prod APK for all of 29-30 Oct;
+    reported videos leave Home / Shorts - all of these DONE on dev AND
+    prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do (moderationStrikes: e.g. 3 -> no posting for a
     while); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
