@@ -1029,6 +1029,25 @@ OK). Play Console: Terms URL =
 > (Worker -> rules -> APK), then step C = an "Account status" screen
 > (Profile -> settings) with the strike list and when each one expires._
 >
+> _31 Oct - 1 Nov 2026 (confirmed by Ko on PROD): **strikes (steps A + B)
+> are live on prod.** First proved prod was untouched since the last
+> deploy: pasted the live prod Worker -> `git diff --ignore-cr-at-eol
+> --stat b8c358b` = empty, live prod rules -> `git diff ... f2ef4aa` =
+> empty, then `git checkout --` both files back to `41d9f74` and checked
+> `function strikeOutcome` / `function postingBanned` = True before
+> pasting. Order: prod Worker `livekit-token-worker` -> prod rules
+> `aung-1756e` -> normal users could still post a video AND a story (the
+> new `postingBanned()` rule does not block anyone without a pause) ->
+> prod APK `Fly-bn10312340.apk` (APK recipe; 5a needed the "wait and
+> retry" because `Test-Path build` was still True right after killing
+> Java; 291 s `assembleProdRelease`) installed as an update on both
+> phones: Upload and Create story open normally. The "Posting is paused"
+> screen itself was NOT tried on prod on purpose (no real account gets a
+> strike for a test) - it was tested on dev. **Next:** step C "Account
+> status" screen, then the Under review chip, then "AI: not checked yet",
+> then the launch list (Child Safety page, force-update, delete-account
+> Bunny files, Play Console, closed testing with 12 testers for 14 days)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2918,8 +2937,8 @@ others only see it once encoded (Bunny webhook).
     why" + "Delete video" (never Report) DONE on dev 29-30 Oct (all tested);
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
-    (b) what strikes do - DONE on dev 30-31 Oct (steps A + B, see the
-    note; prod next, then step C "Account status" screen); (c) prod "AI: not checked yet" - check the Worker logs for
+    (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
+    B, prod APK `Fly-bn10312340.apk`); next step C "Account status" screen; (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
     the Stories bar**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
