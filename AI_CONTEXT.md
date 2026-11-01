@@ -1112,6 +1112,37 @@ OK). Play Console: Terms URL =
 > Friends". **Next:** "AI: not checked yet" (Worker logs), then the launch
 > list._
 >
+> _1 Nov 2026 (night, confirmed by Ko on DEV and PROD - Worker only, no
+> APK, no rules): **"AI: not checked yet" solved - OpenAI image check now
+> retries once.** Diagnosis: the prod report target
+> `post~posts~YruhN5dtWjKxxRNRNIGc` (29 Oct, child_safety, Keep up) had
+> `reports: 1` = the report WAS counted, so `reportAiFlags` did run - but
+> got null (no answer). Re-running the same video
+> (`ee3e5358-9d44-4f71-9a16-190390031634`) on the prod
+> `/moderation-video-test` page (no remove) passed: seek/_0.jpg +
+> thumbnail both answered (sexual 0 %, violence 1-2 %). So Bunny's
+> pictures exist and the key works; on 29 Oct one picture simply got no
+> answer just then (OpenAI busy 429 / slow / network) - Cloudflare logs
+> from that day were already gone. Fix in
+> `cloudflare/livekit_token_worker.js`: `modImageResult` now calls the
+> new `modImageTry(imageUrl, env, timeoutMs)` and, when the try was a
+> 429, a 5xx, a timeout or a network error (or an empty answer), waits
+> `MOD_IMG_RETRY_WAIT_MS` (1.2 s) and tries ONCE more with
+> `MOD_IMG_RETRY_TIMEOUT_MS` (6 s). A 4xx like 400 (picture not
+> downloadable) is NOT retried. Logs `moderate-image: answered on retry`
+> when the second try helped. Covers every image check (report, Bunny
+> webhook re-check, phone photos). Worst case for a report ~20 s, under
+> the app's 30 s report timeout. Mock-tested (200 / 429->200 / 500->200
+> / error->200 / 400 = 1 call / 429->429 = 2 calls). Deployed to
+> fly-dev-worker (test page on dev video `b2011226-...` = Passes, project
+> fly-dev-58b29) and livekit-token-worker (prod video `ee3e5358-...` =
+> Passes, project aung-1756e). Note: dev posts from before 6 Oct live in
+> the PROD Bunny library, so the dev test page says "Bunny did not
+> return this video" for them - pick a post made after 9 Oct. A report
+> whose AI check still gets no answer stays `aiChecked` unset, so the
+> next report tries again. **Next:** the launch list - Child Safety
+> (CSAE) page first._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3002,8 +3033,7 @@ others only see it once encoded (Bunny webhook).
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
-    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - check the Worker logs for
-    why reportAiFlags returned null; (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety
+    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and

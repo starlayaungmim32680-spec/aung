@@ -3217,9 +3217,27 @@ function modImageMime(b64) {
 // reachable). [imageUrl] is a data: URL (pictures sent by the phone) or
 // an https URL OpenAI downloads itself (Bunny frames, see
 // modCheckBunnyVideo - no base64 work in the Worker).
+// 1 Nov 2026: a prod report (29 Oct) got "AI: not checked yet" although
+// the same video passed fine later - one picture had no answer just then
+// (OpenAI busy / slow). Now a busy (429), down (5xx), timed-out or
+// network-failed try is tried ONCE more after a short wait. A 4xx like
+// 400 (picture not downloadable) is not retried - it would fail again.
+const MOD_IMG_RETRY_WAIT_MS = 1200;
+const MOD_IMG_RETRY_TIMEOUT_MS = 6000;
+
 async function modImageResult(imageUrl, env) {
+  const first = await modImageTry(imageUrl, env, MOD_IMG_TIMEOUT_MS);
+  if (first.result || !first.retry) return first.result;
+  await new Promise((r) => setTimeout(r, MOD_IMG_RETRY_WAIT_MS));
+  const second = await modImageTry(imageUrl, env, MOD_IMG_RETRY_TIMEOUT_MS);
+  if (second.result) console.log('moderate-image: answered on retry');
+  return second.result;
+}
+
+// One try: { result, retry } - retry = worth trying again.
+async function modImageTry(imageUrl, env, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), MOD_IMG_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(MOD_AI_URL, {
       method: 'POST',
@@ -3236,13 +3254,14 @@ async function modImageResult(imageUrl, env) {
     if (!res.ok) {
       console.log('moderate-image: OpenAI HTTP', res.status,
         (await res.text()).slice(0, 200));
-      return undefined;
+      return { result: undefined, retry: res.status === 429 || res.status >= 500 };
     }
     const data = await res.json();
-    return data?.results?.[0] || undefined;
+    const result = data?.results?.[0] || undefined;
+    return { result, retry: !result };
   } catch (err) {
     console.log('moderate-image: OpenAI error', err.name, err.message);
-    return undefined;
+    return { result: undefined, retry: true };
   } finally {
     clearTimeout(timer);
   }
