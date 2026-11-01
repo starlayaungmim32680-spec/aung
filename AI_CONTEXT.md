@@ -1084,6 +1084,30 @@ OK). Play Console: Terms URL =
 > **Next:** the Under review chip, then "AI: not checked yet", then the
 > launch list._
 >
+> _1 Nov 2026 (evening, confirmed by Ko on DEV only - prod APK NOT done
+> yet): **no chips on my own video - it all lives in the ••• sheet (Ko's
+> idea).** First checked the old "Under review chip overlaps the Stories
+> bar" note against real screenshots: it was WRONG - on Home the video
+> item sits BELOW the Stories bar (a Column, not a Stack), and in full
+> screen the chip sits under the back arrow; nothing overlapped. Ko then
+> asked to drop the chips anyway for a cleaner video:
+> `home_video_post.dart` no longer shows `ReviewBadge` / `AudienceBadge`
+> on the video (the classes stay in report_review.dart /
+> post_audience.dart, unused). `_showMyPostSheet` (my video's •••) =
+> "Under review - see why" (when isUnderReview) + "Delete video" + a
+> divider + "Who can watch: <label>" with the audience's icon and
+> description (only for a non-Everyone post that is NOT under review -
+> while under review the Worker changed the audience, so the review row
+> explains it). New `_moreIcon(post, size, blur)` for both ••• buttons
+> (side rail + repost row): on MY video that is under review it carries a
+> small glowing orange dot, so the owner still notices without the chip.
+> Tapping "Who can watch" does nothing yet (changing it = "Who can watch
+> D", after launch). APK recipe: `FlyDev-bn11011858.apk`, 5c NEW `Who can
+> watch: ` True / OLD `Could not send the report. Please try again.`
+> False. Tested on dev: Friends test video on Home - no chip, ••• shows
+> Delete video + "Who can watch: Friends / Only your friends". **Next:**
+> prod APK, then "AI: not checked yet", then the launch list._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2975,8 +2999,7 @@ others only see it once encoded (Bunny webhook).
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
     B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - check the Worker logs for
-    why reportAiFlags returned null; (d) move the Under review chip off
-    the Stories bar**, (4) Google Play Child Safety
+    why reportAiFlags returned null; (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev 1 Nov)**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and

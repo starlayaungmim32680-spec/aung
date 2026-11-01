@@ -2299,18 +2299,11 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             : _showReportBlockSheet(context),
                         child: _FlyActionGlow(
                           active: false,
-                          child: const SizedBox(
+                          child: SizedBox(
                             width: 40,
                             height: 40,
                             child: Center(
-                              child: Icon(
-                                Icons.more_horiz,
-                                color: Colors.white,
-                                size: 26,
-                                shadows: [
-                                  Shadow(color: Colors.black, blurRadius: 8),
-                                ],
-                              ),
+                              child: _moreIcon(livePostData, 26, 8),
                             ),
                           ),
                         ),
@@ -2446,12 +2439,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         onTap: () => _isMyPost
                             ? _showMyPostSheet(context, livePostData)
                             : _showReportBlockSheet(context),
-                        child: const Icon(
-                          Icons.more_horiz,
-                          color: Colors.white,
-                          size: 22,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                        ),
+                        child: _moreIcon(livePostData, 22, 6),
                       ),
                     ],
                   ),
@@ -2549,31 +2537,11 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   ),
                 ),
               ),
-              // "Who can watch" chip on MY non-public videos (24 Oct 2026,
-              // post_audience.dart), so I can see at a glance who else can
-              // watch this one. Nothing for Everyone videos.
-              // 27 Oct 2026 (Report system step 2): a video that reports
-              // hid or limited shows a tappable "Under review" chip instead
-              // (report_review.dart) - its audience was changed by the
-              // Worker, not by me.
-              if (user != null &&
-                  widget.userId == user.uid &&
-                  isUnderReview(livePostData))
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 60,
-                  left: 12,
-                  child: ReviewBadge(postId: widget.postId),
-                )
-              else if (user != null &&
-                  widget.userId == user.uid &&
-                  !audienceOf(livePostData).isPublic)
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 60,
-                  left: 12,
-                  child: IgnorePointer(
-                    child: AudienceBadge(audience: audienceOf(livePostData)),
-                  ),
-                ),
+              // 1 Nov 2026 (Ko): no "Friends" / "Under review" chip on the
+              // video any more - it keeps the video clean. On my own video
+              // both live in the ••• sheet (_showMyPostSheet), and while
+              // reports hid / limited it the ••• gets an orange dot
+              // (_moreIcon) so I still notice.
               // A video I reported is covered for me right away (27 Oct
               // 2026, like Facebook / TikTok) - report_review.dart.
               if (user == null || widget.userId != user.uid)
@@ -2615,6 +2583,44 @@ class _VideoPostItemState extends State<_VideoPostItem>
     return myId != null && myId == widget.userId;
   }
 
+  // The ••• icon. On MY video that reports hid or limited, it carries a
+  // small orange dot (1 Nov 2026 - the "Under review" chip on the video is
+  // gone, so this is how I notice; the ••• sheet says why).
+  Widget _moreIcon(Map<String, dynamic>? post, double size, double blur) {
+    final Widget icon = Icon(
+      Icons.more_horiz,
+      color: Colors.white,
+      size: size,
+      shadows: [Shadow(color: Colors.black, blurRadius: blur)],
+    );
+    if (!_isMyPost || !isUnderReview(post)) return icon;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        icon,
+        Positioned(
+          right: -2,
+          top: -2,
+          child: Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFFFF9F1C),
+              border: Border.all(color: Colors.black, width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFFFF9F1C).withValues(alpha: 0.7),
+                  blurRadius: 6,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   // ••• on MY OWN video (29 Oct 2026, step 2 of plan A): "Under review -
   // see why" while reports hid or limited it (report_review.dart), and
   // "Delete video" behind a confirm dialog (same as Profile). [post] is
@@ -2622,6 +2628,11 @@ class _VideoPostItemState extends State<_VideoPostItem>
   void _showMyPostSheet(BuildContext context, Map<String, dynamic>? post) {
     HapticFeedback.selectionClick();
     final bool underReview = isUnderReview(post);
+    // 1 Nov 2026: who can watch, shown here instead of a chip on the video.
+    // Not while under review - then the Worker changed the audience and the
+    // review row explains it.
+    final PostAudience audience = audienceOf(post);
+    final bool showAudience = !underReview && !audience.isPublic;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E1E1E),
@@ -2666,6 +2677,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   _confirmDeleteMyPost();
                 },
               ),
+              if (showAudience) ...[
+                const Divider(color: Colors.white12, height: 1),
+                ListTile(
+                  leading: Icon(audience.icon, color: Colors.white70),
+                  title: Text('Who can watch: ${audience.label}',
+                      style: const TextStyle(color: Colors.white)),
+                  subtitle: Text(audience.description,
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
+              ],
               const SizedBox(height: 8),
             ],
           ),
