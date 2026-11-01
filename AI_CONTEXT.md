@@ -1105,8 +1105,12 @@ OK). Play Console: Terms URL =
 > D", after launch). APK recipe: `FlyDev-bn11011858.apk`, 5c NEW `Who can
 > watch: ` True / OLD `Could not send the report. Please try again.`
 > False. Tested on dev: Friends test video on Home - no chip, ••• shows
-> Delete video + "Who can watch: Friends / Only your friends". **Next:**
-> prod APK, then "AI: not checked yet", then the launch list._
+> Delete video + "Who can watch: Friends / Only your friends". **Live on
+> prod 1 Nov 2026** (app only): `Fly-bn11011915.apk` (224 s, 5c NEW `Who
+> can watch: ` True / OLD False), installed as an update; a prod Friends
+> video shows no chip and its ••• = Delete video + "Who can watch:
+> Friends". **Next:** "AI: not checked yet" (Worker logs), then the launch
+> list._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2999,7 +3003,7 @@ others only see it once encoded (Bunny webhook).
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
     B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - check the Worker logs for
-    why reportAiFlags returned null; (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev 1 Nov)**, (4) Google Play Child Safety
+    why reportAiFlags returned null; (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
