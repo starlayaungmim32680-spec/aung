@@ -1076,8 +1076,13 @@ OK). Play Console: Terms URL =
 > report. Please try again.` False. Tested on dev: phone B (no strikes)
 > = good standing; phone A = warning, 2 strike cards, 89 days left, goes
 > away 28 Jan 2027; phone B in airplane mode after a restart = the
-> Couldn't load card. **Next:** prod APK (app only), then the Under
-> review chip, then "AI: not checked yet", then the launch list._
+> Couldn't load card. **Live on prod 1 Nov 2026** (app only, no Worker /
+> rules change): APK recipe `--flavor prod` -> `Fly-bn11011809.apk` (224
+> s, 5c NEW `Couldn't load your account status` True / OLD `Could not send
+> the report. Please try again.` False), installed as an update; prod
+> Account status = 🟢 good standing, posting / stories work as before.
+> **Next:** the Under review chip, then "AI: not checked yet", then the
+> launch list._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2969,7 +2974,7 @@ others only see it once encoded (Bunny webhook).
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
-    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev 1 Nov (prod APK next); (c) prod "AI: not checked yet" - check the Worker logs for
+    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
     the Stories bar**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
