@@ -5,6 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'main_navigation_screen.dart';
 import 'signup_screen.dart';
 import 'recent_accounts.dart';
+import 'account_closed.dart' show showAccountClosedDialog;
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -161,6 +162,10 @@ class _LoginScreenState extends State<LoginScreen>
       setState(() {
         _errorMessage = _mapErrorMessage(e.code);
       });
+      // 1 Nov 2026: a permanently closed account (see account_closed.dart).
+      if (e.code == 'user-disabled' && mounted) {
+        showAccountClosedDialog(context);
+      }
     } catch (e) {
       setState(() {
         _errorMessage = 'Something went wrong. Please try again.';
@@ -184,6 +189,8 @@ class _LoginScreenState extends State<LoginScreen>
         return 'Invalid email format.';
       case 'invalid-credential':
         return 'Email or password is incorrect.';
+      case 'user-disabled':
+        return 'This account has been closed.';
       default:
         return 'Login failed - $code';
     }

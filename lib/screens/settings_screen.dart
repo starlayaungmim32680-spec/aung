@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'blocked_users_screen.dart';
 import 'sound_moderation.dart';
 import 'account_status_screen.dart';
+import 'terms_consent.dart' show kChildSafetyUrl, openFlyWebPage;
 
 // Fly's settings hub - starts with just Blocked accounts, but gives
 // future settings (notifications, privacy, etc.) a proper home instead
@@ -45,6 +46,18 @@ class SettingsScreen extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
               );
             },
+          ),
+          // 1 Nov 2026: Google Play's Child Safety Standards - how to
+          // report, what Fly does, the child-safety contact.
+          ListTile(
+            leading: const Icon(Icons.child_care, color: Colors.white),
+            title: const Text('Child safety',
+                style: TextStyle(color: Colors.white)),
+            subtitle: const Text('Our standards and how to report',
+                style: TextStyle(color: Colors.white54, fontSize: 12.5)),
+            trailing:
+                const Icon(Icons.open_in_new, color: Colors.grey, size: 20),
+            onTap: () => openFlyWebPage(context, kChildSafetyUrl),
           ),
           ListTile(
             leading: const Icon(Icons.copyright, color: Colors.white),

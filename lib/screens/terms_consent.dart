@@ -35,6 +35,8 @@ const String kTermsUrl = '$kFlyWebBase/terms';
 const String kCommunityGuidelinesUrl =
     '$kFlyWebBase/terms#community-guidelines';
 const String kPrivacyUrl = '$kFlyWebBase/privacy';
+// 1 Nov 2026: Google Play's Child Safety Standards page.
+const String kChildSafetyUrl = '$kFlyWebBase/child-safety';
 
 /// Opens one of Fly's public pages in the browser.
 Future<void> openFlyWebPage(BuildContext context, String url) async {

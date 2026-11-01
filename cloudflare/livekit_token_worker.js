@@ -4178,7 +4178,10 @@ async function handleAdminApi(request, env) {
     if (body.action === 'restore' || body.action === 'remove') {
       const key = String(body.key || '');
       if (!ADMIN_KEY_RE.test(key)) return jsonResponse({ error: 'bad key' }, 400);
-      return adminDecide(env, key, body.action);
+      return adminDecide(env, key, body.action, {
+        reason: typeof body.reason === 'string' ? body.reason : '',
+        minorConfirmed: body.minorConfirmed === true,
+      });
     }
     return jsonResponse({ error: 'unknown action' }, 400);
   } catch (err) {
@@ -4233,6 +4236,7 @@ async function adminQueue(env) {
       strikes: fsInt(strikes, 'strikes'),
       postBanUntil: fsTimestampMs(strikes, 'postBanUntil') || 0,
       checkAccount: fsBool(strikes, 'needsAccountReview'),
+      accountBanned: fsBool(strikes, 'accountBanned'),
       mainReason: t ? adminMainReason(s, t) : '',
       reports: fsInt(s, 'reports'),
       reasons,
@@ -4270,7 +4274,7 @@ async function adminQueue(env) {
   };
 }
 
-async function adminDecide(env, key, decision) {
+async function adminDecide(env, key, decision, opts = {}) {
   const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
   const state = await firestoreGetFields(env, dbToken, `reportTargets/${key}`);
   if (state === null) return jsonResponse({ error: 'not in the queue' }, 404);
@@ -4306,8 +4310,19 @@ async function adminDecide(env, key, decision) {
 
   const ownerId = stringField(target, 'userId') || stringField(state, 'ownerId');
   const postId = targetPath.split('/')[1];
-  const reason = adminMainReason(state, target);
+  // 1 Nov 2026: on Remove, Ko picks the reason himself (the reports'
+  // main reason is only the default - reporters can be wrong or abuse
+  // "Child safety"). Child safety = PERMANENT ban, so it also needs Ko's
+  // explicit "this really involves a minor" tick.
+  const picked = decision === 'remove' &&
+    Object.prototype.hasOwnProperty.call(ADMIN_REASON_LABELS, opts.reason)
+    ? opts.reason : '';
+  const reason = picked || adminMainReason(state, target);
   const reasonLabel = ADMIN_REASON_LABELS[reason] || ADMIN_REASON_LABELS.other;
+  const permanent = decision === 'remove' && STRIKE_SEVERE.has(reason);
+  if (permanent && !opts.minorConfirmed) {
+    return jsonResponse({ error: 'confirm_minor' }, 400);
+  }
   const what = type === 'post' ? 'video' : 'comment';
 
   if (decision === 'restore') {
@@ -4413,7 +4428,7 @@ async function adminDecide(env, key, decision) {
       firestoreGetFields(env, dbToken, `moderationStrikes/${ownerId}`),
     ]);
     outcome = strikeOutcome(activeBefore, reason, now.getTime(),
-      fsTimestampMs(summary, 'postBanUntil'), what, reasonLabel);
+      fsTimestampMs(summary, 'postBanUntil'), what, reasonLabel, permanent);
     writes.push(fsUpdateWrite(env, `moderationStrikes/${ownerId}/items/${key}`, {
       kind: type,
       reason,
@@ -4437,6 +4452,12 @@ async function adminDecide(env, key, decision) {
     if (outcome.severe || outcome.active >= 3) {
       summaryFields.needsAccountReview = true;
     }
+    if (outcome.permanent) {
+      summaryFields.accountBanned = true;
+      summaryFields.bannedAt = now;
+      summaryFields.bannedReason = reason;
+      summaryFields.bannedTargetPath = targetPath;
+    }
     writes.push(fsUpdateWrite(env, `moderationStrikes/${ownerId}`, summaryFields));
     writes.push(fsUpdateWrite(env, `users/${ownerId}/notifications/mod~${key}~removed`, {
       type: 'moderation',
@@ -4448,6 +4469,7 @@ async function adminDecide(env, key, decision) {
       reason,
       strikes: outcome.active,
       banDays: outcome.banDays,
+      permanent: outcome.permanent,
       text: outcome.text,
       seen: false,
       createdAt: now,
@@ -4473,9 +4495,16 @@ async function adminDecide(env, key, decision) {
     videoGuid: type === 'post' ? stringField(target, 'bunnyVideoId') : '',
     strikes: outcome ? outcome.active : 0,
     banDays: outcome ? outcome.banDays : 0,
+    permanent: Boolean(outcome && outcome.permanent),
     createdAt: now,
   }));
   await firestoreCommit(env, dbToken, writes);
+
+  // 1 Nov 2026: child safety -> the account is closed for good.
+  let closed = null;
+  if (outcome && outcome.permanent) {
+    closed = await closeAccountForGood(env, dbToken, ownerId, postId, now);
+  }
 
   if (type === 'post') {
     const videoGuid = stringField(target, 'bunnyVideoId');
@@ -4503,7 +4532,114 @@ async function adminDecide(env, key, decision) {
     banDays: outcome ? outcome.banDays : 0,
     banUntil: outcome && outcome.banUntilMs
       ? new Date(outcome.banUntilMs).toISOString() : '',
+    permanent: Boolean(outcome && outcome.permanent),
+    loginDisabled: closed ? closed.loginDisabled : false,
+    hiddenPosts: closed ? closed.hiddenPosts : 0,
   });
+}
+
+// ---------------------------------------------------------------------
+// Permanent ban (1 Nov 2026, Child Safety Standards step B): what
+// "permanently banned" means on Fly. The strike summary already says
+// accountBanned + postBanUntil = FOREVER (posting is refused by
+// firestore.rules and /upload-video). Here, each part on its own (one
+// failing doesn't stop the rest):
+//   1. Firebase login disabled + sessions revoked (Identity Toolkit) -
+//      the app is signed out within the hour and can't sign in again.
+//   2. All their other videos hidden like a report-hide (audience
+//      only_me, hiddenByReports + hiddenByBan, audienceBeforeHide kept).
+//   3. Their stories deleted.
+//   4. Out of Search (name + posts).
+//   5. users/{uid}.accountClosed = true (profile can say "closed").
+// Undo by hand (a wrong ban): Firebase Console -> Authentication -> the
+// user -> Enable; moderationStrikes/{uid}: delete accountBanned +
+// postBanUntil; users/{uid}: delete accountClosed; each hidden post: set
+// audience = audienceBeforeHide, delete hiddenByReports / hiddenByBan /
+// hiddenReason / audienceBeforeHide.
+// ---------------------------------------------------------------------
+const BAN_FOREVER_MS = Date.UTC(9999, 11, 31);
+// Same scopes the Firebase Admin SDK asks for when it manages users.
+const IDENTITY_SCOPE = 'https://www.googleapis.com/auth/identitytoolkit https://www.googleapis.com/auth/cloud-platform';
+
+async function closeAccountForGood(env, dbToken, uid, removedPostId, now) {
+  const out = { loginDisabled: false, hiddenPosts: 0 };
+  if (!isSafeUid(uid)) return out;
+
+  // 1. Login off.
+  try {
+    const idToken = await getGoogleAccessToken(env, IDENTITY_SCOPE);
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/accounts:update`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          localId: uid,
+          disableUser: true,
+          validSince: String(Math.floor(now.getTime() / 1000)),
+        }),
+      },
+    );
+    if (res.ok) {
+      out.loginDisabled = true;
+    } else {
+      console.log('ban: disable login failed', res.status,
+        (await res.text()).slice(0, 300));
+    }
+  } catch (err) {
+    console.log('ban: disable login error', err.message);
+  }
+
+  // 2. + 3. Hide videos, delete stories.
+  try {
+    const [posts, stories] = await Promise.all([
+      firestoreQueryEq(env, dbToken, 'posts', 'userId', uid, 500),
+      firestoreQueryEq(env, dbToken, 'stories', 'userId', uid, 200),
+    ]);
+    const writes = [];
+    for (const p of posts) {
+      if (p.id === removedPostId) continue;
+      if (fsBool(p.fields, 'hiddenByReports')) {
+        writes.push(fsUpdateWrite(env, `posts/${p.id}`, { hiddenByBan: true }));
+      } else {
+        writes.push(fsUpdateWrite(env, `posts/${p.id}`, {
+          audience: 'only_me',
+          audienceBeforeHide: stringField(p.fields, 'audience') || 'everyone',
+          hiddenByReports: true,
+          hiddenByBan: true,
+          hiddenReason: 'child_safety',
+          hiddenAt: now,
+        }));
+      }
+      out.hiddenPosts++;
+    }
+    for (const st of stories) {
+      writes.push({ delete: fsDocName(env, `stories/${st.id}`) });
+    }
+    writes.push(fsUpdateWrite(env, `users/${uid}`, {
+      accountClosed: true,
+      accountClosedAt: now,
+    }));
+    await firestoreCommit(env, dbToken, writes);
+  } catch (err) {
+    console.log('ban: hide content failed', err.message);
+  }
+
+  // 4. Search.
+  if (env.SEARCH_DB) {
+    try {
+      await env.SEARCH_DB.batch([
+        env.SEARCH_DB.prepare('DELETE FROM users WHERE uid = ?1').bind(uid),
+        env.SEARCH_DB.prepare('DELETE FROM posts WHERE owner_id = ?1').bind(uid),
+      ]);
+    } catch (err) {
+      console.log('ban: search cleanup failed', err.message);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------
@@ -4555,9 +4691,19 @@ async function postingBanUntilMs(env, uid) {
 }
 
 // What a new strike means: {active, banDays, banUntilMs, severe, text}.
-function strikeOutcome(activeBefore, reason, nowMs, existingBanMs, what, reasonLabel) {
+function strikeOutcome(activeBefore, reason, nowMs, existingBanMs, what, reasonLabel, permanent = false) {
   const active = activeBefore + 1;
   const severe = STRIKE_SEVERE.has(reason);
+  if (permanent) {
+    return {
+      active,
+      banDays: 0,
+      banUntilMs: BAN_FOREVER_MS,
+      severe: true,
+      permanent: true,
+      text: `Your ${what} was removed because it breaks our Child Safety Standards. Because of this, your Fly account has been permanently closed. If you think this is a mistake, email chakaboycom@gmail.com.`,
+    };
+  }
   let banDays = 0;
   if (severe || active >= 3) banDays = STRIKE_BAN_DAYS_3;
   else if (active === 2) banDays = STRIKE_BAN_DAYS_2;
@@ -4576,7 +4722,7 @@ function strikeOutcome(activeBefore, reason, nowMs, existingBanMs, what, reasonL
   } else {
     text = `${head} You now have ${active} strikes, so you can't post videos or stories until ${strikeDay(banUntilMs)}. Our team will also look at your account.`;
   }
-  return { active, banDays, banUntilMs, severe, text };
+  return { active, banDays, banUntilMs, severe, permanent: false, text };
 }
 
 async function handleModerateText(body, env) {
@@ -5470,6 +5616,10 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
 .grab{width:40px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:0 auto 14px}
 .sheet h3{margin:0 0 8px;font-size:19px}
 .sheet ul{margin:0 0 18px;padding-left:20px;color:var(--muted);font-size:14px}
+.sheet .pick{display:flex;flex-direction:column;gap:6px;margin:4px 0 12px;font-size:14px;color:var(--muted)}
+.sheet .pick select{padding:10px 12px;border-radius:12px;background:var(--card2);color:inherit;border:1px solid rgba(255,255,255,.14);font:inherit;color:#fff}
+.sheet .minor{display:flex;gap:10px;align-items:flex-start;margin:0 0 16px;padding:12px;border-radius:14px;background:rgba(255,71,87,.12);border:1px solid rgba(255,71,87,.4);color:#ffb3ba;font-size:14px;font-weight:650}
+.sheet .minor input{width:20px;height:20px;margin-top:2px;flex:none;accent-color:#ff4757}
 .sheet li{margin:4px 0}
 .player{width:100%;aspect-ratio:9/16;max-height:70vh;border:0;border-radius:16px;background:#000;display:block;margin:0 auto 12px}
 .link{color:#8ab4ff;font-size:13px;word-break:break-all}
@@ -5567,10 +5717,10 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
   // 1 = warning, 2 = 7 days, 3+ or child safety = 30 days). The count is
   // the one saved at the owner's last strike, so an expired one may still
   // be included here - the Worker counts exactly.
-  function removeOutcome(it) {
+  function removeOutcome(it, reason) {
     var next = (it.strikes || 0) + 1;
-    if (it.mainReason === 'child_safety') {
-      return 'Child safety: the owner gets a strike and can\'t post for 30 days. The account is marked "Check account".';
+    if (reason === 'child_safety') {
+      return '⛔ Child safety = the account is closed FOR GOOD: login turned off, all their other videos hidden, stories deleted, out of Search.';
     }
     if (next >= 3) return 'The owner gets strike ' + next + ' and can\'t post for 30 days. The account is marked "Check account".';
     if (next === 2) return 'The owner gets a 2nd strike and can\'t post videos or stories for 7 days.';
@@ -5724,7 +5874,9 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
     o.appendChild(el('span', 'name', it.ownerName));
     o.appendChild(el('span', 'strike' + (it.strikes ? '' : ' zero'),
       it.strikes ? '⚠️ ' + it.strikes + ' strike' + (it.strikes > 1 ? 's' : '') : 'no strikes'));
-    if (it.postBanUntil && it.postBanUntil > Date.now()) {
+    if (it.accountBanned) {
+      o.appendChild(el('span', 'strike', '⛔ account closed for good'));
+    } else if (it.postBanUntil && it.postBanUntil > Date.now()) {
       o.appendChild(el('span', 'strike', '🚫 no posting until ' + dayText(it.postBanUntil)));
     }
     if (it.checkAccount) badges.appendChild(el('span', 'badge b-high', 'Check account'));
@@ -5776,7 +5928,7 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
       var ok = el('button', 'act ok', actioned ? '✅ Restore' : '👍 Keep up');
       var rm = el('button', 'act rm', '🗑️ Remove');
       ok.addEventListener('click', function () { buzz(); confirmSheet(it, 'restore', function () { decide(it, 'restore', c, [ok, rm]); }); });
-      rm.addEventListener('click', function () { buzz(); confirmSheet(it, 'remove', function () { decide(it, 'remove', c, [ok, rm]); }); });
+      rm.addEventListener('click', function () { buzz(); confirmSheet(it, 'remove', function (extra) { decide(it, 'remove', c, [ok, rm], extra); }); });
       acts.appendChild(ok);
       acts.appendChild(rm);
     }
@@ -5812,20 +5964,61 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
         if (it.hidden || it.limited) lines.push('The owner gets a "good news" note from Fly.');
       } else {
         sh.appendChild(el('h3', null, '🗑️ Remove this ' + what + ' for good?'));
-        lines = [
-          it.type === 'post' ? 'The post, its video file and its Search entry are deleted. This can not be undone.' : 'The ' + what + ' is deleted. This can not be undone.',
-          removeOutcome(it),
-          'The reporters are thanked silently (their report counts as accepted).'
-        ];
+        lines = null;
       }
       var ul = el('ul');
-      lines.forEach(function (l) { ul.appendChild(el('li', null, l)); });
       sh.appendChild(ul);
+      function fillLines(list) {
+        ul.textContent = '';
+        list.forEach(function (l) { ul.appendChild(el('li', null, l)); });
+      }
+      var reasonSel = null, minorBox = null, minorWrap = null;
       var row = el('div', 'actions');
       var no = el('button', 'act clear', 'Cancel');
       var yes = el('button', 'act ' + (action === 'restore' ? 'ok' : 'rm'), action === 'restore' ? 'Yes, restore' : 'Yes, remove');
+      if (lines) {
+        fillLines(lines);
+      } else {
+        // 1 Nov 2026: Ko picks the real reason (the reports' main reason
+        // is only the default). Child safety needs an extra tick.
+        var lab = el('label', 'pick');
+        lab.appendChild(el('span', null, 'Why is it removed?'));
+        reasonSel = el('select');
+        Object.keys(data.reasonLabels || {}).forEach(function (k) {
+          var op = el('option', null, data.reasonLabels[k]);
+          op.value = k;
+          if (k === (it.mainReason || 'other')) op.selected = true;
+          reasonSel.appendChild(op);
+        });
+        lab.appendChild(reasonSel);
+        sh.insertBefore(lab, ul);
+        minorWrap = el('label', 'minor');
+        minorBox = el('input');
+        minorBox.type = 'checkbox';
+        minorWrap.appendChild(minorBox);
+        minorWrap.appendChild(el('span', null, 'I checked it myself: this really involves a minor (under 18). Close the account for good.'));
+        sh.insertBefore(minorWrap, ul.nextSibling);
+        var sync = function () {
+          var r = reasonSel.value;
+          var cs = r === 'child_safety';
+          minorWrap.style.display = cs ? '' : 'none';
+          yes.disabled = cs && !minorBox.checked;
+          yes.textContent = cs ? '⛔ Remove + close account' : 'Yes, remove';
+          fillLines([
+            it.type === 'post' ? 'The post, its video file and its Search entry are deleted. This can not be undone.' : 'The ' + what + ' is deleted. This can not be undone.',
+            removeOutcome(it, r),
+            'The reporters are thanked silently (their report counts as accepted).'
+          ]);
+        };
+        reasonSel.addEventListener('change', function () { minorBox.checked = false; sync(); });
+        minorBox.addEventListener('change', sync);
+        sync();
+      }
       no.addEventListener('click', close);
-      yes.addEventListener('click', function () { buzz(); close(); go(); });
+      yes.addEventListener('click', function () {
+        buzz(); close();
+        go(reasonSel ? { reason: reasonSel.value, minorConfirmed: !!(minorBox && minorBox.checked) } : {});
+      });
       row.appendChild(no);
       row.appendChild(yes);
       sh.appendChild(row);
@@ -5860,9 +6053,11 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
   }
 
   // ---- Decide ----
-  function decide(it, action, cardEl, buttons) {
+  function decide(it, action, cardEl, buttons, extra) {
     buttons.forEach(function (bt) { bt.disabled = true; });
-    api({ action: action, key: it.key }).then(function (j) {
+    var body = { action: action, key: it.key };
+    if (extra && extra.reason) { body.reason = extra.reason; body.minorConfirmed = !!extra.minorConfirmed; }
+    api(body).then(function (j) {
       cardEl.style.maxHeight = cardEl.offsetHeight + 'px';
       cardEl.classList.add(action === 'remove' ? 'out-rm' : 'out-ok');
       setTimeout(function () { cardEl.classList.add('gone'); }, 300);
@@ -5871,6 +6066,11 @@ main{max-width:760px;margin:0 auto;padding:14px 16px 80px}
         render();
       }, 750);
       if (j.gone) toast('🧹 Cleared - it was already deleted');
+      else if (action === 'remove' && j.permanent) {
+        toast(j.loginDisabled
+          ? '⛔ Removed · account closed for good · ' + (j.hiddenPosts || 0) + ' other videos hidden'
+          : '⛔ Removed + closed, but login could NOT be turned off - see the Worker log');
+      }
       else if (action === 'remove') {
         toast(j.banDays
           ? '🗑️ Removed · strike ' + j.strikes + ' · no posting for ' + j.banDays + ' days'

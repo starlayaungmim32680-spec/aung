@@ -10,6 +10,7 @@ import 'chat_delivery_service.dart';
 import 'network_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
+import 'screens/account_closed.dart';
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
 
@@ -259,7 +260,12 @@ class AuthGate extends StatelessWidget {
           // opening the app never itself triggers a permission prompt.
           _ensureUserDoc(snapshot.data!);
           NotificationService.registerAndSaveToken();
-          return const MainNavigationScreen();
+          // 1 Nov 2026: a permanently closed account (child safety) sees
+          // only the "account closed" screen - see account_closed.dart.
+          return AccountClosedGate(
+            key: ValueKey<String>(snapshot.data!.uid),
+            child: const MainNavigationScreen(),
+          );
         }
 
         // No user logged in - show login screen

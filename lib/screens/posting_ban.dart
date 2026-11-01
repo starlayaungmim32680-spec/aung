@@ -167,9 +167,11 @@ String _reasonLabel(String key) {
 }
 
 /// One sentence for small places (the "Posting..." pill, a snackbar).
-String postingBanShortText(DateTime until) =>
-    "Posting is paused until ${postingBanWhen(until)} because of "
-    'Community Guidelines strikes.';
+String postingBanShortText(DateTime until) => until.year >= 9000
+    // 1 Nov 2026: a permanent ban (child safety) is saved as year 9999.
+    ? 'Posting is turned off because this account was closed.'
+    : "Posting is paused until ${postingBanWhen(until)} because of "
+        'Community Guidelines strikes.';
 
 /// After a refused write (permission-denied): the sentence above if a
 /// posting pause is the reason, else null.

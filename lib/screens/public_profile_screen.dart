@@ -17,6 +17,7 @@ import '../friend_service.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
 import 'post_audience.dart' show postsOfUserQuery;
 import 'report_sheet.dart';
+import 'account_closed.dart' show isAccountClosed;
 
 // Shows another user's profile: photo, name, follow button, video grid, message
 class PublicProfileScreen extends StatelessWidget {
@@ -77,6 +78,10 @@ class PublicProfileScreen extends StatelessWidget {
             builder: (context, profileSnapshot) {
               final Map<String, dynamic>? profile =
                   profileSnapshot.data?.data() as Map<String, dynamic>?;
+              // 1 Nov 2026: permanently closed (child safety).
+              if (!isMe && isAccountClosed(profile)) {
+                return const _ClosedProfileView();
+              }
 
               final String displayName =
                   (profile?['displayName'] as String?)?.trim().isNotEmpty ==
@@ -493,6 +498,42 @@ class PublicProfileScreen extends StatelessWidget {
 // Shown instead of a profile when either side has blocked the other. The
 // person who blocked gets an Unblock button; the blocked person just sees
 // that the account isn't available (they aren't told they were blocked).
+// 1 Nov 2026: the account was permanently closed by Fly.
+class _ClosedProfileView extends StatelessWidget {
+  const _ClosedProfileView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 36),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.block, color: Colors.white38, size: 56),
+            SizedBox(height: 16),
+            Text(
+              'This account was closed',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Fly closed this account because it broke our Community Guidelines.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _BlockedProfileView extends StatelessWidget {
   final String userId;
   const _BlockedProfileView({required this.userId});

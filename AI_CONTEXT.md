@@ -1174,6 +1174,74 @@ OK). Play Console: Terms URL =
 > + rules + app "account closed"), step C = Settings row "Child safety"
 > (with B's APK)._
 >
+> _1-2 Nov 2026 (confirmed by Ko on DEV; PROD = Worker + APK
+> `Fly-bn11020115.apk`, Settings row seen on the phone): **Child Safety
+> steps B + C - a child-safety removal closes the account FOR GOOD.**
+> Ko let the assistant choose: close everything (TikTok style) + a
+> safety tick. **Worker** (`cloudflare/livekit_token_worker.js`):
+> the admin Remove sheet now has **"Why is it removed?"** (a select,
+> default = the reports' main reason - reporters can be wrong or abuse
+> "Child safety"); picking Child safety shows a red tick box "I checked
+> it myself: this really involves a minor (under 18)" and the button
+> "⛔ Remove + close account" stays off until it is ticked. The API
+> (`/admin-api` remove) takes `reason` + `minorConfirmed`; an unknown
+> reason falls back to the main reason; child safety without the tick =
+> 400 `confirm_minor` (old pages can't ban by accident). Child safety
+> removal: strike item + summary `accountBanned: true`, `bannedAt`,
+> `bannedReason`, `bannedTargetPath`, `postBanUntil` = 31 Dec 9999
+> (`BAN_FOREVER_MS`), `needsAccountReview`; notification "your Fly
+> account has been permanently closed..."; then
+> `closeAccountForGood()`: (1) Identity Toolkit `accounts:update`
+> {disableUser, validSince} with scopes identitytoolkit + cloud-platform
+> (the Firebase service account may do this - worked on dev: the phone
+> was signed out within the hour, sign-in refused), (2) every other
+> post of theirs hidden like a report-hide (audience only_me,
+> hiddenByReports + **hiddenByBan**, audienceBeforeHide kept; an already
+> hidden one only gets hiddenByBan), (3) their stories deleted, (4) D1
+> Search rows (users + posts) deleted, (5) `users/{uid}.accountClosed`.
+> Each part on its own (one failing doesn't stop the rest); the toast
+> says "⛔ Removed · account closed for good · N other videos hidden" or
+> warns "login could NOT be turned off - see the Worker log". Queue rows
+> of a banned owner say "⛔ account closed for good". Ko picking another
+> reason (e.g. Nudity) on a child-safety report = the normal strike
+> ladder, no ban. No firestore.rules change (postingBanned() already
+> refuses posts / stories via postBanUntil; hiddenByReports already
+> locks the audience). Local test with a fake Firestore: 18 checks +
+> the old admin test all pass. **Undo a wrong ban by hand:** Firebase
+> Console -> Authentication -> the user -> Enable; moderationStrikes/
+> {uid}: delete accountBanned + postBanUntil; users/{uid}: delete
+> accountClosed; each post with hiddenByBan: audience =
+> audienceBeforeHide, delete hiddenByReports / hiddenByBan / hiddenReason
+> / audienceBeforeHide. **App:** new `lib/screens/account_closed.dart` -
+> `AccountClosedGate` (main.dart wraps MainNavigationScreen with it,
+> key = uid) listens to my moderationStrikes doc and, when
+> accountBanned, pops every route to the first and shows
+> `AccountClosedScreen` (red ⛔, "This account has been closed",
+> why, "Think this is a mistake?" + chakaboycom@gmail.com tap-to-copy,
+> "Read the Child Safety Standards", "Sign out"; Back can't leave);
+> login_screen.dart: `user-disabled` -> "This account has been closed."
+> + `showAccountClosedDialog`; public_profile_screen.dart: someone
+> else's profile with accountClosed -> "This account was closed";
+> posting_ban.dart: a year-9999 ban says "Posting is turned off because
+> this account was closed."; settings_screen.dart: new **Child safety**
+> row ("Our standards and how to report", opens `kChildSafetyUrl` =
+> `/child-safety`, terms_consent.dart). APK recipe: dev
+> `FlyDev-bn11020013.apk` (366 s), prod `Fly-bn11020115.apk` (294 s), 5c
+> NEW `Email us and a person from the Fly team will look at it:` True /
+> OLD `Could not send the report. Please try again.` False. Dev test with
+> a fresh test account C: banned while the app was open -> the closed
+> screen appeared by itself; Sign out -> sign in again -> the red sheet.
+> (The first dev test account's password was forgotten - it stays
+> disabled.) Not tested: the closed profile view (A didn't follow C),
+> and a ban on PROD (different service account - the first real prod
+> child-safety removal must show the "closed for good" toast, NOT the
+> "login could NOT be turned off" warning; if it warns, give that
+> service account the Firebase Authentication Admin role). **Next:**
+> force-update check, then delete-account Bunny files, then Play
+> Console (Child Safety link:
+> `https://livekit-token-worker.chakaboycom.workers.dev/child-safety`,
+> point of contact = Ko + chakaboycom@gmail.com)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3064,7 +3132,7 @@ others only see it once encoded (Bunny webhook).
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
-    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety [step A page /child-safety DONE dev + prod 1 Nov; B permanent ban for child-safety removals; C Settings row]
+    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety - DONE dev + prod 1-2 Nov [A page /child-safety; B child-safety removal = permanent ban (reason picker + minor tick, login disabled, videos hidden, account-closed screen); C Settings row; prod APK `Fly-bn11020115.apk`]
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
@@ -3233,7 +3301,9 @@ of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
   `"Fly-bn$bn.apk"`. The printed name must contain the number.
 
   **5c. String check = ALWAYS A PAIR, on the copied file** (one block,
-  the assistant fills in both strings - ASCII only, a whole sentence):
+  the assistant fills in both strings AND the real APK name from 5b's
+  output - never send `<number>` for Ko to replace (2 Nov 2026 it was
+  pasted as-is and failed) - ASCII only, a whole sentence):
   `Remove-Item $env:TEMP\flycheck -Recurse -Force -ErrorAction SilentlyContinue; Copy-Item FlyDev-bn<number>.apk $env:TEMP\flycheck.zip -Force; Expand-Archive $env:TEMP\flycheck.zip $env:TEMP\flycheck -Force`
   `Select-String -Path $env:TEMP\flycheck\lib\arm64-v8a\libapp.so -Pattern '<NEW string>' -SimpleMatch -CaseSensitive -Quiet` → must be `True`
   `Select-String -Path $env:TEMP\flycheck\lib\arm64-v8a\libapp.so -Pattern '<OLD string>' -SimpleMatch -CaseSensitive -Quiet` → must be `False`
