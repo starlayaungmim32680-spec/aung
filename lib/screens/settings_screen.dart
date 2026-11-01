@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'blocked_users_screen.dart';
 import 'sound_moderation.dart';
+import 'account_status_screen.dart';
 
 // Fly's settings hub - starts with just Blocked accounts, but gives
 // future settings (notifications, privacy, etc.) a proper home instead
@@ -18,6 +19,21 @@ class SettingsScreen extends StatelessWidget {
       ),
       body: ListView(
         children: [
+          // 1 Nov 2026 (strikes, step C): my strikes and posting limits.
+          ListTile(
+            leading: const Icon(Icons.shield_outlined, color: Colors.white),
+            title: const Text('Account status',
+                style: TextStyle(color: Colors.white)),
+            subtitle: const Text('Strikes and posting limits',
+                style: TextStyle(color: Colors.white54, fontSize: 12.5)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AccountStatusScreen()),
+              );
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.block, color: Colors.white),
             title: const Text('Blocked accounts',

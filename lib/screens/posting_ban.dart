@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'report_sheet.dart' show kReportReasons;
 import 'terms_consent.dart' show kCommunityGuidelinesUrl, openFlyWebPage;
+import 'account_status_screen.dart';
 
 const List<Color> _flyGradient = [
   Color(0xFFFF4B6E),
@@ -414,6 +415,16 @@ class _PostingBanBody extends StatelessWidget {
           body: 'Watch videos, like, comment, chat and call your friends.',
         ),
         const SizedBox(height: 6),
+        // 1 Nov 2026 (step C): every strike, and when each one goes away.
+        TextButton(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const AccountStatusScreen()),
+          ),
+          child: const Text('See account status',
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+        ),
         TextButton(
           onPressed: () => openFlyWebPage(context, kCommunityGuidelinesUrl),
           child: const Text('Read the Community Guidelines',

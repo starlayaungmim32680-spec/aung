@@ -1048,6 +1048,37 @@ OK). Play Console: Terms URL =
 > then the launch list (Child Safety page, force-update, delete-account
 > Bunny files, Play Console, closed testing with 12 testers for 14 days)._
 >
+> _1 Nov 2026 (confirmed by Ko on DEV only - prod APK NOT done yet):
+> **strikes step C - "Account status" screen.** New
+> `lib/screens/account_status_screen.dart`, opened from Settings (new
+> first row "Account status - Strikes and posting limits",
+> settings_screen.dart) and from "See account status" on the Posting is
+> paused panel (posting_ban.dart). It listens (built once, Fly stream
+> rule) to MY `moderationStrikes/{me}` + `items` (owner read only) and
+> shows: a status hero card - 🟢 🐦 "Your account is in good standing" /
+> 🟠 ⚠️ "Your account has a warning" (+ what the next strike would do) /
+> 🔴 ⏸️ "Posting is paused" with the gradient countdown; the 3-step
+> gradient strike meter "N of 3 strikes in the last 90 days"; "Strikes
+> that still count" cards (reason, "Video/Comment removed · 30 Oct 2026",
+> "89 days left" badge, a bar of how much of the 90 days is left, "Goes
+> away on 28 Jan 2027", red line for child safety); "Past strikes (n)"
+> (expired, greyed, tap to open); "How strikes work" (a person checks
+> first - reports alone never remove anything, 1 = warning, 2 = 7 days, 3
+> = 30 days, child safety = 30 days at once, strikes go away after 90
+> days) + Community Guidelines. A failed read NEVER shows "good
+> standing": `_LoadFailed` (📡 "Couldn't load your account status" + Try
+> again, which restarts the listeners); the items stream uses
+> `includeMetadataChanges: true` and ignores an empty cache-only first
+> snapshot, plus a 12 s timeout, so offline + nothing cached = the error
+> card (offline WITH a cache shows the last known status, like Facebook).
+> No Worker / rules change. APK recipe: `FlyDev-bn11011740.apk`, 5c NEW
+> `Couldn't load your account status` True / OLD `Could not send the
+> report. Please try again.` False. Tested on dev: phone B (no strikes)
+> = good standing; phone A = warning, 2 strike cards, 89 days left, goes
+> away 28 Jan 2027; phone B in airplane mode after a restart = the
+> Couldn't load card. **Next:** prod APK (app only), then the Under
+> review chip, then "AI: not checked yet", then the launch list._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2938,7 +2969,7 @@ others only see it once encoded (Bunny webhook).
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
-    B, prod APK `Fly-bn10312340.apk`); next step C "Account status" screen; (c) prod "AI: not checked yet" - check the Worker logs for
+    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev 1 Nov (prod APK next); (c) prod "AI: not checked yet" - check the Worker logs for
     why reportAiFlags returned null; (d) move the Under review chip off
     the Stories bar**, (4) Google Play Child Safety
     Standards (CSAE page, in-app report, contact), (5) delete-account
