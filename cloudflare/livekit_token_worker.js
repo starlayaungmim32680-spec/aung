@@ -261,6 +261,21 @@ export default {
         },
       });
     }
+    // Child Safety Standards (1 Nov 2026): Google Play asks every Social
+    // app for a public page against child sexual abuse and exploitation
+    // (CSAE). This is the link to give in Play Console.
+    if (request.method === 'GET' &&
+        (url.pathname === '/child-safety' || url.pathname === '/csae' ||
+          url.pathname === '/child-safety-standards')) {
+      return new Response(CHILD_SAFETY_PAGE_HTML, {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+        },
+      });
+    }
     if (request.method === 'GET' && url.pathname === '/community-guidelines') {
       return Response.redirect(`${url.origin}/terms#community-guidelines`, 302);
     }
@@ -4935,7 +4950,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
   h1 { font-size: 28px; margin: 14px 0 4px; }
   .sub, .mini { color: var(--muted); }
   .sub { margin: 0 0 14px; } .mini { font-size: 13px; }
-  .tabs { display: flex; gap: 10px; margin: 10px 0 4px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
   .tabs a { color: var(--text); text-decoration: none; border: 1px solid var(--line);
     background: var(--card); border-radius: 999px; padding: 6px 16px; font-size: 14px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
@@ -4954,7 +4969,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
   <div class="logo">Fly</div>
   <h1>Privacy Policy</h1>
   <p class="sub">Last updated: 22 October 2026</p>
-  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a></div>
+  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a><a href="/child-safety">Child Safety</a></div>
   
   <section>
   <div class="card">
@@ -5087,7 +5102,7 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
   h1 { font-size: 28px; margin: 14px 0 4px; }
   .sub, .mini { color: var(--muted); }
   .sub { margin: 0 0 14px; } .mini { font-size: 13px; }
-  .tabs { display: flex; gap: 10px; margin: 10px 0 4px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
   .tabs a { color: var(--text); text-decoration: none; border: 1px solid var(--line);
     background: var(--card); border-radius: 999px; padding: 6px 16px; font-size: 14px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
@@ -5106,7 +5121,7 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
   <div class="logo">Fly</div>
   <h1>Terms of Use</h1>
   <p class="sub">Last updated: 22 October 2026 · Version 1</p>
-  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a></div>
+  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a><a href="/child-safety">Child Safety</a></div>
 
   <section>
   <div class="card">
@@ -5138,7 +5153,7 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
     <p>Fly is for everyone, everywhere. These rules apply to everything you post or send: videos, stories, live streams, captions, hashtags, comments, names, notes, profile photos, sounds and messages.</p>
     <h3>Not allowed on Fly</h3>
     <ul>
-      <li><b>Child safety:</b> anything that sexualises, exploits or endangers anyone under 18. We remove it, ban the account and report it to the authorities when the law requires.</li>
+      <li><b>Child safety:</b> anything that sexualises, exploits or endangers anyone under 18. We remove it, permanently ban the account and report it to the authorities. See our <a href="/child-safety">Child Safety Standards</a>.</li>
       <li><b>Hate:</b> attacking or insulting people because of their race, ethnicity, nationality, religion, caste, sex, gender, sexual orientation, disability or serious illness, including slurs.</li>
       <li><b>Harassment and bullying:</b> insults, threats, humiliating someone, or encouraging others to do so.</li>
       <li><b>Violence:</b> threats, praising or encouraging violence or terrorism, and graphic gore.</li>
@@ -5196,6 +5211,128 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
   </section>
 
   <footer>Fly · Terms of Use</footer>
+</div>
+</body>
+</html>
+`;
+// Child Safety Standards page (1 Nov 2026), GET /child-safety. Google
+// Play's Child Safety Standards policy (all Social apps): a public page
+// against CSAE that names the app, in-app reporting, action on CSAM,
+// following child-safety law, and a named point of contact (Ko, email
+// below - the same person is entered in Play Console). Only promise what
+// Fly really does: child-safety removals = permanent ban (step B), and
+// confirmed CSAM is reported to NCMEC + the police by Ko himself.
+const CHILD_SAFETY_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fly Child Safety Standards</title>
+<meta name="description" content="Fly's standards against child sexual abuse and exploitation (CSAE), how to report, and how to contact us.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --pink: #FF4B6E; --purple: #9C4DFF; --blue: #3A8DFF;
+    --bg: #07060b; --card: rgba(255,255,255,0.06); --line: rgba(255,255,255,0.12);
+    --text: #f4f2fa; --muted: #a8a3b8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh; color: var(--text); background: var(--bg);
+    font-family: Poppins, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.7; overflow-x: hidden;
+  }
+  .glow { position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(40% 35% at 20% 15%, rgba(255,75,110,.35), transparent 70%),
+      radial-gradient(40% 35% at 85% 25%, rgba(156,77,255,.35), transparent 70%),
+      radial-gradient(45% 40% at 50% 95%, rgba(58,141,255,.30), transparent 70%);
+    filter: blur(10px); }
+  .wrap { position: relative; z-index: 1; max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+  .logo { font-weight: 800; font-size: 28px; letter-spacing: 1px;
+    background: linear-gradient(90deg, var(--pink), var(--purple), var(--blue));
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h1 { font-size: 28px; margin: 14px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 14px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; }
+  .tabs a { color: var(--text); text-decoration: none; border: 1px solid var(--line);
+    background: var(--card); border-radius: 999px; padding: 6px 16px; font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 20px;
+    margin-top: 16px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+  .card h2 { font-size: 18px; margin: 0 0 10px; }
+  .card.zero { border-color: rgba(255,75,110,.55); }
+  p { margin: 8px 0; } ul, ol { margin: 6px 0; padding-left: 20px; } li { margin: 4px 0; }
+  a { color: var(--blue); }
+  .urgent { background: rgba(255,75,110,.12); border: 1px solid rgba(255,75,110,.45);
+    border-radius: 14px; padding: 12px 14px; margin-top: 10px; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <div class="logo">Fly</div>
+  <h1>Child Safety Standards</h1>
+  <p class="sub">Last updated: 1 November 2026</p>
+  <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a><a href="/child-safety">Child Safety</a></div>
+
+  <div class="card zero" id="zero-tolerance">
+    <h2>Zero tolerance for child sexual abuse and exploitation</h2>
+    <p>Fly, the short-video social app, has <b>zero tolerance</b> for child sexual abuse and exploitation (CSAE) and child sexual abuse material (CSAM). This page explains what is not allowed, how to report it, what we do about it, and how to reach us. It is part of our <a href="/terms#community-guidelines">Community Guidelines</a> and applies to everything on Fly: videos, stories, live streams, photos, captions, comments, names, profiles, sounds and private messages.</p>
+  </div>
+
+  <div class="card" id="not-allowed">
+    <h2>1. What is never allowed</h2>
+    <ul>
+      <li>Any image, video, audio, text or link that shows, describes or promotes the sexual abuse or sexual exploitation of anyone under 18 (CSAM), including drawn, animated or AI-generated material.</li>
+      <li>Sexualising minors in any way, including sexual comments about a child or sexual "role-play" involving a child.</li>
+      <li><b>Grooming:</b> an adult building trust with a minor in order to sexually exploit them, for example asking a minor for photos, to meet in person, or to keep the conversation secret.</li>
+      <li><b>Sextortion:</b> threatening to share someone's intimate images, or demanding images, money or anything else from a minor.</li>
+      <li>Asking for, offering, sharing, trading or selling CSAM, or pointing people to places where it can be found.</li>
+      <li>Trafficking or any other content that puts a child at risk of sexual harm.</li>
+    </ul>
+    <p>Fly is only for people aged <b>13 and older</b>. Accounts of people under 13 are removed when we find them.</p>
+  </div>
+
+  <div class="card" id="report">
+    <h2>2. How to report - right inside the app</h2>
+    <p>You never have to leave the app to report a child-safety concern:</p>
+    <ul>
+      <li><b>A video:</b> tap <b>•••</b> on the video → <b>Report</b> → <b>Child safety (involves a minor)</b>.</li>
+      <li><b>A comment or reply:</b> press and hold it → <b>Report</b> → <b>Child safety (involves a minor)</b>.</li>
+      <li><b>An account (including someone messaging you):</b> open their profile → <b>⋮</b> → <b>Report user</b> → <b>Child safety (involves a minor)</b>. You can also block them from the same menu.</li>
+    </ul>
+    <p>You can also email us at <a href="mailto:chakaboycom@gmail.com">chakaboycom@gmail.com</a>. Who reported something is never shown to the person reported.</p>
+    <div class="urgent"><b>If a child is in immediate danger, contact your local police or emergency number first.</b> In Malaysia: police / emergency <b>999</b>, Talian Kasih <b>15999</b>. You can also report child sexual exploitation online directly to the NCMEC CyberTipline at <a href="https://report.cybertip.org/" rel="noopener">report.cybertip.org</a>.</div>
+  </div>
+
+  <div class="card" id="what-we-do">
+    <h2>3. What Fly does</h2>
+    <ul>
+      <li><b>Prevention.</b> Videos and photos are checked automatically by an AI safety service for sexual content before they appear, and videos are checked again on our servers after upload. Text people post for others (names, captions, comments, notes) is checked too.</li>
+      <li><b>Child-safety reports come first.</b> They are marked urgent, go to the top of our review queue and are checked by a person.</li>
+      <li><b>Removal.</b> When we find or are told about content that breaks these standards, we remove it as soon as we confirm it.</li>
+      <li><b>Permanent ban.</b> An account that posts or shares CSAE content is permanently banned, and new accounts made to get around the ban are removed too.</li>
+      <li><b>Reporting to the authorities.</b> We report confirmed child sexual abuse material to the National Center for Missing &amp; Exploited Children (NCMEC) through its CyberTipline and, where it applies, to the police, including the Royal Malaysia Police (PDRM). We keep the information needed for that report, such as the account and when the content was posted, as the law allows.</li>
+      <li><b>Working with law enforcement.</b> We respond to valid legal requests from law enforcement about child-safety cases.</li>
+    </ul>
+  </div>
+
+  <div class="card" id="law">
+    <h2>4. Following the law</h2>
+    <p>Fly follows the child-safety laws that apply to us, including the laws of Malaysia (such as the Sexual Offences against Children Act 2017), and Google Play's Child Safety Standards policy. If a law requires more than this page says, we follow the law.</p>
+  </div>
+
+  <div class="card" id="contact">
+    <h2>5. Child safety contact</h2>
+    <p>Fly has a named person responsible for child safety who can answer questions about these standards, our CSAM prevention practices and our compliance. For child-safety matters, including requests from law enforcement or safety organisations, email:</p>
+    <p><a href="mailto:chakaboycom@gmail.com"><b>chakaboycom@gmail.com</b></a></p>
+    <p>Please write "Child safety" in the subject so it is handled first.</p>
+  </div>
+
+  <footer>Fly · Child Safety Standards</footer>
 </div>
 </body>
 </html>

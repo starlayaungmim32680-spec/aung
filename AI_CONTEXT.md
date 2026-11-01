@@ -1143,6 +1143,37 @@ OK). Play Console: Terms URL =
 > next report tries again. **Next:** the launch list - Child Safety
 > (CSAE) page first._
 >
+> _1 Nov 2026 (night, confirmed by Ko on DEV and PROD - Worker only, no
+> APK): **Child Safety Standards page, step A of 3.** Google Play's Child
+> Safety Standards policy (every Social app, age gate or not) needs: a
+> public page against CSAE that names the app, in-app reporting, action
+> on CSAM, following child-safety law, and a named point of contact.
+> Ko's choices: contact = **chakaboycom@gmail.com** (same as Terms /
+> Privacy; Ko's own name goes in Play Console as the person), child-
+> safety removals = **permanent ban** (step B, not built yet), confirmed
+> CSAM is **reported to NCMEC CyberTipline + Royal Malaysia Police** (Ko
+> fills the form himself). New `CHILD_SAFETY_PAGE_HTML` served at
+> `GET /child-safety` (also `/csae`, `/child-safety-standards`), same
+> look as Terms: zero tolerance card, 1 What is never allowed (CSAM incl.
+> drawn / AI-made, sexualising minors, grooming, sextortion, trading,
+> trafficking; 13+ only), 2 How to report in the app (video ••• /
+> comment long-press / profile ⋮ -> Report -> "Child safety (involves a
+> minor)", email; urgent box: Malaysia 999, Talian Kasih 15999, NCMEC
+> report.cybertip.org), 3 What Fly does (AI checks before posting +
+> server re-check, child-safety reports urgent at the top of the queue,
+> removal, permanent ban, reporting to NCMEC / PDRM, law-enforcement
+> requests), 4 Following the law (Malaysia Sexual Offences against
+> Children Act 2017), 5 Child safety contact. Terms + Privacy tabs got a
+> 4th tab "Child Safety" (tabs now wrap); the Terms "Child safety"
+> bullet now says "permanently ban the account and report it to the
+> authorities. See our Child Safety Standards" (Terms version NOT
+> bumped - nobody has to agree again). Only write on this page what Fly
+> really does. **Play Console link (after step B):**
+> `https://livekit-token-worker.chakaboycom.workers.dev/child-safety`.
+> **Next:** step B = a child-safety Remove gives a PERMANENT ban (Worker
+> + rules + app "account closed"), step C = Settings row "Child safety"
+> (with B's APK)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3033,7 +3064,7 @@ others only see it once encoded (Bunny webhook).
     reported videos leave Home / Shorts - all of these DONE on dev AND
     prod (prod APK `Fly-bn10302018.apk`, 30 Oct);
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
-    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety
+    B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety [step A page /child-safety DONE dev + prod 1 Nov; B permanent ban for child-safety removals; C Settings row]
     Standards (CSAE page, in-app report, contact), (5) delete-account
     leftovers (Bunny files), (6) force-update check. "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
