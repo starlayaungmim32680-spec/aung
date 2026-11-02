@@ -11,6 +11,7 @@ import 'network_service.dart';
 import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 import 'screens/account_closed.dart';
+import 'screens/app_update.dart';
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
 
@@ -189,14 +190,22 @@ class FlyApp extends StatelessWidget {
       navigatorKey: _navigatorKey,
       // The test app wears a red "DEV" ribbon so it's never mistaken for
       // the real one (app_config.dart).
-      builder: AppConfig.isDev
-          ? (context, child) => Banner(
+      // 2 Nov 2026: the force-update check covers every screen, the login
+      // screen too (screens/app_update.dart).
+      builder: (context, child) {
+        final Widget app = AppUpdateGate(
+          navigatorKey: _navigatorKey,
+          child: child ?? const SizedBox.shrink(),
+        );
+        return AppConfig.isDev
+            ? Banner(
                 message: 'DEV',
                 location: BannerLocation.topEnd,
                 color: Colors.red,
-                child: child ?? const SizedBox.shrink(),
+                child: app,
               )
-          : null,
+            : app;
+      },
       // Lets a playing video know when another screen is pushed on top
       // of it, so it can pause instead of playing on in the background.
       navigatorObservers: [flyRouteObserver],

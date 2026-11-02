@@ -272,7 +272,7 @@ notificationId}`; the Worker re-reads that doc, checks it and sends an
 > stories. (5) The story viewer shows its loading spinner only after
 > 1200 ms (`_DelayedSpinner`). No Worker / rules change.
 > **Build rule:** `pubspec.yaml` has `version: 1.0.0+1`, so every build
-> must pass `--build-number` (e.g. `$bn = Get-Date -Format "MMddHHmm"`,
+> must pass `--build-number` (since 2 Nov 2026 `yyDDDHHmm`, see §7 5b,
 > `flutter build apk --release --flavor dev --build-number=$bn`),
 > otherwise Android refuses to update the installed app. If a build
 > seems not to contain a new change, run `flutter clean` and `flutter
@@ -1241,6 +1241,39 @@ OK). Play Console: Terms URL =
 > Console (Child Safety link:
 > `https://livekit-token-worker.chakaboycom.workers.dev/child-safety`,
 > point of contact = Ko + chakaboycom@gmail.com)._
+>
+> _2 Nov 2026 (confirmed by Ko on DEV and PROD): **force-update check +
+> new build-number format.** Analysis found the old `MMddHHmm` build
+> number would go DOWN on 1 Jan (Android / Play refuse a lower build) -
+> now **`yyDDDHHmm`** (§7 5b: `$d = Get-Date; $bn =
+> '{0:yy}{1:D3}{0:HHmm}' -f $d, $d.DayOfYear`), first builds
+> `FlyDev-bn263062241.apk` (217 s) and `Fly-bn263062327.apk` (211 s),
+> both installed as normal updates over the old `MMddHHmm` builds.
+> **Worker:** `GET /app-version` -> `{minBuild, latestBuild, updateUrl}`
+> from the plain-text Variables `MIN_APP_BUILD`, `LATEST_APP_BUILD`,
+> `APP_UPDATE_URL` (optional, https only; missing / not a number = 0 =
+> no check; `appVersionInfo()`), Cache-Control 60 s. **App:** new
+> `lib/screens/app_update.dart` `AppUpdateGate` in `MaterialApp.builder`
+> (main.dart, around the Navigator, so it covers every screen incl.
+> login; DEV ribbon still wraps it): reads my build with
+> `package_info_plus` (now a direct dependency in pubspec.yaml, 9.0.1),
+> asks `<AppConfig.workerUrl>/app-version` on start + on resume (max
+> every 5 min; every resume while blocked), 8 s timeout. build <
+> minBuild -> full screen "Time to update Fly" + "Update now" + "Your
+> version: x (build n)"; build < latestBuild -> sheet "A new version of
+> Fly is ready" (Update / Later, once per app run). Update opens
+> APP_UPDATE_URL, else `market://details?id=<package>`, else the Play
+> web page. Offline / error / 0 = nothing (never lock people out by
+> mistake). 5c NEW `A new version of Fly is ready` True / OLD `Could not
+> send the report. Please try again.` False. Dev test on fly-dev-worker:
+> no variables = nothing; LATEST 999999999 = sheet + Later; MIN
+> 999999999 = full screen (build 263062241 shown); both deleted ->
+> normal again on resume. Prod: Worker deployed, **no variables set**.
+> **How to use it later:** after a Play release that old builds can't
+> live with, set prod `MIN_APP_BUILD` to that release's build number;
+> for a normal release set `LATEST_APP_BUILD` only. Builds before
+> 263062241 have no check. **Next:** delete-account Bunny files, then
+> Play Console._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -3049,7 +3082,8 @@ others only see it once encoded (Bunny webhook).
 - `videoReady` filtering covers the Home feed and Stories bar only; profile
   grids, search and sound pages can still list a video that's still
   encoding. Phones on an **older app build** ignore `videoReady` entirely and
-  show everything (consider a force-update check before launch).
+  show everything (force-update check exists since 2 Nov 2026: set
+  MIN_APP_BUILD on the Worker to retire them).
   `LocalVideoCache` is memory-only (lost on app restart).
 - Not built yet: sound strike system, song recognition (AudD), direct MP3
   upload, resumable (TUS) uploads.
@@ -3134,7 +3168,7 @@ others only see it once encoded (Bunny webhook).
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
     B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety - DONE dev + prod 1-2 Nov [A page /child-safety; B child-safety removal = permanent ban (reason picker + minor tick, login disabled, videos hidden, account-closed screen); C Settings row; prod APK `Fly-bn11020115.apk`]
     Standards (CSAE page, in-app report, contact), (5) delete-account
-    leftovers (Bunny files), (6) force-update check. "Who can watch" D
+    leftovers (Bunny files), (6) force-update check - DONE dev + prod 2 Nov (`/app-version`, app_update.dart, build numbers now yyDDDHHmm). "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
     story videos + story text. **Many languages (Ko's question, 21 Oct):**
     plan = layers - Worker word lists (Burmese + English now; more from
@@ -3219,7 +3253,7 @@ others only see it once encoded (Bunny webhook).
    Console, have a lawyer read both before Fly earns money, and plan CSAM
    reporting (law) before the store release.
 6. Optional / later: AudD song recognition, direct MP3 upload, resumable
-   (TUS) uploads, force-update check (old builds ignore `videoReady`).
+   (TUS) uploads. (Force-update check DONE 2 Nov 2026.)
    (The login-screen show/hide password icon listed here before is already
    built — removed 27 Sep 2026.)
 
@@ -3295,8 +3329,15 @@ of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
   29 Oct). The build number is mandatory: `pubspec.yaml` is `1.0.0+1`,
   and without `--build-number` Android refuses the update ("package
   appears to be invalid" / "There was a problem while parsing the
-  package", 27-28 Oct). Dev:
-  `$bn = Get-Date -Format "MMddHHmm"; flutter build apk --release --flavor dev --build-number=$bn; Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk "FlyDev-bn$bn.apk" -Force; Write-Output "FlyDev-bn$bn.apk"`
+  package", 27-28 Oct). **Format since 2 Nov 2026: `yyDDDHHmm`** (2-digit
+  year + day of the year 001-366 + hour + minute, e.g. 2 Nov 2026 22:13 =
+  `263062213`). The old `MMddHHmm` (last one `11020115`) would have gone
+  DOWN on 1 Jan (`0101....` < `1231....`) - Android refuses a lower
+  build as an update, Play refuses a lower versionCode, and the
+  force-update check (`/app-version`, screens/app_update.dart) compares
+  these numbers. `yyDDDHHmm` only grows until 2099 and stays under Play's
+  2,100,000,000 limit. Never go back to `MMddHHmm`. Dev:
+  `$d = Get-Date; $bn = '{0:yy}{1:D3}{0:HHmm}' -f $d, $d.DayOfYear; flutter build apk --release --flavor dev --build-number=$bn; Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk "FlyDev-bn$bn.apk" -Force; Write-Output "FlyDev-bn$bn.apk"`
   Prod: the same with `--flavor prod`, `app-prod-release.apk` and
   `"Fly-bn$bn.apk"`. The printed name must contain the number.
 

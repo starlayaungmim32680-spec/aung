@@ -261,6 +261,23 @@ export default {
         },
       });
     }
+    // Force-update check (2 Nov 2026): the app asks on every start / resume.
+    // Ko sets the numbers in Cloudflare -> this Worker -> Settings ->
+    // Variables (plain text, NOT secret - nothing private):
+    //   MIN_APP_BUILD    older builds must update (full screen, no way past)
+    //   LATEST_APP_BUILD older builds get a "New version" sheet (Later ok)
+    //   APP_UPDATE_URL   optional: where Update opens (default = the Play
+    //                    Store page of the app's own package)
+    // Missing / not a number = 0 = no check. Build numbers are yyDDDHHmm
+    // (AI_CONTEXT §7 5b).
+    if (request.method === 'GET' && url.pathname === '/app-version') {
+      return new Response(JSON.stringify(appVersionInfo(env)), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=60',
+        },
+      });
+    }
     // Child Safety Standards (1 Nov 2026): Google Play asks every Social
     // app for a public page against child sexual abuse and exploitation
     // (CSAE). This is the link to give in Play Console.
@@ -5361,6 +5378,20 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
 </body>
 </html>
 `;
+// GET /app-version (2 Nov 2026) - see the route.
+function appVersionInfo(env) {
+  const num = (v) => {
+    const n = parseInt(String(v ?? '').trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const updateUrl = String(env.APP_UPDATE_URL || '').trim();
+  return {
+    minBuild: num(env.MIN_APP_BUILD),
+    latestBuild: num(env.LATEST_APP_BUILD),
+    updateUrl: /^https:\/\//.test(updateUrl) ? updateUrl : '',
+  };
+}
+
 // Child Safety Standards page (1 Nov 2026), GET /child-safety. Google
 // Play's Child Safety Standards policy (all Social apps): a public page
 // against CSAE that names the app, in-app reporting, action on CSAM,
