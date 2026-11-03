@@ -105,9 +105,17 @@ class _ProfileCache {
         .doc(uid)
         .snapshots()
         .listen(
-          (snap) => n.value = snap.data() as Map<String, dynamic>?,
-          onError: (_) {},
-        );
+      (snap) {
+        // 3 Nov 2026: the account was deleted (no users doc on the
+        // server) -> a marker, so the row says "Deleted account".
+        if (!snap.exists) {
+          if (!snap.metadata.isFromCache) n.value = kDeletedAccountDoc;
+          return;
+        }
+        n.value = snap.data() as Map<String, dynamic>?;
+      },
+      onError: (_) {},
+    );
     return n;
   }
 
@@ -115,8 +123,7 @@ class _ProfileCache {
   String? nameIfLoaded(String uid) {
     final data = _notifiers[uid]?.value;
     if (data == null) return null;
-    final String name = ((data['displayName'] as String?) ?? '').trim();
-    return name.isEmpty ? 'User' : name;
+    return _nameOf(data);
   }
 
   void dispose() {
@@ -239,6 +246,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _openProfile(String uid) {
+    // 3 Nov 2026: a deleted / closed account has no profile to open.
+    if (isGoneAccount(_profiles.of(uid).value)) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => PublicProfileScreen(userId: uid)),
@@ -496,9 +505,21 @@ String _chatTime(DateTime at) {
 }
 
 String _nameOf(Map<String, dynamic>? data) {
+  if (isGoneAccount(data)) return goneAccountName(data);
   final String name = ((data?['displayName'] as String?) ?? '').trim();
   return name.isEmpty ? 'User' : name;
 }
+
+// 3 Nov 2026: people who deleted their account (users doc gone) or whose
+// account Fly closed (accountClosed, child safety) - their old chats stay
+// readable, but nobody can add them or write to them any more.
+const Map<String, dynamic> kDeletedAccountDoc = {'_deleted': true};
+
+bool isGoneAccount(Map<String, dynamic>? data) =>
+    data?['_deleted'] == true || data?['accountClosed'] == true;
+
+String goneAccountName(Map<String, dynamic>? data) =>
+    data?['_deleted'] == true ? 'Deleted account' : 'Closed account';
 
 // Avatar with the Fly gradient ring and the sparkle star when online.
 class _ChatAvatar extends StatelessWidget {
@@ -989,7 +1010,13 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   // buttons are hidden. The Firestore rules refuse it too (areFriends()).
   bool get _isFriend => FriendService.instance.isFriend(widget.otherUserId);
   bool get _friendsKnown => FriendService.instance.loaded.value;
-  bool get _canTalk => !_blocked && _isFriend;
+  bool get _canTalk => !_blocked && _isFriend && !_gone;
+
+  // 3 Nov 2026: the other person deleted their account (or Fly closed
+  // it) - no Add Friend, no reply, no calls; the old messages stay.
+  StreamSubscription<DocumentSnapshot>? _otherSub;
+  Map<String, dynamic>? _goneDoc;
+  bool get _gone => _goneDoc != null;
   // My own pending request to them (for the banner's button), built once.
   late final Stream<bool> _sentRequestStream;
   bool _friendBusy = false;
@@ -1020,6 +1047,24 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     FriendService.instance.friends.addListener(_onBlockedChanged);
     FriendService.instance.incoming.addListener(_onBlockedChanged);
     FriendService.instance.loaded.addListener(_onBlockedChanged);
+    _otherSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.otherUserId)
+        .snapshots()
+        .listen((snap) {
+      Map<String, dynamic>? gone;
+      if (!snap.exists) {
+        // Offline with nothing cached isn't "deleted" - wait for the server.
+        if (snap.metadata.isFromCache) return;
+        gone = kDeletedAccountDoc;
+      } else {
+        final Map<String, dynamic>? d = snap.data() as Map<String, dynamic>?;
+        if (isGoneAccount(d)) gone = d;
+      }
+      if (mounted && (gone == null) != (_goneDoc == null)) {
+        setState(() => _goneDoc = gone);
+      }
+    }, onError: (_) {});
     // Opening the chat = I've read it (Messages list stops being bold).
     _markChatRead();
     _initRecorder();
@@ -1098,6 +1143,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     FriendService.instance.friends.removeListener(_onBlockedChanged);
     FriendService.instance.incoming.removeListener(_onBlockedChanged);
     FriendService.instance.loaded.removeListener(_onBlockedChanged);
+    _otherSub?.cancel();
     _typingTimer?.cancel();
     _setActivity(null);
     _messageController.dispose();
@@ -1719,6 +1765,42 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   // Replaces the message box when either side has blocked the other -
   // like Messenger's "You can't reply to this conversation".
+  // 3 Nov 2026: replaces the message box once the other account is gone.
+  Widget _goneBanner() {
+    final bool deleted = _goneDoc?['_deleted'] == true;
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(
+          20, 16, 20, 16 + MediaQuery.of(context).padding.bottom),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        border: const Border(top: BorderSide(color: Colors.white12)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.person_off_outlined,
+              color: Colors.white54, size: 22),
+          const SizedBox(height: 6),
+          Text(
+            deleted
+                ? 'This account was deleted'
+                : 'This account is no longer available',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "You can still read your old messages, but you can't reply.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white54, fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _blockedBanner() {
     final bool iBlocked = _iBlockedThem;
     return Container(
@@ -1963,20 +2045,23 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             CircleAvatar(
               radius: 18,
               backgroundColor: Colors.grey[850],
-              backgroundImage: widget.otherUserPhoto.isNotEmpty
+              backgroundImage: !_gone && widget.otherUserPhoto.isNotEmpty
                   ? NetworkImage(widget.otherUserPhoto)
                   : null,
-              child: widget.otherUserPhoto.isEmpty
-                  ? Text(
-                      widget.otherUserName.isNotEmpty
-                          ? widget.otherUserName[0].toUpperCase()
-                          : '?',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    )
-                  : null,
+              child: _gone
+                  ? const Icon(Icons.person_off_outlined,
+                      color: Colors.white54, size: 20)
+                  : widget.otherUserPhoto.isEmpty
+                      ? Text(
+                          widget.otherUserName.isNotEmpty
+                              ? widget.otherUserName[0].toUpperCase()
+                              : '?',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        )
+                      : null,
             ),
             const SizedBox(width: 10),
             // Name + live activity status (typing / recording)
@@ -1985,8 +2070,10 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  widget.otherUserName,
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  _gone ? goneAccountName(_goneDoc) : widget.otherUserName,
+                  style: TextStyle(
+                      color: _gone ? Colors.white54 : Colors.white,
+                      fontSize: 16),
                 ),
                 StreamBuilder<DocumentSnapshot>(
                   stream: _activityStream,
@@ -2113,6 +2200,26 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                             child: Image.network(
                               imageUrl,
                               fit: BoxFit.cover,
+                              // 3 Nov 2026: a photo whose file was deleted
+                              // (e.g. its sender deleted their account).
+                              errorBuilder: (_, __, ___) => Container(
+                                width: 160,
+                                height: 110,
+                                color: Colors.grey[900],
+                                alignment: Alignment.center,
+                                child: const Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.image_not_supported_outlined,
+                                        color: Colors.white38, size: 26),
+                                    SizedBox(height: 6),
+                                    Text('Photo not available',
+                                        style: TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 12)),
+                                  ],
+                                ),
+                              ),
                               loadingBuilder: (context, child, progress) {
                                 if (progress == null) return child;
                                 return Container(
@@ -2318,7 +2425,9 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                 ],
               ),
             ),
-          if (_blocked)
+          if (_gone)
+            _goneBanner()
+          else if (_blocked)
             _blockedBanner()
           else if (!_friendsKnown)
             // Friends list not loaded yet (usually a split second, from

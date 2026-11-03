@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -56,6 +57,41 @@ class ProfileScreen extends StatelessWidget {
     }
   }
 
+  // Asks the Worker's /delete-my-media to delete my files on Bunny, in
+  // rounds (it deletes up to 40 per call) until it says done - at most 25
+  // rounds / about a minute, then Delete account just goes on.
+  Future<void> _deleteMyBunnyMedia() async {
+    int videoOffset = 0;
+    final DateTime giveUpAt = DateTime.now().add(const Duration(seconds: 60));
+    for (int round = 0; round < 25; round++) {
+      if (DateTime.now().isAfter(giveUpAt)) return;
+      try {
+        final http.Response res = await http
+            .post(
+              Uri.parse('$kTokenServerUrl/delete-my-media'),
+              headers: {
+                ...await workerAuthHeaders(),
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({'videoOffset': videoOffset}),
+            )
+            .timeout(const Duration(seconds: 20));
+        if (res.statusCode != 200) return;
+        final Object? body = jsonDecode(res.body);
+        if (body is! Map || body['done'] == true) return;
+        final Object? next = body['videoOffset'];
+        final int nextOffset = next is num ? next.toInt() : videoOffset;
+        // Nothing deleted this round = stuck; don't loop for nothing.
+        final Object? dv = body['deletedVideos'];
+        final Object? df = body['deletedFiles'];
+        if ((dv is num ? dv : 0) == 0 && (df is num ? df : 0) == 0) return;
+        videoOffset = nextOffset;
+      } catch (_) {
+        return;
+      }
+    }
+  }
+
   // Deletes the signed-in user's account, as required by Google Play policy
   // (an app that supports account creation must offer in-app account
   // deletion). Firebase requires a *recent* sign-in before it will allow
@@ -92,8 +128,9 @@ class ProfileScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'This will permanently delete your account, videos, '
-                'reposts, stories and shared sounds. This cannot be undone.',
+                'This permanently deletes your account and everything you '
+                'uploaded: videos, photos, stories, chat photos, voice '
+                'messages, reposts and shared sounds. This cannot be undone.',
                 style: TextStyle(color: Colors.white70),
               ),
               const SizedBox(height: 14),
@@ -235,6 +272,13 @@ class ProfileScreen extends StatelessWidget {
 
       final firestore = FirebaseFirestore.instance;
       final uid = user.uid;
+
+      // 2 Nov 2026: my files on Bunny (videos of my posts + stories,
+      // profile / story / chat photos, voice notes). Must run BEFORE the
+      // post / story docs below are deleted - the Worker reads them to
+      // know which videos are mine. Best-effort: Delete account never
+      // stops because of this.
+      await _deleteMyBunnyMedia();
 
       // Posts store their owner as `userId` (see upload_screen.dart). This
       // used to query a non-existent `ownerId` field, so a deleted

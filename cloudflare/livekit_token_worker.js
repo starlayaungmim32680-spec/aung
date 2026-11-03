@@ -387,6 +387,9 @@ export default {
     if (path === '/search-sync-me') {
       return handleSearchSyncMe(env, caller);
     }
+    if (path === '/delete-my-media') {
+      return handleDeleteMyMedia(body, env, caller);
+    }
     if (path === '/search-index-post') {
       return handleSearchIndexPost(body, env, caller);
     }
@@ -729,6 +732,94 @@ async function handleUploadVideo(request, env) {
     return new Response(`Upload-video failed: ${err.message}`, {
       status: 500,
     });
+  }
+}
+
+// ---------------------------------------------------------------------
+// Delete account: my files on Bunny (2 Nov 2026, launch list)
+// ---------------------------------------------------------------------
+// POST /delete-my-media {videoOffset} - the app calls this right after
+// the password check of "Delete account", BEFORE it deletes the post /
+// story docs (they say which Bunny videos are mine), and repeats it until
+// {done: true}. Deletes:
+//   - every Bunny Stream video of my posts + stories (bunnyVideoId),
+//   - every Bunny Storage file whose name starts with "<my uid>_" -
+//     profile photos, story images, chat photos and voice notes (the app
+//     always names them so, and /upload-image refuses any other name).
+// Only the signed-in caller's own files. The free Workers plan allows 50
+// subrequests per request, so one call deletes at most
+// MEDIA_DELETE_PER_CALL things (+ 1 token, 2 queries, 1 Storage list).
+// Videos are walked by offset (their post docs still exist between
+// calls); deleted Storage files simply drop out of the next list.
+// Note: the Storage list is the zone's whole root folder - fine for now;
+// put files into a folder per user if it ever gets very big.
+// Not covered: the public /delete-account web form (Ko deletes those by
+// hand) and child-safety bans (closeAccountForGood keeps the files).
+const MEDIA_DELETE_PER_CALL = 40;
+const BUNNY_GUID_RE = /^[0-9a-fA-F-]{36}$/;
+
+async function handleDeleteMyMedia(body, env, caller) {
+  if (!caller || !isSafeUid(caller.uid)) {
+    return jsonResponse({ error: 'sign-in required' }, 401);
+  }
+  const uid = caller.uid;
+  const videoOffset = Math.max(0, Math.min(100000,
+    parseInt(body?.videoOffset, 10) || 0));
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const [posts, stories] = await Promise.all([
+      firestoreQueryEq(env, dbToken, 'posts', 'userId', uid, 500),
+      firestoreQueryEq(env, dbToken, 'stories', 'userId', uid, 200),
+    ]);
+    const videos = [...new Set([...posts, ...stories]
+      .map((d) => stringField(d.fields, 'bunnyVideoId'))
+      .filter((v) => BUNNY_GUID_RE.test(v)))].sort();
+
+    let files = [];
+    let storageOk = true;
+    if (env.BUNNY_STORAGE_ZONE && env.BUNNY_STORAGE_PASSWORD) {
+      const res = await fetch(
+        `https://sg.storage.bunnycdn.com/${env.BUNNY_STORAGE_ZONE}/`,
+        { headers: { AccessKey: env.BUNNY_STORAGE_PASSWORD, Accept: 'application/json' } },
+      );
+      if (res.ok) {
+        const list = await res.json();
+        files = (Array.isArray(list) ? list : [])
+          .filter((f) => f && !f.IsDirectory && typeof f.ObjectName === 'string' &&
+            f.ObjectName.startsWith(`${uid}_`) &&
+            /^[a-zA-Z0-9._-]+$/.test(f.ObjectName))
+          .map((f) => f.ObjectName)
+          .sort();
+      } else {
+        storageOk = false;
+        console.log('delete-my-media: storage list failed', res.status);
+      }
+    }
+
+    const videoBatch = videos.slice(videoOffset, videoOffset + MEDIA_DELETE_PER_CALL);
+    const fileBatch = files.slice(0, MEDIA_DELETE_PER_CALL - videoBatch.length);
+    await Promise.all([
+      ...videoBatch.map((v) => deleteBunnyVideo(env, v)),
+      ...fileBatch.map((f) => fetch(
+        `https://sg.storage.bunnycdn.com/${env.BUNNY_STORAGE_ZONE}/${f}`,
+        { method: 'DELETE', headers: { AccessKey: env.BUNNY_STORAGE_PASSWORD } },
+      ).catch(() => null)),
+    ]);
+    const nextOffset = videoOffset + videoBatch.length;
+    const videosLeft = Math.max(0, videos.length - nextOffset);
+    const filesLeft = files.length - fileBatch.length;
+    return jsonResponse({
+      done: videosLeft === 0 && filesLeft === 0,
+      videoOffset: nextOffset,
+      deletedVideos: videoBatch.length,
+      deletedFiles: fileBatch.length,
+      videosLeft,
+      filesLeft,
+      storageOk,
+    });
+  } catch (err) {
+    console.log('delete-my-media failed', err.message);
+    return jsonResponse({ error: err.message }, 500);
   }
 }
 

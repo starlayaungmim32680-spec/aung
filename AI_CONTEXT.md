@@ -1275,6 +1275,52 @@ OK). Play Console: Terms URL =
 > 263062241 have no check. **Next:** delete-account Bunny files, then
 > Play Console._
 >
+> _3-4 Nov 2026 (confirmed by Ko on DEV and PROD): **Delete account now
+> deletes my Bunny files + a deleted account looks deleted in chats.**
+> **Worker:** `POST /delete-my-media {videoOffset}` (signed-in caller
+> only, own uid): queries my `posts` + `stories` (userId) for their
+> `bunnyVideoId`s -> deletes them from Bunny Stream; lists the Storage
+> zone root (`sg.storage.bunnycdn.com/<zone>/`) and deletes every file
+> named `<my uid>_...` (profile photos, story images, chat photos `<uid>_
+> chat_...`, voice notes - /upload-image only accepts names starting with
+> the caller's uid). Free-plan limit 50 subrequests/request ->
+> `MEDIA_DELETE_PER_CALL = 40` per call (+ token, 2 queries, 1 list = max
+> 44), returns `{done, videoOffset, deletedVideos, deletedFiles,
+> videosLeft, filesLeft, storageOk}`; videos walk by offset, deleted files
+> drop out of the next list. Mock test: 52 videos + 31 files in 3 calls,
+> other users' and look-alike names (`meX_`) untouched, no caller = 401.
+> Not covered: the public /delete-account web form (Ko deletes those by
+> hand) and child-safety bans (closeAccountForGood keeps the files). If
+> the zone root ever gets very big, move files into a folder per user.
+> **App:** `profile_screen.dart` `_deleteMyBunnyMedia()` runs right after
+> the password check and BEFORE the post / story docs are deleted, loops
+> until done (max 25 rounds / 60 s, stops if a round deleted nothing,
+> never blocks Delete account); dialog text now "This permanently deletes
+> your account and everything you uploaded: videos, photos, stories, chat
+> photos, voice messages, reposts and shared sounds." **Deleted account in
+> chats (Ko's screenshot: the chat said "User" + "Add User as a friend to
+> keep chatting"):** `chat_screen.dart` - the thread listens to
+> users/{other}; no doc on the SERVER (a cache-only miss is ignored) or
+> `accountClosed` -> header "Deleted account" / "Closed account" with a
+> person_off icon (no photo), the message box / Add Friend banner is
+> replaced by "This account was deleted - You can still read your old
+> messages, but you can't reply.", no call buttons; the Messages list
+> shows "Deleted account" (`kDeletedAccountDoc` marker in _ProfileCache,
+> `isGoneAccount` / `goneAccountName`) and its avatar opens nothing; a chat
+> photo whose file is gone shows "Photo not available" (errorBuilder).
+> `public_profile_screen.dart`: no users doc -> "This account was deleted
+> - The person deleted their Fly account." APKs: dev
+> `FlyDev-bn263070024.apk` (Bunny part) + `FlyDev-bn263072213.apk` (341 s,
+> chat part), prod `Fly-bn263072347.apk` (226 s); 5c NEW `This account was
+> deleted` True / OLD `This will permanently delete your account, videos,`
+> False. Dev test: the deleted user `ddSf6Q4P64hf02YgNobfSVDUtbX2` - Bunny
+> Storage search = "No files found", the chat photo's b-cdn URL = 404
+> (the CDN copy is gone too, no purge needed; the phone showed it from its
+> own cache until the app restarted), chat shows "Deleted account" + the
+> new banner. Prod: Worker deployed, APK installed (not tested with a
+> real account on purpose). **Next:** Play Console setup, then closed
+> testing (12 testers / 14 days)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3076,9 +3122,10 @@ others only see it once encoded (Bunny webhook).
   mirror), `saved`, `notifications`, `private/searchHistory`; then after
   deleting `users/{uid}` it calls the Worker's `/search-sync-me` so D1
   drops my name + posts. Still left behind (no server-side
-  cleanup on the Spark plan): Bunny video/image files, comments/reactions
+  cleanup on the Spark plan): comments/reactions
   on other people's posts, other users' reposts of their videos, and other
-  users' `following` entries pointing at them.
+  users' `following` entries pointing at them. (Bunny videos + Storage
+  files are deleted since 3 Nov 2026 via the Worker's /delete-my-media.)
 - `videoReady` filtering covers the Home feed and Stories bar only; profile
   grids, search and sound pages can still list a video that's still
   encoding. Phones on an **older app build** ignore `videoReady` entirely and
@@ -3168,7 +3215,7 @@ others only see it once encoded (Bunny webhook).
     (b) what strikes do - DONE on dev AND prod 30 Oct - 1 Nov (steps A +
     B, prod APK `Fly-bn10312340.apk`); step C "Account status" screen DONE on dev AND prod 1 Nov (`Fly-bn11011809.apk`); (c) prod "AI: not checked yet" - DONE 1 Nov (one picture got no OpenAI answer that moment; modImageResult now retries once on 429 / 5xx / timeout, dev + prod Worker); (d) Under review chip - it never overlapped; chips removed, info moved into the ••• sheet (dev + prod 1 Nov)**, (4) Google Play Child Safety - DONE dev + prod 1-2 Nov [A page /child-safety; B child-safety removal = permanent ban (reason picker + minor tick, login disabled, videos hidden, account-closed screen); C Settings row; prod APK `Fly-bn11020115.apk`]
     Standards (CSAE page, in-app report, contact), (5) delete-account
-    leftovers (Bunny files), (6) force-update check - DONE dev + prod 2 Nov (`/app-version`, app_update.dart, build numbers now yyDDDHHmm). "Who can watch" D
+    leftovers (Bunny files) - DONE dev + prod 3-4 Nov (`/delete-my-media`, Deleted account in chats, prod `Fly-bn263072347.apk`), (6) force-update check - DONE dev + prod 2 Nov (`/app-version`, app_update.dart, build numbers now yyDDDHHmm). "Who can watch" D
     and growth ideas come after launch. Then the Report system below. Older idea (3) images (profile photo, story image, chat photo) and
     story videos + story text. **Many languages (Ko's question, 21 Oct):**
     plan = layers - Worker word lists (Burmese + English now; more from

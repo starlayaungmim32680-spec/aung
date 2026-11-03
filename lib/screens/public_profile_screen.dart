@@ -82,6 +82,14 @@ class PublicProfileScreen extends StatelessWidget {
               if (!isMe && isAccountClosed(profile)) {
                 return const _ClosedProfileView();
               }
+              // 3 Nov 2026: the account was deleted (no users doc on the
+              // server any more).
+              if (!isMe &&
+                  profileSnapshot.hasData &&
+                  !profileSnapshot.data!.exists &&
+                  !profileSnapshot.data!.metadata.isFromCache) {
+                return const _ClosedProfileView(deleted: true);
+              }
 
               final String displayName =
                   (profile?['displayName'] as String?)?.trim().isNotEmpty ==
@@ -500,32 +508,36 @@ class PublicProfileScreen extends StatelessWidget {
 // that the account isn't available (they aren't told they were blocked).
 // 1 Nov 2026: the account was permanently closed by Fly.
 class _ClosedProfileView extends StatelessWidget {
-  const _ClosedProfileView();
+  final bool deleted;
+  const _ClosedProfileView({this.deleted = false});
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 36),
+        padding: const EdgeInsets.symmetric(horizontal: 36),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.block, color: Colors.white38, size: 56),
-            SizedBox(height: 16),
+            Icon(deleted ? Icons.person_off_outlined : Icons.block,
+                color: Colors.white38, size: 56),
+            const SizedBox(height: 16),
             Text(
-              'This account was closed',
+              deleted ? 'This account was deleted' : 'This account was closed',
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
               ),
             ),
-            SizedBox(height: 8),
+            const SizedBox(height: 8),
             Text(
-              'Fly closed this account because it broke our Community Guidelines.',
+              deleted
+                  ? 'The person deleted their Fly account.'
+                  : 'Fly closed this account because it broke our Community Guidelines.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white54, fontSize: 13),
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
             ),
           ],
         ),
