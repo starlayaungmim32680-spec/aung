@@ -15,6 +15,7 @@ import 'saved_videos_screen.dart';
 import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 import 'moderation_service.dart';
+import 'password_reset.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -403,36 +404,14 @@ class ProfileScreen extends StatelessWidget {
   // screen's Forgot Password.
   Future<void> _sendDeleteAccountPasswordReset(
       BuildContext context, String email) async {
-    try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-      if (!context.mounted) return;
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text('Check your email',
-              style: TextStyle(color: Colors.white)),
-          content: Text(
-            'We sent a link to $email to set a new password.\n\n'
-            'Set your new password, then come back and choose '
-            'Delete account again.',
-            style: const TextStyle(color: Colors.white70),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child:
-                  const Text('OK', style: TextStyle(color: Color(0xFF35E1F2))),
-            ),
-          ],
-        ),
-      );
-    } catch (_) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Could not send the reset email - try again.')));
-      }
-    }
+    // 4 Nov 2026: spinner + clear result (Spam hint, "too many tries"...)
+    // - see password_reset.dart.
+    await sendPasswordResetWithFeedback(
+      context,
+      email,
+      after: 'Set your new password, then come back and choose Delete '
+          'account again.',
+    );
   }
 
   // Opens the "Sky Note" composer - a short thought that floats near the

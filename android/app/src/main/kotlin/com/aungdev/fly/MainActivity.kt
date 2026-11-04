@@ -39,6 +39,12 @@ import io.flutter.plugin.common.MethodChannel
 //     into a small floating video bubble over whatever they open next,
 //     instead of just disappearing.
 //
+//  5. "openEmailApp" (4 Nov 2026) - "Open Gmail" after a password-reset
+//     email (password_reset.dart): opens the Gmail APP itself (not the
+//     browser), else the phone's own email app, else returns false and
+//     Dart opens Gmail in the browser. Needs the com.google.android.gm
+//     <package> query in AndroidManifest.xml (Android 11+).
+//
 //  4. requestDismissKeyguard() in onCreate/onResume - on a phone with NO
 //     secure lock (swipe-only, or no lock at all), this lets answering a
 //     call go straight into VideoCallScreen without any extra prompt,
@@ -106,9 +112,36 @@ class MainActivity : FlutterActivity() {
                         stopPresenceForegroundService()
                         result.success(null)
                     }
+                    "openEmailApp" -> {
+                        result.success(openEmailApp())
+                    }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun openEmailApp(): Boolean {
+        // 1. Gmail itself.
+        try {
+            val gmail = packageManager.getLaunchIntentForPackage("com.google.android.gm")
+            if (gmail != null) {
+                gmail.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(gmail)
+                return true
+            }
+        } catch (e: Exception) {
+            // fall through
+        }
+        // 2. Whatever email app the phone has (Outlook, Samsung Email...).
+        try {
+            val any = Intent.makeMainSelectorActivity(
+                Intent.ACTION_MAIN, Intent.CATEGORY_APP_EMAIL)
+            any.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(any)
+            return true
+        } catch (e: Exception) {
+            return false
+        }
     }
 
     private fun startPresenceForegroundService() {

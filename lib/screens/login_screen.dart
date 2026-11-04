@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'main_navigation_screen.dart';
 import 'signup_screen.dart';
 import 'recent_accounts.dart';
 import 'account_closed.dart' show showAccountClosedDialog;
+import 'password_reset.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -254,51 +254,9 @@ class _LoginScreenState extends State<LoginScreen>
 
     if (emailToReset == null || emailToReset.isEmpty || !mounted) return;
 
-    try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: emailToReset);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Password reset link sent to $emailToReset'),
-          duration: const Duration(seconds: 6),
-          action: SnackBarAction(
-            label: 'Open Gmail',
-            onPressed: _openGmailInbox,
-          ),
-        ));
-      }
-    } on FirebaseAuthException catch (e) {
-      final String message = switch (e.code) {
-        'user-not-found' => 'No account found with that email.',
-        'invalid-email' => 'That email address looks invalid.',
-        _ => 'Could not send reset email - try again.',
-      };
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Could not send reset email - try again.')));
-      }
-    }
-  }
-
-  // Opens Gmail's inbox directly, so the person doesn't have to go hunt
-  // for the Gmail app themselves after tapping "Send link". Android
-  // offers this URL to the Gmail app if it's installed (deep link);
-  // otherwise it just opens Gmail in the browser - either way, they land
-  // on their inbox, not a blank compose screen.
-  Future<void> _openGmailInbox() async {
-    final uri = Uri.parse('https://mail.google.com/mail/u/0/#inbox');
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("Couldn't open Gmail - please check it manually.")));
-      }
-    }
+    // 4 Nov 2026: spinner + a clear result dialog (Spam hint, "too many
+    // tries", no connection...) - see password_reset.dart.
+    await sendPasswordResetWithFeedback(context, emailToReset);
   }
 
   @override

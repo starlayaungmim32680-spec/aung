@@ -1321,6 +1321,42 @@ OK). Play Console: Terms URL =
 > real account on purpose). **Next:** Play Console setup, then closed
 > testing (12 testers / 14 days)._
 >
+> _4 Nov 2026 (confirmed by Ko on DEV only - prod APK comes together with
+> step 2 below): **Forgot password - clear result + "Open Gmail" opens
+> the Gmail app.** Ko's report "the reset email doesn't reach Gmail any
+> more": the code was fine - the address he tried
+> (linlinaungnaing123qwa@gmail.com) only has an account in **Fly Dev**,
+> but he asked from the **prod** app; with Firebase's email-enumeration
+> protection a reset for an email with no account still answers "sent"
+> and sends nothing. Also: Firebase's mails (noreply@<project>.
+> firebaseapp.com) land in Gmail's Spam, and many tries in a row get
+> paused (too-many-requests) or dropped by Gmail. New
+> `lib/screens/password_reset.dart` `sendPasswordResetWithFeedback(context,
+> email, {after})`, used by login_screen.dart (Forgot password) and
+> profile_screen.dart (Delete account -> Forgot password?): spinner (max
+> 20 s), then a dialog - sent = "Check your email - If an account exists
+> for <email>, we sent it a link..." + orange "Can't find it? ... look in
+> your Spam or Junk folder too" + **Open Gmail** / OK; errors get their
+> own text (too-many-requests "Too many tries - wait about an hour",
+> network-request-failed, invalid-email, user-not-found, user-disabled,
+> timeout). The old 6-second snackbar and login's `_openGmailInbox` are
+> gone (url_launcher import removed from login_screen.dart). **Open
+> Gmail** = `MethodChannel('fly/background')` "openEmailApp"
+> (MainActivity.kt): the Gmail app (`getLaunchIntentForPackage(
+> "com.google.android.gm")`), else any email app
+> (`makeMainSelectorActivity(ACTION_MAIN, CATEGORY_APP_EMAIL)`), else
+> Dart opens mail.google.com in the browser; AndroidManifest.xml
+> `<queries>` got `<package com.google.android.gm>` + an
+> APP_EMAIL intent. APK recipe: `FlyDev-bn263082339.apk` (250 s), 5c NEW
+> `Please look in your Spam or Junk folder too` True / OLD `Could not send
+> reset email - try again.` False. Tested on dev: dialog + Open Gmail
+> OK. Inbox instead of Spam needs Fly's own email domain (later).
+> **Next (Ko: "1 then 2"):** step 2 = the reset link opens a Fly screen
+> "New password" instead of Firebase's plain web page (Worker page +
+> Android App Link on the Worker host + in-app screen with
+> confirmPasswordReset + Firebase template action URL), then the prod APK
+> for both._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
