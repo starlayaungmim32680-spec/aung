@@ -3158,6 +3158,24 @@ others only see it once encoded (Bunny webhook).
 
 ### To-do list (Ko's next steps, most urgent first — updated 21 Oct 2026)
 
+**Order decided by Ko on 4 Nov 2026:** all code launch blockers are done
+(Child Safety, force-update, delete-account Bunny files). NOW = fix and
+polish the app the way Ko wants it (Ko sends the list: screenshot + where
++ what happens now + what he wants; one at a time). **Play Console comes
+LAST** - when Ko says it's time, start by asking these 3 questions (still
+unanswered):
+  1. Does Ko already have a Google Play Developer account ($25)?
+  2. If yes: Personal or Organization account, and when was it created?
+     (A Personal account created after Nov 2023 must run a closed test
+     with at least 12 testers for 14 days in a row before production.)
+  3. Can Ko find 12 closed-testing testers (friends / family with a
+     Gmail account)?
+Ready for that step: Child Safety Standards link
+`https://livekit-token-worker.chakaboycom.workers.dev/child-safety`,
+point of contact = Ko + chakaboycom@gmail.com, Privacy `/privacy`, Terms
+`/terms`, account deletion page `/delete-account`; set prod
+`MIN_APP_BUILD` / `LATEST_APP_BUILD` only after a Play release exists.
+
 00. **After Premium + Early-Play (both libraries, done 16-17 Oct
     2026)** - still open: (1) done 21 Oct 2026: Bunny Billing checked - balance $9.30 (was
     $9.93 on 16 Oct; one $10 top-up on 3 Oct, no auto-recharge), October
