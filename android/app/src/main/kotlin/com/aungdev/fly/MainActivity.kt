@@ -45,6 +45,13 @@ import io.flutter.plugin.common.MethodChannel
 //     Dart opens Gmail in the browser. Needs the com.google.android.gm
 //     <package> query in AndroidManifest.xml (Android 11+).
 //
+//  6. "fly/links" (6 Nov 2026) - the password-reset email link
+//     https://<project>.firebaseapp.com/__/auth/action?... (App Link,
+//     AndroidManifest.xml; the Worker's /auth-action is accepted too)
+//     opens Fly. A link that started the app waits in pendingAuthLink until
+//     Dart asks "takeAuthLink"; a link while Fly is already running goes
+//     straight to Dart as "onAuthLink" (onNewIntent - singleInstance).
+//
 //  4. requestDismissKeyguard() in onCreate/onResume - on a phone with NO
 //     secure lock (swipe-only, or no lock at all), this lets answering a
 //     call go straight into VideoCallScreen without any extra prompt,
@@ -58,10 +65,35 @@ class MainActivity : FlutterActivity() {
     private var callActive = false
     private var callIsVideo = false
     private var presenceActive = false
+    private var linksChannel: MethodChannel? = null
+    private var pendingAuthLink: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         dismissKeyguardIfPossible()
+        authLinkFrom(intent)?.let { pendingAuthLink = it }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val link = authLinkFrom(intent) ?: return
+        val channel = linksChannel
+        if (channel != null) {
+            channel.invokeMethod("onAuthLink", link)
+        } else {
+            pendingAuthLink = link
+        }
+    }
+
+    // Only https password-reset links (the App Link) - nothing else.
+    private fun authLinkFrom(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_VIEW) return null
+        val data = intent.data ?: return null
+        if (data.scheme != "https") return null
+        val path = data.path ?: return null
+        if (!path.startsWith("/__/auth/action") && !path.startsWith("/auth-action")) return null
+        return data.toString()
     }
 
     override fun onResume() {
@@ -83,6 +115,17 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        linksChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fly/links").also {
+            it.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "takeAuthLink" -> {
+                        result.success(pendingAuthLink)
+                        pendingAuthLink = null
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

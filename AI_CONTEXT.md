@@ -1357,6 +1357,79 @@ OK). Play Console: Terms URL =
 > confirmPasswordReset + Firebase template action URL), then the prod APK
 > for both._
 >
+> _6-7 Nov 2026 (confirmed by Ko on DEV - prod still to do, see the list
+> at the end): **(a) release signing key + (b) the reset link opens Fly's
+> own "New password" screen.** (a) Found: release APKs were signed with
+> the DEBUG key (`signingConfig = debug`, Flutter's TODO) - Google Play
+> refuses that, and App Links depend on the key. Ko made the upload key
+> `C:\Users\AUNG\fly-keys\fly-upload.jks` (keytool, RSA 2048, 10000
+> days, alias `upload`, CN=Aung, OU/O=Fly, Puchong, Selangor, MY) and
+> `android/key.properties` (storePassword / keyPassword / keyAlias=upload
+> / storeFile=C:/Users/AUNG/fly-keys/fly-upload.jks) - BOTH gitignored
+> (android/.gitignore: key.properties, **/*.jks). **The .jks + password
+> must be backed up in 2 places; losing them = no more Play updates.**
+> Upload key SHA-256 = `9C:8A:67:9B:72:8B:DE:FD:A2:82:4F:1A:23:6F:17:9D:D9:
+> AC:8C:A1:2F:61:A5:79:10:2D:E2:16:92:E5:B7:D9`.
+> `android/app/build.gradle.kts` loads key.properties
+> (signingConfigs.release); a *Release* build without it stops with
+> "android/key.properties is missing" (debug runs don't need it). Changing
+> the key means the phone can't UPDATE an old-key app: the first
+> new-key APK needs Uninstall -> Install (data stays on the server). (b)
+> Plan: point Firebase's email action URL at the Worker. The Console
+> said "An error occurred updating action URL" even after adding
+> `fly-dev-worker.chakaboycom.workers.dev` to Authentication -> Settings ->
+> Authorized domains (it is still there, harmless); the Worker's new
+> `GET /admin-auth-config?token=SEARCH_ADMIN_TOKEN[&set=1]` (reads / sets
+> `notification.sendEmail.callbackUri` via the Identity Toolkit admin
+> API) showed Google's real answer: **`EMAIL_TEMPLATE_UPDATE_NOT_ALLOWED`**
+> - this project may not change its email templates' action URL. So the
+> email keeps Firebase's own link
+> `https://<project>.firebaseapp.com/__/auth/action?mode=resetPassword&
+> oobCode=...` and THAT host is made an Android App Link: **Firebase
+> Hosting** (new folder `firebase_hosting/` with its own firebase.json -
+> NOT the FlutterFire firebase.json at the repo root; `ignore` has no
+> "**/.*" so `.well-known` is uploaded) serves
+> `/.well-known/assetlinks.json` (com.aungdev.fly + com.aungdev.fly.dev,
+> upload key SHA-256) + a small index.html; Firebase's reserved
+> `/__/auth/action` page keeps working for computers / no app. Firebase
+> CLI 15.35.0 on Ko's PC, logged in as starlayaungmim32680@gmail.com;
+> deploy = `cd firebase_hosting; firebase deploy --only hosting --project
+> fly-dev-58b29; cd ..` (dev done 6 Nov). AndroidManifest.xml:
+> MainActivity intent-filter `autoVerify` https host `${authLinkHost}`
+> pathPrefix `/__/auth/action` + meta-data `flutter_deeplinking_enabled`
+> = false; build.gradle.kts `manifestPlaceholders["authLinkHost"]` = prod
+> `aung-1756e.firebaseapp.com`, dev `fly-dev-58b29.firebaseapp.com`.
+> MainActivity.kt: channel `fly/links` - a link that started the app is
+> kept as pendingAuthLink until Dart calls "takeAuthLink"; a link while
+> running (onNewIntent, singleInstance) is sent as "onAuthLink"; only
+> https paths `/__/auth/action` or `/auth-action`. New
+> `lib/screens/new_password_screen.dart`: `AuthLinks.init(_navigatorKey)`
+> (main.dart, after runApp) opens `NewPasswordScreen(code)` for
+> mode=resetPassword (waits for the Navigator on a cold start) -
+> verifyPasswordResetCode -> "Set a new password for <email>", two
+> fields, confirmPasswordReset, then signs straight in (signs out a
+> different signed-in account first), pops to the first screen and shows
+> "Password changed - welcome back!"; expired / used link -> "This link
+> has expired" + "Send me a new link"; sign-in failing after the save ->
+> "Password changed - Log in with your new password". The Worker ALSO got
+> `/.well-known/assetlinks.json` (+ Variable `ANDROID_SHA256_EXTRA`) and a
+> Fly-styled `/auth-action` web form (Identity Toolkit
+> accounts:resetPassword from the page) - unused while the action URL
+> can't be changed, kept for when Fly has its own domain. Firebase
+> template (fly-dev): Sender name `Fly`. Root `.gitignore` got `*.apk`.
+> APK: `FlyDev-bn263110006.apk` (244 s, first build with the upload key).
+> Ko on dev: OK (link in Gmail -> Fly Dev -> New password -> signed in).
+> **Prod still to do (next session):** (1) deploy the Worker to
+> livekit-token-worker, (2) `cd firebase_hosting; firebase deploy --only
+> hosting --project aung-1756e; cd ..` + check
+> `https://aung-1756e.firebaseapp.com/.well-known/assetlinks.json`, (3)
+> Firebase aung-1756e -> Templates: Sender name `Fly` (optional Reply to
+> chakaboycom@gmail.com), (4) prod APK (UNINSTALL the old Fly first -
+> new key), test the reset link on prod. **At Play Console time:** add
+> Play's App signing key SHA-256 to `firebase_hosting/public/.well-known/
+> assetlinks.json` (redeploy both projects) and to the Worker Variable
+> `ANDROID_SHA256_EXTRA`, or App Links stop working for Play installs._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3211,6 +3284,10 @@ Ready for that step: Child Safety Standards link
 point of contact = Ko + chakaboycom@gmail.com, Privacy `/privacy`, Terms
 `/terms`, account deletion page `/delete-account`; set prod
 `MIN_APP_BUILD` / `LATEST_APP_BUILD` only after a Play release exists.
+Release signing is ready (upload key, 6 Nov 2026) - upload an AAB
+(`flutter build appbundle --release --flavor prod --build-number=$bn`)
+with Play App Signing ON, then add Play's app-signing SHA-256 to
+firebase_hosting assetlinks.json (redeploy) + Worker ANDROID_SHA256_EXTRA.
 
 00. **After Premium + Early-Play (both libraries, done 16-17 Oct
     2026)** - still open: (1) done 21 Oct 2026: Bunny Billing checked - balance $9.30 (was
@@ -3437,7 +3514,11 @@ of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
   build as an update, Play refuses a lower versionCode, and the
   force-update check (`/app-version`, screens/app_update.dart) compares
   these numbers. `yyDDDHHmm` only grows until 2099 and stays under Play's
-  2,100,000,000 limit. Never go back to `MMddHHmm`. Dev:
+  2,100,000,000 limit. Never go back to `MMddHHmm`. Since 6 Nov 2026
+  release builds are signed with Fly's upload key (needs
+  `android/key.properties` + `C:\Users\AUNG\fly-keys\fly-upload.jks`;
+  optional check `keytool -printcert -jarfile <apk> | Select-String
+  SHA256` = 9C:8A:67:...:B7:D9). Dev:
   `$d = Get-Date; $bn = '{0:yy}{1:D3}{0:HHmm}' -f $d, $d.DayOfYear; flutter build apk --release --flavor dev --build-number=$bn; Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk "FlyDev-bn$bn.apk" -Force; Write-Output "FlyDev-bn$bn.apk"`
   Prod: the same with `--flavor prod`, `app-prod-release.apk` and
   `"Fly-bn$bn.apk"`. The printed name must contain the number.

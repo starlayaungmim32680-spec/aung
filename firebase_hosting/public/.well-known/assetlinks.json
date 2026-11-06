@@ -1,0 +1,26 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.aungdev.fly",
+      "sha256_cert_fingerprints": [
+        "9C:8A:67:9B:72:8B:DE:FD:A2:82:4F:1A:23:6F:17:9D:D9:AC:8C:A1:2F:61:A5:79:10:2D:E2:16:92:E5:B7:D9"
+      ]
+    }
+  },
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.aungdev.fly.dev",
+      "sha256_cert_fingerprints": [
+        "9C:8A:67:9B:72:8B:DE:FD:A2:82:4F:1A:23:6F:17:9D:D9:AC:8C:A1:2F:61:A5:79:10:2D:E2:16:92:E5:B7:D9"
+      ]
+    }
+  }
+]

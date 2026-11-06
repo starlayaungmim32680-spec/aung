@@ -45,3 +45,6 @@ app.*.map.json
 /android/app/release
 
 /android/build/
+
+# Built APKs copied to the repo folder by the APK recipe (AI_CONTEXT §7 5b)
+*.apk

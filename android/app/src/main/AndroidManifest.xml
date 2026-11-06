@@ -68,6 +68,29 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- 6 Nov 2026: the password-reset email link
+                 https://<project>.firebaseapp.com/__/auth/action?mode=resetPassword&oobCode=...
+                 opens Fly's own "New password" screen (MainActivity.kt
+                 "fly/links" -> new_password_screen.dart). autoVerify = an
+                 Android App Link: Android checks
+                 https://<project>.firebaseapp.com/.well-known/assetlinks.json
+                 (Firebase Hosting, firebase_hosting/ - package + signing key
+                 SHA-256) and then opens Fly directly. The host is per flavor
+                 (build.gradle.kts authLinkHost). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${authLinkHost}"
+                    android:pathPrefix="/__/auth/action" />
+            </intent-filter>
+            <!-- Fly handles its links itself (above) - Flutter's own deep
+                 linking would push "/auth-action?..." as a route name. -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="false" />
         </activity>
         <!-- Keeps Fly's process alive as a genuine foreground process for
              the length of a call - started/stopped by MainActivity.kt.

@@ -187,6 +187,9 @@
 //                         firestore.rules (posts / stories create) refuse
 //                         while it lasts. The owner may READ their own
 //                         moderationStrikes doc + items (rules).
+//  GET /admin-auth-config?token=SEARCH_ADMIN_TOKEN[&set=1] - shows the
+//                         Firebase Auth email action URL; set=1 points it
+//                         at <this Worker>/auth-action (6 Nov 2026).
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -278,6 +281,26 @@ export default {
         },
       });
     }
+    // Password reset inside Fly (6 Nov 2026). Android App Links: Android
+    // checks this file before letting Fly open https://<this host>/
+    // auth-action links itself (AndroidManifest.xml, autoVerify).
+    if (request.method === 'GET' && url.pathname === '/.well-known/assetlinks.json') {
+      return new Response(JSON.stringify(assetLinks(env)), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=3600',
+        },
+      });
+    }
+    // Firebase's password-reset email links here (Firebase Console ->
+    // Authentication -> Templates -> Password reset -> Customize action
+    // URL = https://<this host>/auth-action). On a phone with Fly the
+    // link opens Fly's own "New password" screen instead (App Link); this
+    // page is for everyone else (computer, no app, link opened in a
+    // browser): a Fly-styled form that sets the new password itself.
+    if (request.method === 'GET' && url.pathname === '/auth-action') {
+      return authActionPage(url);
+    }
     // Child Safety Standards (1 Nov 2026): Google Play asks every Social
     // app for a public page against child sexual abuse and exploitation
     // (CSAE). This is the link to give in Play Console.
@@ -319,6 +342,9 @@ export default {
     }
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
+    }
+    if (request.method === 'GET' && url.pathname === '/admin-auth-config') {
+      return handleAdminAuthConfig(env, url);
     }
     // Report system step 3 (27 Oct 2026): Ko's review page + its API
     // (SEARCH_ADMIN_TOKEN in a header, not a Firebase sign-in).
@@ -5482,6 +5508,246 @@ function appVersionInfo(env) {
     updateUrl: /^https:\/\//.test(updateUrl) ? updateUrl : '',
   };
 }
+
+// ---------------------------------------------------------------------
+// Password reset: App Links file + web page (6 Nov 2026)
+// ---------------------------------------------------------------------
+// GET /admin-auth-config?token=SEARCH_ADMIN_TOKEN[&set=1] (6 Nov 2026).
+// The Firebase Console kept saying "An error occurred updating action URL"
+// without a reason, so this sets the same setting through the Identity
+// Toolkit admin API (the Worker's own service account) and shows Google's
+// full answer. Without set=1 it only reads.
+async function handleAdminAuthConfig(env, url) {
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Wrong or missing token', { status: 401 });
+  }
+  const want = `${url.origin}/auth-action`;
+  const base = `https://identitytoolkit.googleapis.com/admin/v2/projects/${env.FIREBASE_PROJECT_ID}/config`;
+  const out = { project: env.FIREBASE_PROJECT_ID, want };
+  try {
+    const access = await getGoogleAccessToken(env, IDENTITY_SCOPE);
+    const headers = {
+      Authorization: `Bearer ${access}`,
+      'Content-Type': 'application/json',
+    };
+    if (url.searchParams.get('set') === '1') {
+      const res = await fetch(
+        `${base}?updateMask=notification.sendEmail.callbackUri`,
+        {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ notification: { sendEmail: { callbackUri: want } } }),
+        },
+      );
+      out.setStatus = res.status;
+      out.setAnswer = (await res.text()).slice(0, 3000);
+    }
+    const res = await fetch(base, { headers });
+    out.readStatus = res.status;
+    const text = await res.text();
+    try {
+      const cfg = JSON.parse(text);
+      out.callbackUri = cfg?.notification?.sendEmail?.callbackUri ?? '(not set - Firebase default)';
+      out.authorizedDomains = cfg?.authorizedDomains ?? [];
+      out.subscriptionType = cfg?.subscriptionType ?? '';
+    } catch (_) {
+      out.readAnswer = text.slice(0, 3000);
+    }
+  } catch (err) {
+    out.error = err.message;
+  }
+  return new Response(JSON.stringify(out, null, 2), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+}
+
+// SHA-256 of the key the APK is signed with (Fly's upload key
+// C:/Users/AUNG/fly-keys/fly-upload.jks, alias upload - see
+// android/app/build.gradle.kts). Once Fly is on Google Play, Play signs
+// the app with ITS OWN key: add that fingerprint (Play Console -> Test and
+// release -> App integrity -> App signing key certificate -> SHA-256) as
+// the Worker Variable ANDROID_SHA256_EXTRA (comma-separated) - no code
+// change needed.
+const ANDROID_UPLOAD_SHA256 =
+  '9C:8A:67:9B:72:8B:DE:FD:A2:82:4F:1A:23:6F:17:9D:D9:AC:8C:A1:2F:61:A5:79:10:2D:E2:16:92:E5:B7:D9';
+const ANDROID_PACKAGES = ['com.aungdev.fly', 'com.aungdev.fly.dev'];
+
+function assetLinks(env) {
+  const prints = [ANDROID_UPLOAD_SHA256, ...String(env.ANDROID_SHA256_EXTRA || '')
+    .split(',')
+    .map((x) => x.trim().toUpperCase())
+    .filter((x) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(x))];
+  return ANDROID_PACKAGES.map((pkg) => ({
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: {
+      namespace: 'android_app',
+      package_name: pkg,
+      sha256_cert_fingerprints: [...new Set(prints)],
+    },
+  }));
+}
+
+function authActionPage(url) {
+  const mode = url.searchParams.get('mode') || '';
+  const oobCode = url.searchParams.get('oobCode') || '';
+  const apiKey = url.searchParams.get('apiKey') || '';
+  const data = {
+    mode: /^[a-zA-Z]{1,40}$/.test(mode) ? mode : '',
+    oobCode: /^[A-Za-z0-9_-]{10,400}$/.test(oobCode) ? oobCode : '',
+    apiKey: /^[A-Za-z0-9_-]{20,80}$/.test(apiKey) ? apiKey : '',
+  };
+  // JSON inside <script>: escape "<" so nothing can close the tag.
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  return new Response(AUTH_ACTION_PAGE_HTML.replace('__FLY_AUTH_DATA__', json), {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy':
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; " +
+        'font-src https://fonts.gstatic.com; connect-src https://identitytoolkit.googleapis.com; ' +
+        "img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    },
+  });
+}
+
+const AUTH_ACTION_PAGE_HTML = String.raw`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Fly - New password</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root { --pink:#FF4B6E; --purple:#9C4DFF; --blue:#3A8DFF; --bg:#07060b;
+    --card:rgba(255,255,255,0.06); --line:rgba(255,255,255,0.12); --text:#f4f2fa; --muted:#a8a3b8; }
+  * { box-sizing:border-box; } html,body { margin:0; }
+  body { min-height:100vh; color:var(--text); background:var(--bg);
+    font-family:Poppins, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height:1.6;
+    display:flex; align-items:center; justify-content:center; padding:20px 16px; }
+  .glow { position:fixed; inset:-20%; z-index:0; pointer-events:none;
+    background: radial-gradient(40% 35% at 20% 15%, rgba(255,75,110,.35), transparent 70%),
+      radial-gradient(40% 35% at 85% 25%, rgba(156,77,255,.35), transparent 70%),
+      radial-gradient(45% 40% at 50% 95%, rgba(58,141,255,.30), transparent 70%); filter:blur(10px); }
+  .card { position:relative; z-index:1; width:100%; max-width:420px; background:var(--card);
+    border:1px solid var(--line); border-radius:26px; padding:28px 22px;
+    backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); text-align:center; }
+  .logo { font-weight:800; font-size:34px; letter-spacing:1px;
+    background:linear-gradient(90deg,var(--pink),var(--purple),var(--blue));
+    -webkit-background-clip:text; background-clip:text; color:transparent; }
+  h1 { font-size:22px; margin:8px 0 4px; } .sub { color:var(--muted); margin:0 0 18px; font-size:14px; word-break:break-word; }
+  label { display:block; text-align:left; font-size:13px; color:var(--muted); margin:12px 0 6px; }
+  .field { position:relative; }
+  input { width:100%; padding:14px 46px 14px 14px; border-radius:14px; border:1px solid var(--line);
+    background:rgba(255,255,255,0.05); color:var(--text); font:inherit; font-size:16px; outline:none; }
+  input:focus { border-color:var(--purple); }
+  .eye { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:0;
+    color:var(--muted); font-size:13px; cursor:pointer; padding:8px; }
+  .btn { width:100%; margin-top:20px; padding:14px; border:0; border-radius:16px; color:#fff; font:inherit;
+    font-weight:700; font-size:16px; cursor:pointer;
+    background:linear-gradient(90deg,var(--pink),var(--purple),var(--blue)); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .err { color:#ff9aa9; font-size:14px; margin-top:12px; min-height:20px; }
+  .icon { font-size:46px; margin:6px 0; }
+  .hint { color:var(--muted); font-size:12.5px; margin-top:16px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="card">
+  <div class="logo">Fly</div>
+
+  <div id="loading"><p class="sub">Checking your link...</p></div>
+
+  <form id="form" class="hide" autocomplete="off">
+    <h1>Set a new password</h1>
+    <p class="sub" id="forEmail"></p>
+    <label for="p1">New password</label>
+    <div class="field"><input id="p1" type="password" minlength="6" autocomplete="new-password" required>
+      <button type="button" class="eye" data-for="p1">Show</button></div>
+    <label for="p2">Type it again</label>
+    <div class="field"><input id="p2" type="password" minlength="6" autocomplete="new-password" required>
+      <button type="button" class="eye" data-for="p2">Show</button></div>
+    <div class="err" id="formErr"></div>
+    <button class="btn" id="save" type="submit">Save new password</button>
+    <p class="hint">At least 6 characters. Don't use the same password as your email.</p>
+  </form>
+
+  <div id="done" class="hide">
+    <div class="icon">✅</div>
+    <h1>Password changed</h1>
+    <p class="sub">Open the Fly app and log in with your new password.</p>
+  </div>
+
+  <div id="bad" class="hide">
+    <div class="icon">⏰</div>
+    <h1 id="badTitle">This link has expired</h1>
+    <p class="sub" id="badText">Reset links work once and only for a short time. In the Fly app, tap "Forgot password?" to get a new one.</p>
+  </div>
+</div>
+<script>
+(function () {
+  var D = __FLY_AUTH_DATA__;
+  var API = 'https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=';
+  function $(id) { return document.getElementById(id); }
+  function show(id) { ['loading', 'form', 'done', 'bad'].forEach(function (x) { $(x).classList.toggle('hide', x !== id); }); }
+  function bad(title, text) { $('badTitle').textContent = title; if (text) $('badText').textContent = text; show('bad'); }
+  function call(body) {
+    return fetch(API + encodeURIComponent(D.apiKey), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
+  }
+  function msg(code) {
+    code = String(code || '');
+    if (code.indexOf('EXPIRED_OOB_CODE') === 0 || code.indexOf('INVALID_OOB_CODE') === 0) return 'expired';
+    if (code.indexOf('WEAK_PASSWORD') === 0) return 'Please use at least 6 characters.';
+    if (code.indexOf('USER_DISABLED') === 0) return 'This account has been closed.';
+    return 'Something went wrong. Please try again.';
+  }
+  if (D.mode !== 'resetPassword') {
+    bad('Open the Fly app', 'This link only works inside the Fly app.');
+    return;
+  }
+  if (!D.oobCode || !D.apiKey) { bad('This link is broken', 'Please open the newest reset email again, or ask for a new one in the Fly app.'); return; }
+  call({ oobCode: D.oobCode }).then(function (r) {
+    if (!r.ok) { var m = msg(r.j && r.j.error && r.j.error.message); if (m === 'expired') bad('This link has expired'); else bad('Something went wrong', m); return; }
+    $('forEmail').textContent = r.j.email ? 'for ' + r.j.email : '';
+    show('form'); $('p1').focus();
+  }).catch(function () { bad('No connection', 'Check your internet and open the link again.'); });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.eye'), function (b) {
+    b.addEventListener('click', function () {
+      var i = $(b.getAttribute('data-for')); var on = i.type === 'password';
+      i.type = on ? 'text' : 'password'; b.textContent = on ? 'Hide' : 'Show';
+    });
+  });
+
+  $('form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var p1 = $('p1').value, p2 = $('p2').value;
+    if (p1.length < 6) { $('formErr').textContent = 'Please use at least 6 characters.'; return; }
+    if (p1 !== p2) { $('formErr').textContent = "The two passwords don't match."; return; }
+    $('formErr').textContent = ''; $('save').disabled = true; $('save').textContent = 'Saving...';
+    call({ oobCode: D.oobCode, newPassword: p1 }).then(function (r) {
+      if (r.ok) { show('done'); return; }
+      var m = msg(r.j && r.j.error && r.j.error.message);
+      if (m === 'expired') { bad('This link has expired'); return; }
+      $('formErr').textContent = m; $('save').disabled = false; $('save').textContent = 'Save new password';
+    }).catch(function () {
+      $('formErr').textContent = 'No connection - please try again.';
+      $('save').disabled = false; $('save').textContent = 'Save new password';
+    });
+  });
+})();
+</script>
+</body>
+</html>
+`;
 
 // Child Safety Standards page (1 Nov 2026), GET /child-safety. Google
 // Play's Child Safety Standards policy (all Social apps): a public page

@@ -12,6 +12,7 @@ import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 import 'screens/account_closed.dart';
 import 'screens/app_update.dart';
+import 'screens/new_password_screen.dart' show AuthLinks;
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
 
@@ -170,6 +171,9 @@ void main() async {
   // even if the app is cold-starting because of that exact tap.
   CallKitService.initListener();
   runApp(const FlyApp());
+  // 6 Nov 2026: the password-reset email link opens Fly's own "New
+  // password" screen (screens/new_password_screen.dart).
+  AuthLinks.init(_navigatorKey);
   // Notification permission setup doesn't need to finish before the user
   // sees a screen - running it after runApp() (instead of awaiting it
   // first) shaves the delay off every app launch.
