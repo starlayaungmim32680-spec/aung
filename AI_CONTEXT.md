@@ -1419,13 +1419,16 @@ OK). Play Console: Terms URL =
 > template (fly-dev): Sender name `Fly`. Root `.gitignore` got `*.apk`.
 > APK: `FlyDev-bn263110006.apk` (244 s, first build with the upload key).
 > Ko on dev: OK (link in Gmail -> Fly Dev -> New password -> signed in).
-> **Prod still to do (next session):** (1) deploy the Worker to
-> livekit-token-worker, (2) `cd firebase_hosting; firebase deploy --only
-> hosting --project aung-1756e; cd ..` + check
-> `https://aung-1756e.firebaseapp.com/.well-known/assetlinks.json`, (3)
-> Firebase aung-1756e -> Templates: Sender name `Fly` (optional Reply to
-> chakaboycom@gmail.com), (4) prod APK (UNINSTALL the old Fly first -
-> new key), test the reset link on prod. **At Play Console time:** add
+> **Prod DONE 7 Nov 2026 (confirmed by Ko):** Worker deployed to
+> livekit-token-worker; `firebase deploy --only hosting --project
+> aung-1756e` (assetlinks.json checked in the browser); aung-1756e ->
+> Templates -> Password reset: Sender name `Fly`, Reply to
+> chakaboycom@gmail.com (action URL left as Firebase's); prod APK
+> `Fly-bn263110038.apk` (230 s, upload key - checked with apksigner:
+> SHA-256 9c8a679b...92e5b7d9), old Fly uninstalled first, reset link ->
+> Fly -> New password -> signed in. The deploy cache
+> `firebase_hosting/.firebase/` is now gitignored (it was committed once
+> in 7985bfb, removed with git rm --cached). **At Play Console time:** add
 > Play's App signing key SHA-256 to `firebase_hosting/public/.well-known/
 > assetlinks.json` (redeploy both projects) and to the Worker Variable
 > `ANDROID_SHA256_EXTRA`, or App Links stop working for Play installs._
@@ -3516,9 +3519,11 @@ of the string check. Why: stale APKs cost whole evenings on 9, 10, 12,
   these numbers. `yyDDDHHmm` only grows until 2099 and stays under Play's
   2,100,000,000 limit. Never go back to `MMddHHmm`. Since 6 Nov 2026
   release builds are signed with Fly's upload key (needs
-  `android/key.properties` + `C:\Users\AUNG\fly-keys\fly-upload.jks`;
-  optional check `keytool -printcert -jarfile <apk> | Select-String
-  SHA256` = 9C:8A:67:...:B7:D9). Dev:
+  `android/key.properties` + `C:\Users\AUNG\fly-keys\fly-upload.jks`).
+  Optional key check (NOT `keytool -printcert -jarfile` - it only reads
+  old v1 signatures and prints nothing for Fly's v2/v3 APKs):
+  `$as = Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Recurse -Filter apksigner.bat | Select-Object -Last 1; & $as.FullName verify --print-certs <apk> | Select-String "SHA-256"`
+  = `9c8a679b728bdefda2824f1a236f179dd9ac8ca12f61a579102de21692e5b7d9`. Dev:
   `$d = Get-Date; $bn = '{0:yy}{1:D3}{0:HHmm}' -f $d, $d.DayOfYear; flutter build apk --release --flavor dev --build-number=$bn; Copy-Item build\app\outputs\flutter-apk\app-dev-release.apk "FlyDev-bn$bn.apk" -Force; Write-Output "FlyDev-bn$bn.apk"`
   Prod: the same with `--flavor prod`, `app-prod-release.apk` and
   `"Fly-bn$bn.apk"`. The printed name must contain the number.

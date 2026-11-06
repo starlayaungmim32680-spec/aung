@@ -48,3 +48,5 @@ app.*.map.json
 
 # Built APKs copied to the repo folder by the APK recipe (AI_CONTEXT §7 5b)
 *.apk
+# Firebase CLI deploy cache
+firebase_hosting/.firebase/
