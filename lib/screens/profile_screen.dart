@@ -16,47 +16,10 @@ import 'video_call_screen.dart' show kTokenServerUrl;
 import 'worker_auth.dart';
 import 'moderation_service.dart';
 import 'password_reset.dart';
+import 'sky_pass.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
-
-  Future<void> _logout(BuildContext context) async {
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: const Text('Log out of Fly?',
-            style: TextStyle(color: Colors.white)),
-        content: const Text(
-          "You'll need to sign in again to use Fly. If you're trying to "
-          'switch to a different account, logging out and signing back in '
-          'with another email is how to do that.',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Log out',
-                style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    await FirebaseAuth.instance.signOut();
-    if (context.mounted) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-        (route) => false,
-      );
-    }
-  }
 
   // Asks the Worker's /delete-my-media to delete my files on Bunny, in
   // rounds (it deletes up to 40 per call) until it says done - at most 25
@@ -663,38 +626,21 @@ class ProfileScreen extends StatelessWidget {
     }
   }
 
-  // A single stat column (value on top, label below)
-  Widget _profileStat(String value, String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      child: Column(
-        children: [
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Text(
-            label,
-            style: TextStyle(color: Colors.grey[500], fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final String email = user?.email ?? 'Unknown user';
+    // The AppBar takes the top colour of the sky under it (Sky Pass).
+    final Color skyTop = skyTopColor(skyPhaseFor(DateTime.now()));
 
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: Colors.black,
+        backgroundColor: skyTop,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
         title: const Text('Profile', style: TextStyle(color: Colors.white)),
         actions: [
           IconButton(
@@ -713,10 +659,6 @@ class ProfileScreen extends StatelessWidget {
               context,
               MaterialPageRoute(builder: (_) => const SavedVideosScreen()),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.white),
-            onPressed: () => _logout(context),
           ),
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
@@ -816,6 +758,58 @@ class ProfileScreen extends StatelessWidget {
 
                   return CustomScrollView(
                     slivers: [
+                      // 7 Nov 2026 - Sky Pass: live sky (my phone's
+                      // time), my Sky Note as a cloud, and my Fly Pass.
+                      SliverToBoxAdapter(
+                        child: SkyPassHeader(
+                          thought: ThoughtCloud(
+                            text: skyNoteText,
+                            createdAt: skyNoteCreatedAt,
+                            onTap: () => _editSkyNote(context, skyNoteText),
+                          ),
+                          pass: StreamBuilder<QuerySnapshot>(
+                            stream: FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(user?.uid ?? 'none')
+                                .collection('followers')
+                                .snapshots(),
+                            builder: (context, followersSnap) {
+                              return StreamBuilder<QuerySnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(user?.uid ?? 'none')
+                                    .collection('following')
+                                    .snapshots(),
+                                builder: (context, followingSnap) {
+                                  return FlyPassCard(
+                                    uid: user?.uid ?? '',
+                                    name: displayName,
+                                    photoUrl: photoUrl,
+                                    flyingSince: user?.metadata.creationTime,
+                                    posts: postCount,
+                                    followers:
+                                        followersSnap.data?.docs.length ?? 0,
+                                    following:
+                                        followingSnap.data?.docs.length ?? 0,
+                                    onEdit: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              EditProfileScreen(
+                                            currentName: displayName,
+                                            currentPhotoUrl: photoUrl,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                       if (memoryDoc != null)
                         SliverToBoxAdapter(
                           child: _MemoryBanner(
@@ -836,135 +830,6 @@ class ProfileScreen extends StatelessWidget {
                             },
                           ),
                         ),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Column(
-                            children: [
-                              // Avatar with a gradient ring
-                              Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      Color(0xFFFF4B6E),
-                                      Color(0xFF9C4DFF)
-                                    ],
-                                  ),
-                                ),
-                                child: CircleAvatar(
-                                  radius: 44,
-                                  backgroundColor: Colors.grey[850],
-                                  backgroundImage:
-                                      (photoUrl != null && photoUrl.isNotEmpty)
-                                          ? NetworkImage(photoUrl)
-                                          : null,
-                                  child: (photoUrl == null || photoUrl.isEmpty)
-                                      ? Text(
-                                          displayName.isNotEmpty
-                                              ? displayName[0].toUpperCase()
-                                              : '?',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 36,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        )
-                                      : null,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              Text(
-                                displayName,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                email,
-                                style: TextStyle(
-                                    color: Colors.grey[500], fontSize: 13),
-                              ),
-                              const SizedBox(height: 10),
-                              // "Sky Note": a short thought that floats
-                              // near your photo like a little cloud - Fly's
-                              // own take on a status, instead of a plain
-                              // permanent bio line. Fades away on its own
-                              // after 24 hours, the same as a story.
-                              SkyNoteBubble(
-                                text: skyNoteText,
-                                createdAt: skyNoteCreatedAt,
-                                onTap: () => _editSkyNote(context, skyNoteText),
-                              ),
-                              const SizedBox(height: 16),
-                              // Edit profile button
-                              OutlinedButton.icon(
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => EditProfileScreen(
-                                        currentName: displayName,
-                                        currentPhotoUrl: photoUrl,
-                                      ),
-                                    ),
-                                  );
-                                },
-                                icon: const Icon(Icons.edit,
-                                    size: 16, color: Colors.white),
-                                label: const Text('Edit Profile',
-                                    style: TextStyle(color: Colors.white)),
-                                style: OutlinedButton.styleFrom(
-                                  side: const BorderSide(color: Colors.white38),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              // Stats: Posts / Followers / Following
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  _profileStat('$postCount', 'Posts'),
-                                  StreamBuilder<QuerySnapshot>(
-                                    stream: FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(user?.uid ?? 'none')
-                                        .collection('followers')
-                                        .snapshots(),
-                                    builder: (context, snap) {
-                                      final int c = snap.hasData
-                                          ? snap.data!.docs.length
-                                          : 0;
-                                      return _profileStat('$c', 'Followers');
-                                    },
-                                  ),
-                                  StreamBuilder<QuerySnapshot>(
-                                    stream: FirebaseFirestore.instance
-                                        .collection('users')
-                                        .doc(user?.uid ?? 'none')
-                                        .collection('following')
-                                        .snapshots(),
-                                    builder: (context, snap) {
-                                      final int c = snap.hasData
-                                          ? snap.data!.docs.length
-                                          : 0;
-                                      return _profileStat('$c', 'Following');
-                                    },
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 20),
-                              const Divider(color: Colors.white12, height: 1),
-                            ],
-                          ),
-                        ),
-                      ),
                       if (isLoading)
                         const SliverFillRemaining(
                           hasScrollBody: false,

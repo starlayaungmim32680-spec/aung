@@ -1433,6 +1433,39 @@ OK). Play Console: Terms URL =
 > assetlinks.json` (redeploy both projects) and to the Worker Variable
 > `ANDROID_SHA256_EXTRA`, or App Links stop working for Play installs._
 >
+> _7 Nov 2026 - **Sky Pass profile, Phase 1** (confirmed by Ko on DEV,
+> `FlyDev-bn263111502.apk`, 308 s; 5c NEW `Flying since ` True / OLD
+> `Could not send reset email - try again.` False). Ko wanted his own
+> profile to look like no other app; he picked "A (Sky) + C (Fly Pass)"
+> combined, and asked that the time works per country (world app). New
+> `lib/screens/sky_pass.dart`: `SkyBackdrop` (animated sky by the
+> phone's clock - dawn 05-10, day 10-16, evening 16-19, night 19-05; sun
+> / crescent moon, drifting clouds, twinkling stars at night, a small Fly
+> plane with a contrail crossing every 48 s; re-checks the phase every
+> minute), `SkyClockChip` ("Daytime sky - 15:20"), `ThoughtCloud` (Sky
+> Note as a white cloud with thinking puffs; "+ Share a thought" when
+> empty on my own profile), `FlyPassCard` (glass boarding pass: photo,
+> PASSENGER name, "Flying since <Mon yyyy>" from Firebase Auth
+> `metadata.creationTime` - users docs have no createdAt; POSTS /
+> FOLLOWERS / FOLLOWING; dashed tear line with notches; SEAT `flySeatFor`
+> + FLIGHT `flyCodeFor` = FNV hash of the uid, always the same for one
+> person; decorative QR; Edit pill -> EditProfileScreen),
+> `SkyPassHeader`, `skyPhaseFor`, `skyTimeFor(offsetMinutes)`,
+> `skyTopColor` (AppBar = sky top colour), `saveMyTimezoneOffset`.
+> profile_screen.dart: header replaced by the Sky Pass, email no longer
+> shown, Logout icon removed from the AppBar (now 🪙 / 🔖 / ⚙ / ⋮), "On
+> this day" banner moved under the pass, `_profileStat` / `_logout`
+> removed. settings_screen.dart: red **Log out** row at the bottom (with
+> my email under it, same confirm dialog). main.dart `_ensureUserDoc`:
+> new docs get `tzOffsetMin`, existing docs are updated only when the
+> offset changed (owner write, no rules change). `SkyNoteBubble` stays
+> for public_profile_screen.dart until Phase 3. **Next:** Phase 2 =
+> share the pass as an image with a real QR (qr_flutter + share_plus);
+> Phase 3 = other people's profiles in the OWNER's sky (`tzOffsetMin`,
+> fallback = viewer's time) + "Flying since" from `termsAcceptedAt`. Ko
+> asked (7 Nov) about real weather in the sky (rain / clouds / sun) -
+> options discussed, not built yet._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2434,7 +2467,13 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   and the `isUserOnline(userData)` helper (`isOnline == true` **and**
   `lastActive` within the last 60 seconds) used by both the Chat list and
   Profile screens.
-- `screens/settings_screen.dart` — small settings hub (Blocked accounts and,
+- `screens/sky_pass.dart` **(7 Nov 2026)** — Sky Pass profile header:
+  `SkyBackdrop`, `SkyClockChip`, `ThoughtCloud`, `FlyPassCard`,
+  `SkyPassHeader`, `skyPhaseFor` / `skyTimeFor(offsetMinutes)` (dawn
+  05-10, day 10-16, evening 16-19, night 19-05), `flySeatFor` /
+  `flyCodeFor` (from the uid), `saveMyTimezoneOffset` (users.tzOffsetMin).
+- `screens/settings_screen.dart` — small settings hub (Account status,
+  Blocked accounts, Child safety, **Log out** since 7 Nov 2026 and,
   since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling
   onto `profile_screen.dart`'s 3-dot menu). Opened via a gear icon in
   `profile_screen.dart`'s AppBar.
@@ -2718,12 +2757,14 @@ position)` — Android drops the video surface in the background and a
   and `checkImage(bytes)` -> Worker `POST /moderate-image`; pictures fail
   CLOSED (`unchecked`). Kinds: name, skyNote, caption, comment,
   liveComment, liveTitle, video, photo.
-- `screens/profile_screen.dart` — own profile: avatar, name, Edit Profile,
-  stats (Posts / Followers / Following), video grid (tap = open viewer,
+- `screens/profile_screen.dart` — own profile. Since 7 Nov 2026 the header
+  is the **Sky Pass** (`sky_pass.dart`: live sky by the phone's time, Sky
+  Note as a cloud, glass Fly Pass with photo, name, Flying since, Posts /
+  Followers / Following, seat + flight code, Edit pill; no email shown),
+  then the video grid (tap = open viewer,
   long-press = delete own post), TikTok-style view count on each thumbnail.
-  AppBar has Wallet, **Saved** (bookmark icon), **Logout** (behind a
-  confirmation dialog), a
-  **Settings** gear icon (→ `settings_screen.dart`), and a 3-dot menu
+  AppBar (sky-coloured) has Wallet, **Saved** (bookmark icon), a
+  **Settings** gear icon (Log out moved into Settings on 7 Nov 2026) (→ `settings_screen.dart`), and a 3-dot menu
   (**Delete account** — has a confirmation dialog + password
   re-authentication). Also contains `EditProfileScreen` (edit name + profile
   photo via Camera or Gallery → uploads to **Bunny Storage**, see §3).
@@ -3042,7 +3083,10 @@ screen needs to be created from scratch — it may already exist there.)_
 
 - `users/{uid}`: { displayName, photoUrl, email, fcmToken, isOnline,
   lastActive, hasSeenOnboarding, sawSwipeHint, skyNoteText,
-  skyNoteCreatedAt } (+ coin fields, see Gifting/live below)
+  skyNoteCreatedAt, tzOffsetMin } (+ coin fields, see Gifting/live below)
+  - `tzOffsetMin` (7 Nov 2026): my UTC offset in minutes (e.g. 480 for
+    Malaysia), written by main.dart `_ensureUserDoc` when it changes -
+    for the Sky Pass (Phase 3: show a profile in its owner's sky).
   - `users/{uid}/followers/{id}`, `users/{uid}/following/{id}`: { createdAt }
   - `users/{uid}/notifications/{id}`: { type, text, fromId, fromName, fromPhoto,
     postId?, seen, createdAt }

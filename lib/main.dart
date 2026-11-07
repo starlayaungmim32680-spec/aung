@@ -15,6 +15,7 @@ import 'screens/app_update.dart';
 import 'screens/new_password_screen.dart' show AuthLinks;
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
+import 'screens/sky_pass.dart' show saveMyTimezoneOffset;
 
 // Handles an incoming-call push while the app is backgrounded or fully
 // closed. Must be a top-level function (not a class method/closure) and
@@ -246,7 +247,12 @@ class AuthGate extends StatelessWidget {
                 : emailName,
         'photoUrl': '',
         'email': user.email,
+        'tzOffsetMin': DateTime.now().timeZoneOffset.inMinutes,
       });
+    } else {
+      // 7 Nov 2026 (Sky Pass): keep my time zone fresh (travel, summer
+      // time) so my profile can show my sky to others later.
+      await saveMyTimezoneOffset(user.uid, current: doc.data());
     }
   }
 
