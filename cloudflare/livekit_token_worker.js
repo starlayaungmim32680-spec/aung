@@ -416,6 +416,10 @@ export default {
     if (path === '/delete-my-media') {
       return handleDeleteMyMedia(body, env, caller);
     }
+    // 7 Nov 2026 (Sky Pass): real weather for MY profile's sky.
+    if (path === '/weather') {
+      return handleWeather(request, env, url);
+    }
     if (path === '/search-index-post') {
       return handleSearchIndexPost(body, env, caller);
     }
@@ -5248,7 +5252,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
 <div class="wrap">
   <div class="logo">Fly</div>
   <h1>Privacy Policy</h1>
-  <p class="sub">Last updated: 22 October 2026</p>
+  <p class="sub">Last updated: 7 November 2026</p>
   <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a><a href="/child-safety">Child Safety</a></div>
   
   <section>
@@ -5274,6 +5278,8 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li><b>Photos / files</b> you choose to upload.</li>
       <li><b>Notification token</b> (Firebase Cloud Messaging) so we can send you notifications such as messages, calls and friend requests.</li>
       <li><b>Online status:</b> whether you are online and when you were last active.</li>
+      <li><b>Time zone:</b> your phone's time zone (for example UTC+8), so your profile's sky can follow your local time.</li>
+      <li><b>Weather on your profile:</b> to show the weather in your own profile's sky, our server uses the approximate area of your internet connection (rounded to about 10 km) to ask MET Norway for the weather there. This area is not saved and is not shown to anyone.</li>
     </ul>
     <p>We do not collect your precise location, contacts or advertising ID.</p>
   </div>
@@ -5299,6 +5305,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li><b>Cloudflare</b> - our server (Workers) and the search index (D1).</li>
       <li><b>LiveKit</b> - real-time audio/video for calls and live streams.</li>
       <li><b>OpenAI</b> - automatic safety checks of text you post (its moderation service only; private chat messages are not sent).</li>
+      <li><b>MET Norway</b> (the Norwegian Meteorological Institute) - weather data for the profile sky; it only receives a rounded area, never who you are.</li>
     </ul>
     <p>Your profile, videos and comments are visible to other Fly users according to how the feature works (for example, posts are public; messages are only between you and the other person). We may also share information when the law requires it, or to protect the safety of Fly and its users.</p>
   </div>
@@ -5495,6 +5502,133 @@ const TERMS_PAGE_HTML = String.raw`<!doctype html>
 </body>
 </html>
 `;
+// ---------------------------------------------------------------------
+// POST /weather (7 Nov 2026) - Sky Pass: the real weather in the sky of
+// MY OWN profile (lib/screens/sky_pass.dart, WeatherService).
+// ---------------------------------------------------------------------
+// Where: Cloudflare's own guess from the caller's internet connection
+// (request.cf.latitude / longitude) - no location permission in the app.
+// Rounded to 0.1 degree (about 10 km) BEFORE anything else, and never
+// saved or sent back to the app - only the weather is. (With a VPN the
+// guess is the VPN's country; that is OK for a decoration.)
+// Weather: MET Norway Locationforecast 2.0 (free, commercial use allowed,
+// CC BY 4.0 - the app shows "Data: MET Norway"). Their terms: identify
+// the app in User-Agent, cache, don't ask more often than needed. So one
+// answer per ~10 km square is kept 30 min: in this Worker's memory, and
+// in D1 (table weather_cache in SEARCH_DB) when it is there.
+// Answer: { condition, tempC } - condition is one of clear, partly,
+// cloudy, rain, thunder, fog, snow, unknown.
+const WEATHER_TTL_MS = 30 * 60 * 1000;
+const weatherMemory = new Map(); // key -> { at, data }
+let weatherTableReady = false;
+
+function weatherConditionFrom(symbol) {
+  const s = String(symbol || '');
+  if (!s) return 'unknown';
+  if (s.includes('thunder')) return 'thunder';
+  if (s.includes('snow') || s.includes('sleet')) return 'snow';
+  if (s.includes('rain')) return 'rain';
+  if (s.includes('fog')) return 'fog';
+  if (s.startsWith('partlycloudy')) return 'partly';
+  if (s.startsWith('cloudy')) return 'cloudy';
+  if (s.startsWith('clearsky') || s.startsWith('fair')) return 'clear';
+  return 'unknown';
+}
+
+async function handleWeather(request, env, url) {
+  const cf = request.cf || {};
+  const lat = Number(cf.latitude);
+  const lon = Number(cf.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return jsonResponse({ condition: 'unknown' });
+  }
+  const rLat = (Math.round(lat * 10) / 10).toFixed(1);
+  const rLon = (Math.round(lon * 10) / 10).toFixed(1);
+  const key = `${rLat},${rLon}`;
+  const now = Date.now();
+
+  // 1) This Worker's memory
+  const mem = weatherMemory.get(key);
+  if (mem && now - mem.at < WEATHER_TTL_MS) return jsonResponse(mem.data);
+
+  // 2) D1
+  const db = env.SEARCH_DB;
+  if (db) {
+    try {
+      if (!weatherTableReady) {
+        await db.prepare(
+          'CREATE TABLE IF NOT EXISTS weather_cache (k TEXT PRIMARY KEY, data TEXT NOT NULL, at INTEGER NOT NULL)',
+        ).run();
+        weatherTableReady = true;
+      }
+      const row = await db
+        .prepare('SELECT data, at FROM weather_cache WHERE k = ?1')
+        .bind(key)
+        .first();
+      if (row && now - Number(row.at) < WEATHER_TTL_MS) {
+        const data = JSON.parse(row.data);
+        weatherMemory.set(key, { at: Number(row.at), data });
+        return jsonResponse(data);
+      }
+    } catch (_) {
+      // D1 trouble: just ask MET Norway.
+    }
+  }
+
+  // 3) MET Norway
+  let data = { condition: 'unknown' };
+  try {
+    const res = await fetch(
+      `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${rLat}&lon=${rLon}`,
+      {
+        headers: {
+          'User-Agent': `FlyApp/1.0 ${url.origin}/privacy`,
+          Accept: 'application/json',
+        },
+      },
+    );
+    if (!res.ok) return jsonResponse(data);
+    const j = await res.json();
+    const series = (j && j.properties && j.properties.timeseries) || [];
+    // The newest hour that has already started (MET's list begins at the
+    // current hour, but be safe).
+    let pick = series[0];
+    for (const t of series) {
+      if (Date.parse(t.time) <= now) pick = t;
+      else break;
+    }
+    if (pick && pick.data) {
+      const d = pick.data;
+      const symbol =
+        (d.next_1_hours && d.next_1_hours.summary && d.next_1_hours.summary.symbol_code) ||
+        (d.next_6_hours && d.next_6_hours.summary && d.next_6_hours.summary.symbol_code) ||
+        '';
+      const temp = d.instant && d.instant.details && d.instant.details.air_temperature;
+      data = { condition: weatherConditionFrom(symbol) };
+      if (Number.isFinite(temp)) data.tempC = Math.round(temp);
+    }
+  } catch (_) {
+    return jsonResponse(data);
+  }
+
+  if (data.condition !== 'unknown') {
+    weatherMemory.set(key, { at: now, data });
+    if (weatherMemory.size > 500) weatherMemory.clear();
+    if (db) {
+      try {
+        await db
+          .prepare(
+            'INSERT INTO weather_cache (k, data, at) VALUES (?1, ?2, ?3) ' +
+              'ON CONFLICT(k) DO UPDATE SET data = excluded.data, at = excluded.at',
+          )
+          .bind(key, JSON.stringify(data), now)
+          .run();
+      } catch (_) {}
+    }
+  }
+  return jsonResponse(data);
+}
+
 // GET /app-version (2 Nov 2026) - see the route.
 function appVersionInfo(env) {
   const num = (v) => {

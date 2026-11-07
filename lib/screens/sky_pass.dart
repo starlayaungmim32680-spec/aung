@@ -16,11 +16,24 @@
 // [saveMyTimezoneOffset] keeps users/{uid}.tzOffsetMin up to date, so
 // Phase 3 can show another person's profile in THEIR sky.
 // Phase 2 (later): share the pass as an image with a real QR.
+//
+// Weather (7 Nov 2026, Ko: "rain -> show rain, clouds -> clouds, sun ->
+// sun"): on MY OWN profile the sky also shows the real weather where I
+// am - [WeatherService] asks the Worker's POST /weather (Cloudflare's
+// guess of my area from my internet connection, no location permission,
+// MET Norway data, 30 min cache). Conditions: clear, partly, cloudy,
+// rain, thunder, fog, snow. Other people's profiles never show weather
+// (it would hint where they are). Dev app only: long-press the sky chip
+// to cycle through every weather for testing.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import '../app_config.dart';
+import 'worker_auth.dart';
 
 // ---------------------------------------------------------------------
 // Sky phases
@@ -80,7 +93,124 @@ const Map<SkyPhase, _SkyLook> _looks = {
 };
 
 /// Top colour of the sky right now (for the AppBar above it).
-Color skyTopColor(SkyPhase phase) => _looks[phase]!.colors.first;
+Color skyTopColor(SkyPhase phase, [SkyWeather? weather]) =>
+    _skyColors(phase, weather ?? SkyWeather.unknown).first;
+
+/// The phase colours, turned grey by bad weather.
+List<Color> _skyColors(SkyPhase phase, SkyWeather w) {
+  final List<Color> base = _looks[phase]!.colors;
+  const Map<SkyWeather, double> amount = {
+    SkyWeather.partly: 0.12,
+    SkyWeather.cloudy: 0.5,
+    SkyWeather.rain: 0.6,
+    SkyWeather.thunder: 0.7,
+    SkyWeather.fog: 0.55,
+    SkyWeather.snow: 0.45,
+  };
+  final double k = amount[w] ?? 0;
+  if (k == 0) return base;
+  late Color grey;
+  if (phase == SkyPhase.night) {
+    grey = const Color(0xFF12151C);
+  } else {
+    switch (w) {
+      case SkyWeather.thunder:
+        grey = const Color(0xFF3B414D);
+        break;
+      case SkyWeather.rain:
+        grey = const Color(0xFF5E6775);
+        break;
+      case SkyWeather.fog:
+        grey = const Color(0xFF9AA2AD);
+        break;
+      case SkyWeather.snow:
+        grey = const Color(0xFFA9B3C0);
+        break;
+      case SkyWeather.partly:
+        grey = const Color(0xFF8A97A8);
+        break;
+      default:
+        grey = const Color(0xFF7A8391);
+    }
+  }
+  return [for (final Color c in base) Color.lerp(c, grey, k)!];
+}
+
+// ---------------------------------------------------------------------
+// Weather (my own profile only)
+// ---------------------------------------------------------------------
+
+enum SkyWeather { clear, partly, cloudy, rain, thunder, fog, snow, unknown }
+
+class SkyWeatherInfo {
+  final SkyWeather condition;
+  final int? tempC;
+  const SkyWeatherInfo(this.condition, this.tempC);
+}
+
+SkyWeather _weatherFromName(Object? name) {
+  for (final SkyWeather w in SkyWeather.values) {
+    if (w.name == name) return w;
+  }
+  return SkyWeather.unknown;
+}
+
+/// Asks the Worker for the weather where I am, at most every 30 min.
+class WeatherService {
+  WeatherService._();
+
+  static final ValueNotifier<SkyWeatherInfo?> current =
+      ValueNotifier<SkyWeatherInfo?>(null);
+  static const Duration _maxAge = Duration(minutes: 30);
+  static DateTime? _fetchedAt;
+  static bool _busy = false;
+  static bool _testing = false;
+
+  static Future<void> refresh() async {
+    if (_busy || _testing) return;
+    final DateTime? at = _fetchedAt;
+    if (at != null && DateTime.now().difference(at) < _maxAge) return;
+    _busy = true;
+    try {
+      final http.Response res = await http
+          .post(
+            Uri.parse('${AppConfig.workerUrl}/weather'),
+            headers: {
+              ...await workerAuthHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          )
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) return;
+      final Object? body = jsonDecode(res.body);
+      if (body is! Map) return;
+      final Object? t = body['tempC'];
+      _fetchedAt = DateTime.now();
+      if (_testing) return;
+      current.value = SkyWeatherInfo(
+        _weatherFromName(body['condition']),
+        t is num ? t.round() : null,
+      );
+    } catch (_) {
+      // Offline / not signed in: keep the plain time-of-day sky.
+    } finally {
+      _busy = false;
+    }
+  }
+
+  /// Dev app only: shows the next weather (long-press the sky chip).
+  static void debugCycle() {
+    if (!AppConfig.isDev) return;
+    _testing = true;
+    final SkyWeather now = current.value?.condition ?? SkyWeather.unknown;
+    final List<SkyWeather> all =
+        SkyWeather.values.where((w) => w != SkyWeather.unknown).toList();
+    final int i = all.indexOf(now);
+    current.value =
+        SkyWeatherInfo(all[(i + 1) % all.length], current.value?.tempC ?? 28);
+  }
+}
 
 // ---------------------------------------------------------------------
 // Time zone
@@ -113,7 +243,10 @@ Future<void> saveMyTimezoneOffset(
 class SkyBackdrop extends StatefulWidget {
   /// UTC offset of the sky's owner; null = this phone's own clock.
   final int? offsetMinutes;
-  const SkyBackdrop({super.key, this.offsetMinutes});
+
+  /// Real weather to draw (null / unknown = just the time-of-day sky).
+  final SkyWeather? weather;
+  const SkyBackdrop({super.key, this.offsetMinutes, this.weather});
 
   @override
   State<SkyBackdrop> createState() => _SkyBackdropState();
@@ -153,12 +286,13 @@ class _SkyBackdropState extends State<SkyBackdrop>
 
   @override
   Widget build(BuildContext context) {
+    final SkyWeather w = widget.weather ?? SkyWeather.unknown;
     return RepaintBoundary(
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 900),
         child: CustomPaint(
-          key: ValueKey(_phase),
-          painter: _SkyPainter(_phase, _anim),
+          key: ValueKey('${_phase.name}-${w.name}'),
+          painter: _SkyPainter(_phase, w, _anim),
           child: const SizedBox.expand(),
         ),
       ),
@@ -168,8 +302,12 @@ class _SkyBackdropState extends State<SkyBackdrop>
 
 class _SkyPainter extends CustomPainter {
   final SkyPhase phase;
+  final SkyWeather weather;
   final Animation<double> t;
-  _SkyPainter(this.phase, this.t) : super(repaint: t);
+  _SkyPainter(this.phase, this.weather, this.t) : super(repaint: t);
+
+  // One loop of the animation = 48 s; "seconds" turns it into time.
+  static const double _loopSeconds = 48;
 
   static final List<Offset> _stars = () {
     final math.Random r = math.Random(7);
@@ -177,11 +315,49 @@ class _SkyPainter extends CustomPainter {
         46, (_) => Offset(r.nextDouble(), r.nextDouble() * 0.75));
   }();
 
+  // x, y start (0..1), length / size, speed
+  static final List<List<double>> _drops = () {
+    final math.Random r = math.Random(11);
+    return List.generate(
+      90,
+      (_) => [
+        r.nextDouble(),
+        r.nextDouble(),
+        10 + r.nextDouble() * 10,
+        0.9 + r.nextDouble() * 0.6,
+      ],
+    );
+  }();
+
+  static final List<List<double>> _flakes = () {
+    final math.Random r = math.Random(23);
+    return List.generate(
+      55,
+      (_) => [
+        r.nextDouble(),
+        r.nextDouble(),
+        1.4 + r.nextDouble() * 2.2,
+        0.08 + r.nextDouble() * 0.1,
+      ],
+    );
+  }();
+
+  bool get _stormy =>
+      weather == SkyWeather.cloudy ||
+      weather == SkyWeather.rain ||
+      weather == SkyWeather.thunder;
+
+  bool get _showSunOrMoon =>
+      weather == SkyWeather.clear ||
+      weather == SkyWeather.partly ||
+      weather == SkyWeather.unknown;
+
   @override
   void paint(Canvas canvas, Size size) {
     final _SkyLook look = _looks[phase]!;
     final Rect rect = Offset.zero & size;
     final double v = t.value;
+    final double seconds = v * _loopSeconds;
 
     // Gradient that melts into the black page at the bottom.
     canvas.drawRect(
@@ -190,16 +366,17 @@ class _SkyPainter extends CustomPainter {
         ..shader = ui.Gradient.linear(
           rect.topCenter,
           rect.bottomCenter,
-          [...look.colors, Colors.black],
+          [..._skyColors(phase, weather), Colors.black],
           [0, 0.45, 0.82, 1],
         ),
     );
 
-    // Stars (night: bright, dawn: a few fading ones).
-    if (phase == SkyPhase.night || phase == SkyPhase.dawn) {
+    // Stars (night: bright, dawn: a few fading ones) - only a clear sky.
+    if (_showSunOrMoon && (phase == SkyPhase.night || phase == SkyPhase.dawn)) {
       final double base = phase == SkyPhase.night ? 0.9 : 0.25;
       for (int i = 0; i < _stars.length; i++) {
         if (phase == SkyPhase.dawn && i.isOdd) continue;
+        if (weather == SkyWeather.partly && i % 3 == 0) continue;
         final double tw =
             0.55 + 0.45 * math.sin(2 * math.pi * (v * (2 + i % 3) + i * 0.37));
         final Offset p =
@@ -212,25 +389,19 @@ class _SkyPainter extends CustomPainter {
       }
     }
 
-    _paintSunOrMoon(canvas, size);
+    if (_showSunOrMoon) _paintSunOrMoon(canvas, size);
 
-    // Clouds drifting right, wrapping around.
-    final Paint cloud = Paint()
-      ..color = Colors.white.withValues(alpha: look.cloudAlpha)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-    const List<List<double>> clouds = [
-      // startX, y, scale, speed
-      [0.05, 0.16, 1.0, 1],
-      [0.55, 0.32, 0.7, 2],
-      [0.85, 0.08, 0.55, 1],
-    ];
-    for (final c in clouds) {
-      final double span = size.width + 160;
-      final double x = ((c[0] + v * c[3]) % 1.0) * span - 80;
-      _cloud(canvas, Offset(x, c[1] * size.height), c[2], cloud);
+    _paintClouds(canvas, size, v, look);
+
+    if (weather == SkyWeather.fog) _paintFog(canvas, size, v);
+    if (weather == SkyWeather.rain || weather == SkyWeather.thunder) {
+      _paintRain(canvas, size, seconds);
     }
-
-    _paintPlane(canvas, size, v);
+    if (weather == SkyWeather.snow) _paintSnow(canvas, size, seconds);
+    if (weather != SkyWeather.thunder && weather != SkyWeather.fog) {
+      _paintPlane(canvas, size, v);
+    }
+    if (weather == SkyWeather.thunder) _paintLightning(canvas, size, seconds);
   }
 
   void _paintSunOrMoon(Canvas canvas, Size size) {
@@ -273,7 +444,83 @@ class _SkyPainter extends CustomPainter {
     if (phase == SkyPhase.night) {
       // Crescent: cover part of the moon with the sky colour.
       canvas.drawCircle(c + Offset(r * 0.55, -r * 0.25), r * 0.92,
-          Paint()..color = _looks[SkyPhase.night]!.colors.first);
+          Paint()..color = _skyColors(SkyPhase.night, weather).first);
+    }
+    // Partly cloudy: one cloud over the sun / moon.
+    if (weather == SkyWeather.partly) {
+      _cloud(
+        canvas,
+        c + Offset(-r * 0.4, r * 0.7),
+        r / 18,
+        Paint()
+          ..color = Colors.white
+              .withValues(alpha: phase == SkyPhase.night ? 0.35 : 0.92)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+      );
+    }
+  }
+
+  void _paintClouds(Canvas canvas, Size size, double v, _SkyLook look) {
+    // startX, y, scale, speed
+    const List<List<double>> all = [
+      [0.05, 0.16, 1.0, 1],
+      [0.55, 0.32, 0.7, 2],
+      [0.85, 0.08, 0.55, 1],
+      [0.30, 0.05, 1.3, 1],
+      [0.70, 0.22, 1.1, 2],
+      [0.15, 0.36, 0.9, 1],
+      [0.45, 0.14, 1.4, 1],
+    ];
+    late int count;
+    late Color color;
+    late double alpha;
+    late double grow;
+    final bool night = phase == SkyPhase.night;
+    switch (weather) {
+      case SkyWeather.partly:
+        count = 5;
+        color = Colors.white;
+        alpha = night ? 0.22 : math.max(look.cloudAlpha, 0.7);
+        grow = 1;
+        break;
+      case SkyWeather.cloudy:
+      case SkyWeather.rain:
+      case SkyWeather.thunder:
+        count = 7;
+        color = night
+            ? const Color(0xFF39404F)
+            : (weather == SkyWeather.cloudy
+                ? const Color(0xFFC9D0DA)
+                : const Color(0xFF8E97A5));
+        alpha = 0.9;
+        grow = 1.35;
+        break;
+      case SkyWeather.snow:
+        count = 6;
+        color = const Color(0xFFE4E9F0);
+        alpha = night ? 0.3 : 0.85;
+        grow = 1.25;
+        break;
+      case SkyWeather.fog:
+        count = 3;
+        color = Colors.white;
+        alpha = 0.25;
+        grow = 1;
+        break;
+      default:
+        count = 3;
+        color = Colors.white;
+        alpha = look.cloudAlpha;
+        grow = 1;
+    }
+    final Paint p = Paint()
+      ..color = color.withValues(alpha: alpha)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, _stormy ? 8 : 6);
+    for (int i = 0; i < count; i++) {
+      final List<double> c = all[i];
+      final double span = size.width + 200;
+      final double x = ((c[0] + v * c[3]) % 1.0) * span - 100;
+      _cloud(canvas, Offset(x, c[1] * size.height), c[2] * grow, p);
     }
   }
 
@@ -282,6 +529,95 @@ class _SkyPainter extends CustomPainter {
         Rect.fromCenter(center: o, width: 90 * s, height: 26 * s), p);
     canvas.drawCircle(o + Offset(-16 * s, -10 * s), 16 * s, p);
     canvas.drawCircle(o + Offset(10 * s, -14 * s), 20 * s, p);
+  }
+
+  void _paintRain(Canvas canvas, Size size, double seconds) {
+    final bool heavy = weather == SkyWeather.thunder;
+    final Paint p = Paint()
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: heavy ? 0.55 : 0.45);
+    const double slant = 0.18; // a little wind
+    final int n = heavy ? _drops.length : 65;
+    for (int i = 0; i < n; i++) {
+      final List<double> d = _drops[i];
+      // ~1.1 screen heights per second
+      final double y =
+          ((d[1] + seconds * 1.1 * d[3]) % 1.0) * (size.height + 40) - 20;
+      final double x = (d[0] * (size.width + 40) - 20) + y * slant;
+      final double len = d[2] * (heavy ? 1.3 : 1);
+      canvas.drawLine(Offset(x, y), Offset(x - len * slant, y - len), p);
+    }
+  }
+
+  void _paintSnow(Canvas canvas, Size size, double seconds) {
+    final Paint p = Paint()..color = Colors.white.withValues(alpha: 0.9);
+    for (int i = 0; i < _flakes.length; i++) {
+      final List<double> f = _flakes[i];
+      final double y =
+          ((f[1] + seconds * f[3]) % 1.0) * (size.height + 20) - 10;
+      final double x =
+          f[0] * size.width + 10 * math.sin(seconds * 0.9 + i * 1.7);
+      canvas.drawCircle(Offset(x, y), f[2], p);
+    }
+  }
+
+  void _paintFog(Canvas canvas, Size size, double v) {
+    for (int i = 0; i < 4; i++) {
+      final double y = size.height * (0.18 + i * 0.17);
+      final double dx =
+          math.sin(2 * math.pi * (v + i * 0.27)) * size.width * 0.08;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(size.width / 2 + dx, y),
+            width: size.width * 1.4,
+            height: 46,
+          ),
+          const Radius.circular(23),
+        ),
+        Paint()
+          ..color = Colors.white.withValues(alpha: 0.18)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+      );
+    }
+  }
+
+  // Two quick flashes every 8 seconds, with a bolt on the first one.
+  void _paintLightning(Canvas canvas, Size size, double seconds) {
+    final double f = seconds % 8.0;
+    double flash = 0;
+    if (f < 0.12) {
+      flash = 1 - f / 0.12;
+    } else if (f > 0.25 && f < 0.35) {
+      flash = 0.6 * (1 - (f - 0.25) / 0.1);
+    }
+    if (flash <= 0) return;
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = Colors.white.withValues(alpha: 0.28 * flash),
+    );
+    if (f < 0.12) {
+      // Which bolt: changes every flash.
+      final int k = (seconds / 8).floor();
+      final double x0 = size.width * (0.25 + 0.5 * ((k * 37) % 10) / 10);
+      final double y1 = size.height * 0.62;
+      final Path bolt = Path()
+        ..moveTo(x0, size.height * 0.10)
+        ..lineTo(x0 - 14, size.height * 0.30)
+        ..lineTo(x0 + 4, size.height * 0.30)
+        ..lineTo(x0 - 18, y1)
+        ..lineTo(x0 + 16, size.height * 0.24)
+        ..lineTo(x0 - 2, size.height * 0.24)
+        ..lineTo(x0 + 12, size.height * 0.10)
+        ..close();
+      canvas.drawPath(
+        bolt,
+        Paint()
+          ..color = const Color(0xFFFFF6C8).withValues(alpha: flash)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5),
+      );
+    }
   }
 
   // A small Fly plane crosses during the first third of every loop.
@@ -329,13 +665,15 @@ class _SkyPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _SkyPainter old) => old.phase != phase;
+  bool shouldRepaint(covariant _SkyPainter old) =>
+      old.phase != phase || old.weather != weather;
 }
 
-/// Small glass chip: "Night sky · 21:40".
+/// Small glass chip: "Night sky · 21:40" or "Rainy · 15:20 · 28°".
 class SkyClockChip extends StatefulWidget {
   final int? offsetMinutes;
-  const SkyClockChip({super.key, this.offsetMinutes});
+  final SkyWeatherInfo? weather;
+  const SkyClockChip({super.key, this.offsetMinutes, this.weather});
 
   @override
   State<SkyClockChip> createState() => _SkyClockChipState();
@@ -358,13 +696,57 @@ class _SkyClockChipState extends State<SkyClockChip> {
     super.dispose();
   }
 
+  static (String, IconData)? _weatherLabel(SkyWeather w, SkyPhase phase) {
+    switch (w) {
+      case SkyWeather.clear:
+        if (phase == SkyPhase.night) {
+          return ('Clear night', Icons.nightlight_round);
+        }
+        if (phase == SkyPhase.day) return ('Sunny', Icons.wb_sunny_outlined);
+        return ('Clear sky', Icons.wb_twilight);
+      case SkyWeather.partly:
+        return ('Partly cloudy', Icons.wb_cloudy_outlined);
+      case SkyWeather.cloudy:
+        return ('Cloudy', Icons.cloud_outlined);
+      case SkyWeather.rain:
+        return ('Rainy', Icons.umbrella_outlined);
+      case SkyWeather.thunder:
+        return ('Thunderstorm', Icons.thunderstorm_outlined);
+      case SkyWeather.fog:
+        return ('Foggy', Icons.foggy);
+      case SkyWeather.snow:
+        return ('Snowy', Icons.ac_unit);
+      case SkyWeather.unknown:
+        return null;
+    }
+  }
+
+  void _showSource() {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(
+        content: Text('Weather near you, from your internet connection. '
+            'Data: MET Norway.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final DateTime now = skyTimeFor(widget.offsetMinutes);
-    final _SkyLook look = _looks[skyPhaseFor(now)]!;
+    final SkyPhase phase = skyPhaseFor(now);
+    final _SkyLook look = _looks[phase]!;
     final String hh = now.hour.toString().padLeft(2, '0');
     final String mm = now.minute.toString().padLeft(2, '0');
-    return Container(
+
+    final SkyWeatherInfo? w = widget.weather;
+    final (String, IconData)? wl =
+        w == null ? null : _weatherLabel(w.condition, phase);
+    String text = '${wl?.$1 ?? look.label} · $hh:$mm';
+    if (wl != null && w?.tempC != null) text += ' · ${w!.tempC}°';
+
+    final Widget chip = AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.22),
@@ -374,15 +756,21 @@ class _SkyClockChipState extends State<SkyClockChip> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(look.icon, size: 13, color: Colors.white),
+          Icon(wl?.$2 ?? look.icon, size: 13, color: Colors.white),
           const SizedBox(width: 5),
-          Text('${look.label} · $hh:$mm',
+          Text(text,
               style: const TextStyle(
                   color: Colors.white,
                   fontSize: 11.5,
                   fontWeight: FontWeight.w600)),
         ],
       ),
+    );
+    if (w == null && !AppConfig.isDev) return chip;
+    return GestureDetector(
+      onTap: wl != null ? _showSource : null,
+      onLongPress: AppConfig.isDev ? WeatherService.debugCycle : null,
+      child: chip,
     );
   }
 }
@@ -911,38 +1299,89 @@ class _FakeQrPainter extends CustomPainter {
 // ---------------------------------------------------------------------
 
 /// Sky + clock chip + thought cloud + pass, for the top of a profile.
-class SkyPassHeader extends StatelessWidget {
+/// [showWeather] = my own profile: the sky also shows my real weather.
+class SkyPassHeader extends StatefulWidget {
   final int? offsetMinutes;
+  final bool showWeather;
   final Widget thought;
   final Widget pass;
   const SkyPassHeader({
     super.key,
     this.offsetMinutes,
+    this.showWeather = false,
     required this.thought,
     required this.pass,
   });
 
   @override
-  Widget build(BuildContext context) {
+  State<SkyPassHeader> createState() => _SkyPassHeaderState();
+}
+
+class _SkyPassHeaderState extends State<SkyPassHeader>
+    with WidgetsBindingObserver {
+  Timer? _weatherTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.showWeather) {
+      WidgetsBinding.instance.addObserver(this);
+      WeatherService.refresh();
+      // refresh() itself asks the Worker at most every 30 min.
+      _weatherTimer = Timer.periodic(
+          const Duration(minutes: 10), (_) => WeatherService.refresh());
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) WeatherService.refresh();
+  }
+
+  @override
+  void dispose() {
+    _weatherTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  Widget _build(SkyWeatherInfo? w) {
     return Stack(
       children: [
-        Positioned.fill(child: SkyBackdrop(offsetMinutes: offsetMinutes)),
+        Positioned.fill(
+          child: SkyBackdrop(
+            offsetMinutes: widget.offsetMinutes,
+            weather: w?.condition,
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 26),
           child: Column(
             children: [
               Align(
                 alignment: Alignment.centerLeft,
-                child: SkyClockChip(offsetMinutes: offsetMinutes),
+                child: SkyClockChip(
+                  offsetMinutes: widget.offsetMinutes,
+                  weather: w,
+                ),
               ),
               const SizedBox(height: 26),
-              thought,
+              widget.thought,
               const SizedBox(height: 6),
-              pass,
+              widget.pass,
             ],
           ),
         ),
       ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.showWeather) return _build(null);
+    return ValueListenableBuilder<SkyWeatherInfo?>(
+      valueListenable: WeatherService.current,
+      builder: (context, w, _) => _build(w),
     );
   }
 }

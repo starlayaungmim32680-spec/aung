@@ -630,59 +630,65 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     final String email = user?.email ?? 'Unknown user';
-    // The AppBar takes the top colour of the sky under it (Sky Pass).
-    final Color skyTop = skyTopColor(skyPhaseFor(DateTime.now()));
-
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: skyTop,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Profile', style: TextStyle(color: Colors.white)),
-        actions: [
-          IconButton(
-            icon: const Text('🪙', style: TextStyle(fontSize: 20)),
-            tooltip: 'Wallet',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const WalletScreen()),
-            ),
-          ),
-          // Saved videos (the bookmark on each video) - private to me.
-          IconButton(
-            icon: const Icon(Icons.bookmark_border, color: Colors.white),
-            tooltip: 'Saved',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SavedVideosScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white),
-            tooltip: 'Settings',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
-            ),
-          ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
-            color: const Color(0xFF1E1E1E),
-            onSelected: (value) {
-              if (value == 'delete') _confirmDeleteAccount(context);
-            },
-            itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'delete',
-                child: Text('Delete account',
-                    style: TextStyle(color: Colors.redAccent)),
+      // The AppBar takes the top colour of the sky under it (Sky Pass),
+      // weather included.
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: ValueListenableBuilder<SkyWeatherInfo?>(
+          valueListenable: WeatherService.current,
+          builder: (context, weather, _) => AppBar(
+            backgroundColor:
+                skyTopColor(skyPhaseFor(DateTime.now()), weather?.condition),
+            surfaceTintColor: Colors.transparent,
+            elevation: 0,
+            scrolledUnderElevation: 0,
+            iconTheme: const IconThemeData(color: Colors.white),
+            title: const Text('Profile', style: TextStyle(color: Colors.white)),
+            actions: [
+              IconButton(
+                icon: const Text('🪙', style: TextStyle(fontSize: 20)),
+                tooltip: 'Wallet',
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WalletScreen()),
+                ),
+              ),
+              // Saved videos (the bookmark on each video) - private to me.
+              IconButton(
+                icon: const Icon(Icons.bookmark_border, color: Colors.white),
+                tooltip: 'Saved',
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SavedVideosScreen()),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.settings, color: Colors.white),
+                tooltip: 'Settings',
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                ),
+              ),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert, color: Colors.white),
+                color: const Color(0xFF1E1E1E),
+                onSelected: (value) {
+                  if (value == 'delete') _confirmDeleteAccount(context);
+                },
+                itemBuilder: (ctx) => [
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Delete account',
+                        style: TextStyle(color: Colors.redAccent)),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
       // Listen to this user's profile document (name + photo)
       body: StreamBuilder<DocumentSnapshot>(
@@ -762,6 +768,7 @@ class ProfileScreen extends StatelessWidget {
                       // time), my Sky Note as a cloud, and my Fly Pass.
                       SliverToBoxAdapter(
                         child: SkyPassHeader(
+                          showWeather: true,
                           thought: ThoughtCloud(
                             text: skyNoteText,
                             createdAt: skyNoteCreatedAt,

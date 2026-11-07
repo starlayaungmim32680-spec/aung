@@ -1464,7 +1464,41 @@ OK). Play Console: Terms URL =
 > Phase 3 = other people's profiles in the OWNER's sky (`tzOffsetMin`,
 > fallback = viewer's time) + "Flying since" from `termsAcceptedAt`. Ko
 > asked (7 Nov) about real weather in the sky (rain / clouds / sun) -
-> options discussed, not built yet._
+> built the same day, see the next entry._
+>
+> _7 Nov 2026 - **Sky Pass: real weather in MY profile's sky** (confirmed
+> by Ko on DEV, `FlyDev-bn263111546.apk`, 216 s; 5c NEW `Data: MET
+> Norway.` True / OLD `Could not send reset email - try again.` False;
+> first real answer: "Partly cloudy - 16:49 - 30°" in Puchong). Worker:
+> new authed `POST /weather` (`handleWeather`): area = Cloudflare's
+> `request.cf.latitude/longitude` (from the internet connection - NO
+> location permission in the app; with a VPN it is the VPN's area),
+> rounded to 0.1° (~10 km) first, never saved or returned; weather =
+> MET Norway Locationforecast 2.0 compact (free, commercial use OK, CC BY
+> 4.0, User-Agent `FlyApp/1.0 <worker>/privacy`), symbol_code ->
+> `weatherConditionFrom` -> clear / partly / cloudy / rain / thunder /
+> fog / snow / unknown, + tempC. Cache 30 min per square: Worker memory
+> + D1 table `weather_cache` (k, data, at) in SEARCH_DB, created by the
+> Worker itself. Privacy page (/privacy, "Last updated: 7 November
+> 2026"): new bullets Time zone + Weather on your profile, MET Norway in
+> the providers list. App (sky_pass.dart): `SkyWeather`,
+> `SkyWeatherInfo`, `WeatherService` (ValueNotifier `current`, refresh
+> at most every 30 min - on open, every 10 min while open, on resume),
+> `_skyColors` (bad weather turns the phase colours grey), painter draws
+> partly (cloud over sun/moon), cloudy (7 big grey clouds), rain
+> (slanted drops), thunder (heavy rain + 2 flashes and a bolt every 8 s,
+> no plane), fog (drifting bands, no plane), snow (wobbling flakes);
+> stars / sun / moon only when clear or partly. `SkyClockChip` shows
+> "Rainy - 15:20 - 28°" etc.; tap = SnackBar "Weather near you, from
+> your internet connection. Data: MET Norway." (the CC BY credit);
+> **dev app only: long-press the chip cycles all 7 weathers** (testing).
+> `SkyPassHeader(showWeather: true)` only on my own profile -
+> other people's profiles never show weather (it would hint where they
+> live). profile_screen.dart AppBar = PreferredSize +
+> ValueListenableBuilder so its colour follows the weather too. **Prod
+> still to do** (Worker deploy to livekit-token-worker + prod APK) - do
+> it together with the rest of Sky Pass. Next: Phase 2 (share the pass
+> as an image with a real QR)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2471,7 +2505,9 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   `SkyBackdrop`, `SkyClockChip`, `ThoughtCloud`, `FlyPassCard`,
   `SkyPassHeader`, `skyPhaseFor` / `skyTimeFor(offsetMinutes)` (dawn
   05-10, day 10-16, evening 16-19, night 19-05), `flySeatFor` /
-  `flyCodeFor` (from the uid), `saveMyTimezoneOffset` (users.tzOffsetMin).
+  `flyCodeFor` (from the uid), `saveMyTimezoneOffset` (users.tzOffsetMin),
+  `WeatherService` (real weather on MY profile only, Worker POST
+  /weather, MET Norway; dev: long-press the sky chip to cycle weathers).
 - `screens/settings_screen.dart` — small settings hub (Account status,
   Blocked accounts, Child safety, **Log out** since 7 Nov 2026 and,
   since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling
