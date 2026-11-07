@@ -1631,6 +1631,27 @@ OK). Play Console: Terms URL =
 > prefetch unchanged. Not on prod yet. Next idea from Ko (8 Nov): mood
 > emojis floating in the bar's empty black area by the story's feeling._
 >
+> _8 Nov 2026 - **Story mood** (Ko picked idea A = the poster picks the
+> feeling, not AI; confirmed by Ko on DEV with both phones,
+> `FlyDev-bn263120028.apk`, 259 s; 5c NEW `How do you feel?` True / OLD
+> `Create story` False). New `lib/screens/story_mood.dart`:
+> `kStoryMoods` (happy 😄, love 😍, party 🎉, cool 😎, sleepy 😴,
+> thinking 🤔, sad 😢, angry 😡), `storyMoodById`, `pickStoryMood`
+> (bottom sheet "How do you feel?" + Skip; closing = no mood, the story
+> still posts), `MoodStop`, `StoryMoodPainter` (4 emojis per stop, each
+> mood its own motion: bounce up / sway up / burst + spin / drift up /
+> glide sideways / fall like tears / shake around the circle / orbit;
+> 8 s loop; emojis faded by text alpha, TextPainters cached by emoji +
+> size + alpha step - no saveLayer). story_screen.dart: addStory asks the
+> mood after the effects step, before the upload spinner, saved as
+> `stories/{id}.mood` (field left out when skipped; the stories create
+> rule already allows any field - no rules change); StoriesBar draws the
+> painter behind the stops (`_moodT`), the newest story WITH a mood
+> decides, opacity 0.45 once seen; the viewer header shows "😢 Sad"
+> after the age. 5a now has `Start-Sleep -Seconds 5` before Remove-Item
+> (the dex files were still locked right after the daemon stop). Not on
+> prod yet (Flight Path + mood go together)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky

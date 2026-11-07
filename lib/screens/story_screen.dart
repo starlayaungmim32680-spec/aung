@@ -17,6 +17,7 @@ import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'photo_effects_screen.dart';
 import 'story_music.dart';
+import 'story_mood.dart';
 import 'sound_screen.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
@@ -211,6 +212,10 @@ Future<void> addStory(BuildContext context) async {
     storyMusic = photoEffects.music;
   }
 
+  // 8 Nov 2026: how do you feel? (story_mood.dart) - Skip = no mood.
+  final String? mood = await pickStoryMood(context);
+  if (!context.mounted) return;
+
   // Simple uploading dialog
   showDialog(
     context: context,
@@ -360,6 +365,7 @@ Future<void> addStory(BuildContext context) async {
         if (imageAspectRatio != null) 'imageAspectRatio': imageAspectRatio,
       },
       ...soundFields,
+      if (mood != null) 'mood': mood,
       // Other people only see a video story once Bunny can play it.
       if (storyBunnyVideoId != null)
         ...newVideoReadinessFields(storyBunnyVideoId),
@@ -426,7 +432,9 @@ class _StoryRejected implements Exception {
 //     haven't seen, a grey ring once watched; name + how long ago below;
 //   - order: my own stories, then unseen, then seen (StorySeen - kept on
 //     this phone with shared_preferences);
-//   - with no stories the route says "Your story flies here for 24 h".
+//   - with no stories the route says "Your story flies here for 24 h";
+//   - 8 Nov 2026: the feeling picked when posting (story_mood.dart)
+//     floats as little emojis around that person's stop.
 // Height 120 (was 182), so the feed starts higher on Home.
 // ---------------------------------------------------------------------------
 const List<Color> _kFlyStoryGradient = [Color(0xFFFF4B6E), Color(0xFF9C4DFF)];
@@ -526,6 +534,12 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
     duration: const Duration(seconds: 6),
   )..repeat(reverse: true);
 
+  // Mood emojis floating around the stops (story_mood.dart, 8 Nov 2026).
+  late final AnimationController _moodT = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 8),
+  )..repeat();
+
   // Blocked accounts (either way) never show in the bar.
   @override
   void initState() {
@@ -540,6 +554,7 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
     StorySeen.instance.seen.removeListener(_onChanged);
     _flow.dispose();
     _drift.dispose();
+    _moodT.dispose();
     StoryVideoPrefetch.clear();
     super.dispose();
   }
@@ -672,6 +687,22 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
               }),
           ];
 
+          // The newest story with a mood decides each person's feeling.
+          final List<MoodStop> moodStops = [];
+          for (int i = 0; i < userIds.length; i++) {
+            StoryMood? mood;
+            for (final QueryDocumentSnapshot d in byUser[userIds[i]]!) {
+              mood = storyMoodById((d.data() as Map<String, dynamic>)['mood']);
+              if (mood != null) break;
+            }
+            if (mood == null) continue;
+            final bool wasSeen =
+                _newestMs(byUser[userIds[i]]!) <= (seenNow[userIds[i]] ?? 0);
+            // Stop 0 is "Add story", so person i is stop i + 1.
+            moodStops
+                .add(MoodStop(_stopCenter(i + 1), mood, wasSeen ? 0.45 : 1));
+          }
+
           final bool empty = userIds.isEmpty;
           final double width = _kRouteStartX +
               (stops.length - 1) * _kStopGap +
@@ -697,6 +728,18 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
                       ),
                     ),
                   ),
+                  // Feelings float behind the circles.
+                  if (moodStops.isNotEmpty)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter:
+                                StoryMoodPainter(stops: moodStops, t: _moodT),
+                          ),
+                        ),
+                      ),
+                    ),
                   for (int i = 0; i < stops.length; i++)
                     Positioned(
                       left: _stopCenter(i).dx - 40,
@@ -2437,6 +2480,22 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
                             ],
                           ),
                         ),
+                        // 8 Nov 2026: the feeling the poster picked.
+                        if (storyMoodById(data['mood']) != null) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            '${storyMoodById(data['mood'])!.emoji} '
+                            '${storyMoodById(data['mood'])!.label}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              shadows: [
+                                Shadow(color: Colors.black, blurRadius: 6)
+                              ],
+                            ),
+                          ),
+                        ],
                         const Spacer(),
                         if (_isOwner)
                           GestureDetector(
