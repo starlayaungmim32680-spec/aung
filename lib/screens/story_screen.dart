@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:convert';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -10,6 +12,7 @@ import 'package:video_trimmer_2/video_trimmer_2.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
 import 'photo_effects_screen.dart';
@@ -409,24 +412,85 @@ class _StoryRejected implements Exception {
 }
 
 // ---------------------------------------------------------------------------
-// Stories bar (Home): Facebook-style tall story CARDS, with Fly's own
-// touches on top (29 Sep 2026 redesign - Ko asked for "like Facebook, but
-// cooler"):
-//   - each card previews the person's LATEST story (photo, or the video's
-//     thumbnail) - like Facebook;
-//   - the avatar in the corner keeps Fly's segmented gradient ring (one
-//     segment per active story), so you see "how many" before tapping;
-//   - a small glass chip shows how long ago the latest story was posted,
-//     and small badges mark video (▶) and music (♪) stories;
-//   - a soft pink→purple gradient frame and a press-down "squish" when
-//     tapped.
-// The bar keeps its old height (182), so the Home header layout above the
-// feed doesn't move.
+// Stories bar (Home) - "Flight Path" (7 Nov 2026, Ko picked idea C; it
+// replaces the 29 Sep Facebook-style tall cards, which left a big empty
+// black area when there were few stories):
+//   - a small Fly plane at the start, and a dashed flight route that
+//     flows (the dashes move) through everyone's round story "stops",
+//     going up and down like a real route;
+//   - the first stop is me: my photo with a "+" = add a story;
+//   - each person: their LATEST story (photo / video thumbnail) in the
+//     circle, slowly zooming and drifting while unseen, their small
+//     profile photo as a badge, ▶ for a video; Fly's segmented gradient
+//     ring (one segment per active story) while there is something I
+//     haven't seen, a grey ring once watched; name + how long ago below;
+//   - order: my own stories, then unseen, then seen (StorySeen - kept on
+//     this phone with shared_preferences);
+//   - with no stories the route says "Your story flies here for 24 h".
+// Height 120 (was 182), so the feed starts higher on Home.
 // ---------------------------------------------------------------------------
-const double _kStoryCardWidth = 104;
-const double _kStoryCardHeight = 166;
-const double _kStoryCardRadius = 18;
 const List<Color> _kFlyStoryGradient = [Color(0xFFFF4B6E), Color(0xFF9C4DFF)];
+const double _kBarHeight = 120;
+const double _kStopSize = 54; // avatar + ring
+const double _kStopGap = 80; // distance between stops
+const double _kRouteStartX = 64; // first stop's centre (after the plane)
+
+/// Newest createdAt (ms) in one person's stories.
+int _newestMs(List<QueryDocumentSnapshot> stories) {
+  int best = 0;
+  for (final QueryDocumentSnapshot d in stories) {
+    final Timestamp? t =
+        (d.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+    final int ms = t?.millisecondsSinceEpoch ?? 0;
+    if (ms > best) best = ms;
+  }
+  return best;
+}
+
+/// Which people's stories I've already watched, on this phone:
+/// uid -> newest createdAt (ms) I've seen. A newer story = unseen again.
+class StorySeen {
+  StorySeen._() {
+    _load();
+  }
+  static final StorySeen instance = StorySeen._();
+  static const String _key = 'storySeen_v1';
+
+  final ValueNotifier<Map<String, int>> seen =
+      ValueNotifier<Map<String, int>>(const {});
+
+  Future<void> _load() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final String? raw = prefs.getString(_key);
+      if (raw == null) return;
+      final Object? m = jsonDecode(raw);
+      if (m is! Map) return;
+      seen.value = {
+        for (final MapEntry e in m.entries)
+          if (e.value is num) '${e.key}': (e.value as num).toInt(),
+      };
+    } catch (_) {}
+  }
+
+  /// I've opened [uid]'s stories up to [newestMs].
+  Future<void> mark(String uid, int newestMs) async {
+    if (uid.isEmpty || newestMs <= (seen.value[uid] ?? 0)) return;
+    // Stories live 24 h - forget marks older than 2 days.
+    final int cutoff =
+        DateTime.now().subtract(const Duration(days: 2)).millisecondsSinceEpoch;
+    final Map<String, int> next = {
+      for (final MapEntry<String, int> e in seen.value.entries)
+        if (e.value > cutoff) e.key: e.value,
+      uid: newestMs,
+    };
+    seen.value = next;
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_key, jsonEncode(next));
+    } catch (_) {}
+  }
+}
 
 class StoriesBar extends StatefulWidget {
   const StoriesBar({super.key});
@@ -435,7 +499,7 @@ class StoriesBar extends StatefulWidget {
   State<StoriesBar> createState() => _StoriesBarState();
 }
 
-class _StoriesBarState extends State<StoriesBar> {
+class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
   // Built once (Fly's stream rule) - building it in build() resubscribed
   // on every rebuild of the Home header.
   late final Stream<QuerySnapshot> _storiesStream = FirebaseFirestore.instance
@@ -444,38 +508,53 @@ class _StoriesBarState extends State<StoriesBar> {
       .orderBy('expiresAt', descending: true)
       .snapshots();
 
+  final String? _myId = FirebaseAuth.instance.currentUser?.uid;
+  late final Stream<DocumentSnapshot>? _myProfileStream = _myId == null
+      ? null
+      : FirebaseFirestore.instance.collection('users').doc(_myId).snapshots();
+
+  // Drives the flowing dashes and the plane's gentle bob.
+  late final AnimationController _flow = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 3),
+  )..repeat();
+
+  // Slow zoom / drift of the story pictures in unseen stops (Ko: the
+  // story itself should move in the circle, 7 Nov 2026).
+  late final AnimationController _drift = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 6),
+  )..repeat(reverse: true);
+
   // Blocked accounts (either way) never show in the bar.
   @override
   void initState() {
     super.initState();
-    BlockService.instance.hidden.addListener(_onBlockedChanged);
+    BlockService.instance.hidden.addListener(_onChanged);
+    StorySeen.instance.seen.addListener(_onChanged);
   }
 
   @override
   void dispose() {
-    BlockService.instance.hidden.removeListener(_onBlockedChanged);
+    BlockService.instance.hidden.removeListener(_onChanged);
+    StorySeen.instance.seen.removeListener(_onChanged);
+    _flow.dispose();
+    _drift.dispose();
     StoryVideoPrefetch.clear();
     super.dispose();
   }
 
-  void _onBlockedChanged() {
+  void _onChanged() {
     if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    final String? myId = _myId;
     final Set<String> hiddenIds = BlockService.instance.hidden.value;
 
     return SizedBox(
-      height: 182,
-      child: _storiesList(myId, hiddenIds),
-    );
-  }
-
-  Widget _storiesList(String? myId, Set<String> hiddenIds) {
-    return SizedBox(
-      height: 182,
+      height: _kBarHeight,
       child: StreamBuilder<QuerySnapshot>(
         stream: _storiesStream,
         builder: (context, snapshot) {
@@ -498,11 +577,16 @@ class _StoriesBarState extends State<StoriesBar> {
             byUser.putIfAbsent(uid, () => []).add(d);
           }
 
-          // My own stories first (right after "Create story"), then others.
+          // My own stories first, then people with stories I haven't
+          // seen yet, then the ones I've already watched (7 Nov 2026).
+          final Map<String, int> seen = StorySeen.instance.seen.value;
+          bool unseen(String u) => _newestMs(byUser[u]!) > (seen[u] ?? 0);
           final List<String> userIds = byUser.keys.toList()
             ..sort((a, b) {
               if (a == myId) return -1;
               if (b == myId) return 1;
+              final bool ua = unseen(a), ub = unseen(b);
+              if (ua != ub) return ua ? -1 : 1;
               return 0;
             });
 
@@ -542,22 +626,31 @@ class _StoriesBarState extends State<StoriesBar> {
             });
           }
 
-          return ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            children: [
-              _CreateStoryCard(onTap: () => addStory(context)),
-              ...userIds.map((uid) {
+          final Map<String, int> seenNow = StorySeen.instance.seen.value;
+
+          // Stop 0 = me (add a story), then one stop per person.
+          final List<Widget> stops = [
+            _AddStoryStop(
+              profileStream: _myProfileStream,
+              onTap: () => addStory(context),
+            ),
+            for (final String uid in userIds)
+              Builder(builder: (context) {
                 final stories = byUser[uid]!;
                 final latest = stories.first.data() as Map<String, dynamic>;
-                return _StoryCard(
+                final int newest = _newestMs(stories);
+                return _StoryStop(
                   key: ValueKey(uid),
                   name: uid == myId
                       ? 'Your story'
                       : (latest['userName'] as String? ?? 'User'),
                   photoUrl: latest['userPhoto'] as String? ?? '',
-                  latest: latest,
+                  previewUrl: _storyPreviewUrl(latest),
+                  isVideo: latest['mediaType'] == 'video',
+                  drift: _drift,
+                  age: _storyAgeLabel(latest),
                   storyCount: stories.length,
+                  seen: newest <= (seenNow[uid] ?? 0),
                   onTap: () {
                     // Everyone's stories, one group per person in the
                     // same order as the bar, so the viewer can move on to
@@ -577,9 +670,423 @@ class _StoriesBarState extends State<StoriesBar> {
                   },
                 );
               }),
+          ];
+
+          final bool empty = userIds.isEmpty;
+          final double width = _kRouteStartX +
+              (stops.length - 1) * _kStopGap +
+              (empty ? 250 : 60);
+
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: max(width, MediaQuery.of(context).size.width),
+              height: _kBarHeight,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // The route + the plane.
+                  Positioned.fill(
+                    child: RepaintBoundary(
+                      child: CustomPaint(
+                        painter: _FlightPathPainter(
+                          stops: stops.length,
+                          flow: _flow,
+                          trailOff: empty ? 200 : 40,
+                        ),
+                      ),
+                    ),
+                  ),
+                  for (int i = 0; i < stops.length; i++)
+                    Positioned(
+                      left: _stopCenter(i).dx - 40,
+                      top: _stopCenter(i).dy - _kStopSize / 2,
+                      width: 80,
+                      child: stops[i],
+                    ),
+                  if (empty)
+                    Positioned(
+                      left: _kRouteStartX + 48,
+                      top: _stopCenter(0).dy - 18,
+                      child: const Text(
+                        'Your story flies here\nfor 24 hours ✈',
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12.5,
+                          height: 1.35,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Centre of stop [i]: evenly spaced, gently up and down like a route.
+Offset _stopCenter(int i) =>
+    Offset(_kRouteStartX + i * _kStopGap, 44 + 13 * sin(i * 1.3 + 0.6));
+
+class _FlightPathPainter extends CustomPainter {
+  final int stops;
+  final Animation<double> flow;
+  final double trailOff; // how far the route runs on after the last stop
+  _FlightPathPainter({
+    required this.stops,
+    required this.flow,
+    required this.trailOff,
+  }) : super(repaint: flow);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double t = flow.value;
+    // Points: the plane, every stop, then the route fading out.
+    final Offset plane = Offset(22, _stopCenter(0).dy + 22);
+    final List<Offset> pts = [
+      plane,
+      for (int i = 0; i < stops; i++) _stopCenter(i),
+    ];
+    final Offset last = pts.last;
+    pts.add(Offset(last.dx + trailOff, last.dy - 10));
+
+    // Smooth curve through the points (Catmull-Rom -> cubic Beziers).
+    final Path route = Path()..moveTo(pts[0].dx, pts[0].dy);
+    for (int i = 0; i < pts.length - 1; i++) {
+      final Offset p0 = i == 0 ? pts[0] : pts[i - 1];
+      final Offset p1 = pts[i];
+      final Offset p2 = pts[i + 1];
+      final Offset p3 = i + 2 < pts.length ? pts[i + 2] : p2;
+      final Offset c1 = p1 + (p2 - p0) / 6;
+      final Offset c2 = p2 - (p3 - p1) / 6;
+      route.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, p2.dx, p2.dy);
+    }
+
+    // Flowing dashes (white, fading out at the end of the route).
+    const double dash = 6, gap = 7;
+    final Paint paint = Paint()
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    for (final ui.PathMetric m in route.computeMetrics()) {
+      double d = -(dash + gap) + t * (dash + gap);
+      while (d < m.length) {
+        final double start = max(0, d);
+        final double end = min(m.length, d + dash);
+        if (end > start) {
+          final double fade = (1 - ((start - (m.length - trailOff)) / trailOff))
+              .clamp(0.0, 1.0);
+          paint.color = Colors.white.withValues(alpha: 0.38 * fade);
+          canvas.drawPath(m.extractPath(start, end), paint);
+        }
+        d += dash + gap;
+      }
+    }
+
+    // The plane: nose along the route, a soft contrail, gentle bob.
+    final double bob = 1.6 * sin(t * 2 * pi);
+    final Offset next = pts[1];
+    final double angle = atan2(next.dy - plane.dy, next.dx - plane.dx);
+    canvas.drawCircle(
+      plane,
+      16,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          const Color(0xFF9C4DFF).withValues(alpha: 0.35),
+          const Color(0xFF9C4DFF).withValues(alpha: 0),
+        ]).createShader(Rect.fromCircle(center: plane, radius: 16)),
+    );
+    final TextPainter tp = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(Icons.flight.codePoint),
+        style: TextStyle(
+          fontSize: 24,
+          fontFamily: Icons.flight.fontFamily,
+          package: Icons.flight.fontPackage,
+          color: Colors.white,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    canvas.save();
+    canvas.translate(plane.dx, plane.dy + bob);
+    canvas.rotate(angle + pi / 2); // the icon points up
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _FlightPathPainter old) =>
+      old.stops != stops || old.trailOff != trailOff;
+}
+
+/// Stop 0: my photo with a gradient "+" - add a story.
+class _AddStoryStop extends StatelessWidget {
+  final Stream<DocumentSnapshot>? profileStream;
+  final VoidCallback onTap;
+  const _AddStoryStop({required this.profileStream, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressableScale(
+      onTap: onTap,
+      child: StreamBuilder<DocumentSnapshot>(
+        stream: profileStream,
+        builder: (context, snapshot) {
+          final Map<String, dynamic>? profile =
+              snapshot.data?.data() as Map<String, dynamic>?;
+          final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: _kStopSize,
+                height: _kStopSize,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1.5),
+                      ),
+                      child: CircleAvatar(
+                        radius: (_kStopSize - 9) / 2,
+                        backgroundColor: Colors.grey[850],
+                        backgroundImage: photoUrl.isNotEmpty
+                            ? CachedNetworkImageProvider(photoUrl)
+                            : null,
+                        child: photoUrl.isEmpty
+                            ? const Icon(Icons.person,
+                                color: Colors.white38, size: 24)
+                            : null,
+                      ),
+                    ),
+                    Positioned(
+                      right: -2,
+                      bottom: -2,
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient:
+                              const LinearGradient(colors: _kFlyStoryGradient),
+                          border: Border.all(color: Colors.black, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFFFF4B6E)
+                                  .withValues(alpha: 0.5),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(Icons.add,
+                            color: Colors.white, size: 15),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Add story',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// One person's stop on the route: their LATEST story itself fills the
+/// circle (photo, or the video's thumbnail) and slowly zooms and drifts
+/// while it is unseen, with their small profile photo as a badge; a ▶
+/// badge marks a video story. Seen = still picture and a grey ring.
+class _StoryStop extends StatelessWidget {
+  final String name;
+  final String photoUrl;
+  final String previewUrl;
+  final bool isVideo;
+  final Animation<double> drift;
+  final String age;
+  final int storyCount;
+  final bool seen;
+  final VoidCallback onTap;
+
+  const _StoryStop({
+    super.key,
+    required this.name,
+    required this.photoUrl,
+    required this.previewUrl,
+    required this.isVideo,
+    required this.drift,
+    required this.age,
+    required this.storyCount,
+    required this.seen,
+    required this.onTap,
+  });
+
+  Widget _profileAvatar(double radius, double fontSize) => CircleAvatar(
+        radius: radius,
+        backgroundColor: Colors.grey[800],
+        backgroundImage:
+            photoUrl.isNotEmpty ? CachedNetworkImageProvider(photoUrl) : null,
+        child: photoUrl.isEmpty
+            ? Text(
+                name.isNotEmpty ? name[0].toUpperCase() : '?',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.w700),
+              )
+            : null,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    // The story picture (falls back to the profile photo).
+    final Widget picture = previewUrl.isEmpty
+        ? _profileAvatar(40, 18)
+        : ClipOval(
+            child: SizedBox.expand(
+              child: seen
+                  ? CachedNetworkImage(
+                      imageUrl: previewUrl,
+                      fit: BoxFit.cover,
+                      placeholder: (_, __) =>
+                          Container(color: Colors.grey[850]),
+                      errorWidget: (_, __, ___) => _profileAvatar(40, 18),
+                    )
+                  : AnimatedBuilder(
+                      animation: drift,
+                      builder: (context, child) {
+                        final double t =
+                            Curves.easeInOut.transform(drift.value);
+                        return Transform.translate(
+                          offset: Offset(4 - 8 * t, 2 - 4 * t),
+                          child: Transform.scale(
+                            scale: 1.12 + 0.18 * t,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: CachedNetworkImage(
+                        imageUrl: previewUrl,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) =>
+                            Container(color: Colors.grey[850]),
+                        errorWidget: (_, __, ___) => _profileAvatar(40, 18),
+                      ),
+                    ),
+            ),
+          );
+
+    return _PressableScale(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: _kStopSize,
+            height: _kStopSize,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned.fill(
+                  child: Container(
+                    decoration: seen
+                        ? null
+                        : BoxDecoration(
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF9C4DFF)
+                                    .withValues(alpha: 0.35),
+                                blurRadius: 12,
+                              ),
+                            ],
+                          ),
+                    child: seen
+                        ? Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border:
+                                  Border.all(color: Colors.white24, width: 2),
+                            ),
+                            child: picture,
+                          )
+                        : CustomPaint(
+                            painter: _SegmentedRingPainter(
+                                segments: storyCount, strokeWidth: 2.8),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4.5),
+                              child: picture,
+                            ),
+                          ),
+                  ),
+                ),
+                // Who posted it.
+                if (previewUrl.isNotEmpty)
+                  Positioned(
+                    left: -3,
+                    bottom: -3,
+                    child: Container(
+                      padding: const EdgeInsets.all(1.5),
+                      decoration: const BoxDecoration(
+                        color: Colors.black,
+                        shape: BoxShape.circle,
+                      ),
+                      child: _profileAvatar(10, 9),
+                    ),
+                  ),
+                if (isVideo)
+                  Positioned(
+                    right: -3,
+                    bottom: -3,
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.75),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24, width: 1),
+                      ),
+                      child: const Icon(Icons.play_arrow_rounded,
+                          color: Colors.white, size: 14),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: seen ? Colors.white60 : Colors.white,
+              fontSize: 11,
+              fontWeight: seen ? FontWeight.w500 : FontWeight.w700,
+            ),
+          ),
+          Text(
+            age,
+            style: const TextStyle(color: Colors.white38, fontSize: 9.5),
+          ),
+        ],
       ),
     );
   }
@@ -629,318 +1136,6 @@ class _PressableScaleState extends State<_PressableScale> {
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: widget.child,
-      ),
-    );
-  }
-}
-
-// Card shell shared by both card types: size, rounded corners and Fly's
-// thin gradient frame.
-class _StoryCardFrame extends StatelessWidget {
-  final Widget child;
-  final bool glow;
-  const _StoryCardFrame({required this.child, this.glow = true});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: _kStoryCardWidth,
-      height: _kStoryCardHeight,
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      padding: const EdgeInsets.all(1.5),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(_kStoryCardRadius),
-        gradient: glow
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: _kFlyStoryGradient,
-              )
-            : null,
-        color: glow ? null : Colors.white12,
-        boxShadow: glow
-            ? [
-                BoxShadow(
-                  color: const Color(0xFF9C4DFF).withOpacity(0.25),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                ),
-              ]
-            : null,
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(_kStoryCardRadius - 1.5),
-        child: child,
-      ),
-    );
-  }
-}
-
-// "Create story" card, Facebook-style: my profile photo fills the top, a
-// dark panel with "Create story" sits below, and a round gradient "+"
-// button straddles the line between them.
-class _CreateStoryCard extends StatefulWidget {
-  final VoidCallback onTap;
-  const _CreateStoryCard({required this.onTap});
-
-  @override
-  State<_CreateStoryCard> createState() => _CreateStoryCardState();
-}
-
-class _CreateStoryCardState extends State<_CreateStoryCard> {
-  final String? _myId = FirebaseAuth.instance.currentUser?.uid;
-  late final Stream<DocumentSnapshot>? _profileStream = _myId == null
-      ? null
-      : FirebaseFirestore.instance.collection('users').doc(_myId).snapshots();
-
-  @override
-  Widget build(BuildContext context) {
-    const double photoHeight = 112;
-
-    return _PressableScale(
-      onTap: widget.onTap,
-      child: _StoryCardFrame(
-        glow: false,
-        child: StreamBuilder<DocumentSnapshot>(
-          stream: _profileStream,
-          builder: (context, snapshot) {
-            final Map<String, dynamic>? profile =
-                snapshot.data?.data() as Map<String, dynamic>?;
-            final String photoUrl = (profile?['photoUrl'] as String?) ?? '';
-
-            return Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Column(
-                  children: [
-                    SizedBox(
-                      height: photoHeight,
-                      width: double.infinity,
-                      child: photoUrl.isNotEmpty
-                          ? CachedNetworkImage(
-                              imageUrl: photoUrl,
-                              fit: BoxFit.cover,
-                              placeholder: (_, __) =>
-                                  Container(color: Colors.grey[850]),
-                              errorWidget: (_, __, ___) =>
-                                  Container(color: Colors.grey[850]),
-                            )
-                          : Container(
-                              color: Colors.grey[850],
-                              child: const Icon(Icons.person,
-                                  color: Colors.white38, size: 40),
-                            ),
-                    ),
-                    Expanded(
-                      child: Container(
-                        width: double.infinity,
-                        color: const Color(0xFF1C1C1E),
-                        alignment: Alignment.bottomCenter,
-                        padding: const EdgeInsets.only(bottom: 9),
-                        child: const Text(
-                          'Create story',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                // Round "+" button on the seam between photo and panel.
-                Positioned(
-                  top: photoHeight - 17,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: const LinearGradient(
-                          colors: _kFlyStoryGradient,
-                        ),
-                        border: Border.all(
-                          color: const Color(0xFF1C1C1E),
-                          width: 3,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: const Color(0xFFFF4B6E).withOpacity(0.45),
-                            blurRadius: 10,
-                          ),
-                        ],
-                      ),
-                      child:
-                          const Icon(Icons.add, color: Colors.white, size: 20),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-// One person's story card: their latest story as the background, their
-// avatar with Fly's segmented ring top-left, age chip top-right, name at
-// the bottom over a dark fade.
-class _StoryCard extends StatelessWidget {
-  final String name;
-  final String photoUrl;
-  final Map<String, dynamic> latest;
-  final int storyCount;
-  final VoidCallback onTap;
-
-  const _StoryCard({
-    super.key,
-    required this.name,
-    required this.photoUrl,
-    required this.latest,
-    required this.storyCount,
-    required this.onTap,
-  });
-
-  Widget _glassBadge(Widget child) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.45),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.white24, width: 0.6),
-      ),
-      child: child,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final String previewUrl = _storyPreviewUrl(latest);
-    final bool isVideo = latest['mediaType'] == 'video';
-    final bool hasMusic = ((latest['soundTitle'] as String?) ?? '').isNotEmpty;
-
-    return _PressableScale(
-      onTap: onTap,
-      child: _StoryCardFrame(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Latest story as the card background.
-            if (previewUrl.isNotEmpty)
-              CachedNetworkImage(
-                imageUrl: previewUrl,
-                fit: BoxFit.cover,
-                placeholder: (_, __) => Container(color: Colors.grey[900]),
-                errorWidget: (_, __, ___) => Container(color: Colors.grey[900]),
-              )
-            else
-              Container(color: Colors.grey[900]),
-            // Dark fades top and bottom so the avatar and name stay readable
-            // on any photo.
-            const DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  stops: [0, 0.3, 0.6, 1],
-                  colors: [
-                    Color(0x80000000),
-                    Color(0x00000000),
-                    Color(0x00000000),
-                    Color(0xCC000000),
-                  ],
-                ),
-              ),
-            ),
-            // Avatar with the segmented ring (one segment per story).
-            Positioned(
-              top: 7,
-              left: 7,
-              child: SizedBox(
-                width: 40,
-                height: 40,
-                child: CustomPaint(
-                  painter: _SegmentedRingPainter(
-                      segments: storyCount, strokeWidth: 2.6),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: CircleAvatar(
-                      backgroundColor: Colors.grey[800],
-                      backgroundImage: photoUrl.isNotEmpty
-                          ? CachedNetworkImageProvider(photoUrl)
-                          : null,
-                      child: photoUrl.isEmpty
-                          ? Text(
-                              name.isNotEmpty ? name[0].toUpperCase() : '?',
-                              style: const TextStyle(
-                                  color: Colors.white, fontSize: 14),
-                            )
-                          : null,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            // How long ago.
-            Positioned(
-              top: 9,
-              right: 7,
-              child: _glassBadge(Text(
-                _storyAgeLabel(latest),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                ),
-              )),
-            ),
-            // Name at the bottom, with small video / music badges.
-            Positioned(
-              left: 8,
-              right: 8,
-              bottom: 8,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isVideo || hasMusic)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        children: [
-                          if (isVideo)
-                            _glassBadge(const Icon(Icons.play_arrow_rounded,
-                                color: Colors.white, size: 12)),
-                          if (isVideo && hasMusic) const SizedBox(width: 4),
-                          if (hasMusic)
-                            _glassBadge(const Icon(Icons.music_note_rounded,
-                                color: Colors.white, size: 12)),
-                        ],
-                      ),
-                    ),
-                  Text(
-                    name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700,
-                      height: 1.15,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1028,6 +1223,23 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
   late int _active = widget.initialGroup;
 
   @override
+  void initState() {
+    super.initState();
+    _markSeen(widget.initialGroup);
+  }
+
+  // 7 Nov 2026: this person's stories count as seen in the Home bar.
+  void _markSeen(int i) {
+    if (i < 0 || i >= widget.groups.length) return;
+    final group = widget.groups[i];
+    if (group.isEmpty) return;
+    final String uid =
+        ((group.first.data() as Map<String, dynamic>)['userId'] as String?) ??
+            '';
+    StorySeen.instance.mark(uid, _newestMs(group));
+  }
+
+  @override
   void dispose() {
     _pages.dispose();
     super.dispose();
@@ -1058,7 +1270,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
       body: PageView.builder(
         controller: _pages,
         itemCount: widget.groups.length,
-        onPageChanged: (i) => setState(() => _active = i),
+        onPageChanged: (i) {
+          setState(() => _active = i);
+          _markSeen(i);
+        },
         itemBuilder: (context, i) {
           final group = widget.groups[i];
           final String uid = ((group.first.data()

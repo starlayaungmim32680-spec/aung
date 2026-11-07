@@ -1605,6 +1605,32 @@ OK). Play Console: Terms URL =
 > firebase_hosting/public, deploy) -> Security issues -> Request
 > review, or move the profile path (needs an app update)._
 >
+> _7-8 Nov 2026 - **Home stories bar = "Flight Path"** (Ko picked idea
+> C of 3 mockups; confirmed by Ko on DEV, `FlyDev-bn263112331.apk`; 5c
+> NEW `Add story` True / OLD `Create story` False - note: a 5c string
+> must be ASCII only, `Your story flies here...` has a ✈ and is stored
+> as UTF-16 in libapp.so, so Select-String said False on a good build).
+> story_screen.dart: the Facebook-style tall cards (`_CreateStoryCard`,
+> `_StoryCard`, `_StoryCardFrame`, `_kStoryCard*`) are gone; bar height
+> 182 -> **120**. `_FlightPathPainter`: a ✈ (glow + bob) at the start
+> and a dashed Catmull-Rom route through every stop, dashes flowing
+> (`_flow`, 3 s), fading out after the last stop. `_stopCenter(i)` =
+> x 64 + 80*i, y 44 + 13*sin(i*1.3+0.6). Stop 0 = `_AddStoryStop` (my
+> photo + gradient "+", "Add story" -> addStory). `_StoryStop` = the
+> person's LATEST story picture (`_storyPreviewUrl`, video thumbnail)
+> in the circle, slowly zooming/drifting while unseen (`_drift`, 6 s
+> reverse), small profile-photo badge bottom-left, ▶ badge for video,
+> segmented gradient ring + glow while unseen, grey ring + still
+> picture once seen, name + age ("34m") below. No real video in the
+> circles on purpose (many players next to the feed = slow / battery).
+> **Seen state = `StorySeen`** (shared_preferences `storySeen_v1`, uid
+> -> newest createdAt ms seen, entries older than 2 days dropped);
+> StoryViewerScreen marks a person seen on open and on every page change
+> (`_markSeen`). Order: my stories, then unseen, then seen. No stories =
+> "Your story flies here for 24 hours ✈" next to Add story. Viewer and
+> prefetch unchanged. Not on prod yet. Next idea from Ko (8 Nov): mood
+> emojis floating in the bar's empty black area by the story's feeling._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
