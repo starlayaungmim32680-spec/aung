@@ -1547,7 +1547,39 @@ OK). Play Console: Terms URL =
 > to do for all of Sky Pass:** Worker -> livekit-token-worker,
 > `firebase deploy --only hosting --project aung-1756e` (u.html +
 > rewrite), prod APK. Next: Phase 3 (other people's profiles in the
-> owner's sky)._
+> owner's sky)._ (Follow-up 7 Nov: `firebase_hosting/firebase.json` with
+> the `/u/**` rewrite had not been copied in at first - committed in
+> 191b42f and redeployed to fly-dev; the page shows on
+> https://fly-dev-58b29.firebaseapp.com/u/<anything>.)
+>
+> _7 Nov 2026 - **Sky Pass Phase 3: other people's profiles** (confirmed
+> by Ko on DEV, `FlyDev-bn263112121.apk`, 234 s, clean build; 5c pair =
+> the last text change, `Tap anywhere to close` True / `Could not send
+> reset email - try again.` False - Phase 3 adds no text, the phone
+> test is the proof). public_profile_screen.dart: the old header
+> (avatar, name, SkyNoteBubble, stats `_StatColumn` / `_CountStat` -
+> both removed) is now `SkyPassHeader(offsetMinutes: users.tzOffsetMin)`
+> = THEIR sky by THEIR clock (no tzOffsetMin yet = my clock), **never
+> their weather** (privacy), chip e.g. "Night sky - 20:47";
+> `ThoughtCloud` read-only and still only for people who follow them;
+> `FlyPassCard(online: isUserOnline -> SparkleStarBadge on the photo,
+> flyingSince: users.termsAcceptedAt, qrData: their profile link - tap =
+> big QR)`, no Edit/Share/Scan buttons; AppBar = PreferredSize +
+> StreamBuilder on their users doc -> `skyTopColor` of their phase.
+> Friend / Follow / Message / calls / Report / Block / grid unchanged,
+> under the pass. `SkyNoteBubble` (profile_screen.dart) is no longer
+> used anywhere. **Moon fix:** the crescent used to be a moon with a
+> sky-coloured disc on top - the disc showed as a dark circle on the
+> gradient; then the round glow showed through the cut-out. Now the
+> crescent is a real cut-out (`Path.combine(difference)`) and its glow
+> is a blurred copy of the crescent (MaskFilter.blur r*0.7); the sun
+> keeps its round glow. Two builds in this round skipped 5a (122-124 s)
+> and the first one still had the old moon - always 5a. **Sky Pass is
+> done on DEV. Prod (all phases together):** 1) Worker -> Cloudflare
+> livekit-token-worker (POST /weather + privacy page), 2) `cd
+> firebase_hosting; firebase deploy --only hosting --project
+> aung-1756e; cd ..` and check https://aung-1756e.firebaseapp.com/u/test1234567890,
+> 3) prod APK (5a-5e, --flavor prod)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -2563,6 +2595,8 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   /weather, MET Norway; dev: long-press the sky chip to cycle weathers).
   Phase 2: real QR = `AppConfig.profileLink(uid)` (tap = `showBigFlyQr`),
   `showFlyPassShareSheet` (Share / Save the pass as a PNG).
+  Phase 3: also the header of public_profile_screen.dart (owner's sky
+  via `offsetMinutes`, no weather, `FlyPassCard(online:)`).
 - `screens/settings_screen.dart` — small settings hub (Account status,
   Blocked accounts, Child safety, **Log out** since 7 Nov 2026 and,
   since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling

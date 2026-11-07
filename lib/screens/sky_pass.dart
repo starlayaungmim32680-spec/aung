@@ -46,6 +46,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import '../app_config.dart';
 import 'pass_scanner_screen.dart' show PassScannerScreen;
+import 'presence_badge.dart' show SparkleStarBadge;
 import 'worker_auth.dart';
 
 // ---------------------------------------------------------------------
@@ -443,21 +444,36 @@ class _SkyPainter extends CustomPainter {
         color = const Color(0xFFF2F0E6);
         break;
     }
-    // Glow
-    canvas.drawCircle(
-      c,
-      r * 2.6,
-      Paint()
-        ..shader = ui.Gradient.radial(c, r * 2.6, [
-          color.withValues(alpha: phase == SkyPhase.night ? 0.18 : 0.45),
-          color.withValues(alpha: 0),
-        ]),
-    );
-    canvas.drawCircle(c, r, Paint()..color = color);
     if (phase == SkyPhase.night) {
-      // Crescent: cover part of the moon with the sky colour.
-      canvas.drawCircle(c + Offset(r * 0.55, -r * 0.25), r * 0.92,
-          Paint()..color = _skyColors(SkyPhase.night, weather).first);
+      // Crescent moon = the moon minus a circle (a real cut-out shape).
+      // Its glow follows the crescent itself (a blurred copy) - a round
+      // glow behind it showed the cut-out as a faint disc (7 Nov 2026).
+      final Path crescent = Path.combine(
+        PathOperation.difference,
+        Path()..addOval(Rect.fromCircle(center: c, radius: r)),
+        Path()
+          ..addOval(Rect.fromCircle(
+              center: c + Offset(r * 0.55, -r * 0.25), radius: r * 0.92)),
+      );
+      canvas.drawPath(
+        crescent,
+        Paint()
+          ..color = color.withValues(alpha: 0.45)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.7),
+      );
+      canvas.drawPath(crescent, Paint()..color = color);
+    } else {
+      // Sun: round glow + disc.
+      canvas.drawCircle(
+        c,
+        r * 2.6,
+        Paint()
+          ..shader = ui.Gradient.radial(c, r * 2.6, [
+            color.withValues(alpha: 0.45),
+            color.withValues(alpha: 0),
+          ]),
+      );
+      canvas.drawCircle(c, r, Paint()..color = color);
     }
     // Partly cloudy: one cloud over the sun / moon.
     if (weather == SkyWeather.partly) {
@@ -975,6 +991,9 @@ class FlyPassCard extends StatelessWidget {
   final int posts;
   final int followers;
   final int following;
+
+  /// Shows the sparkle "online" badge on the photo (other profiles).
+  final bool online;
   final VoidCallback? onEdit;
   final VoidCallback? onShare;
 
@@ -997,6 +1016,7 @@ class FlyPassCard extends StatelessWidget {
     required this.posts,
     required this.followers,
     required this.following,
+    this.online = false,
     this.onEdit,
     this.onShare,
     this.onScan,
@@ -1090,33 +1110,45 @@ class FlyPassCard extends StatelessWidget {
                         const SizedBox(height: 12),
                         Row(
                           children: [
-                            Container(
-                              padding: const EdgeInsets.all(2.5),
-                              decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
-                                gradient: LinearGradient(colors: [
-                                  Color(0xFFFF4B6E),
-                                  Color(0xFF9C4DFF),
-                                  Color(0xFF3A8DFF),
-                                ]),
-                              ),
-                              child: CircleAvatar(
-                                radius: 33,
-                                backgroundColor: const Color(0xFF22263A),
-                                backgroundImage:
-                                    hasPhoto ? NetworkImage(photoUrl!) : null,
-                                child: hasPhoto
-                                    ? null
-                                    : Text(
-                                        name.isNotEmpty
-                                            ? name[0].toUpperCase()
-                                            : '?',
-                                        style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 26,
-                                            fontWeight: FontWeight.bold),
-                                      ),
-                              ),
+                            Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(2.5),
+                                  decoration: const BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    gradient: LinearGradient(colors: [
+                                      Color(0xFFFF4B6E),
+                                      Color(0xFF9C4DFF),
+                                      Color(0xFF3A8DFF),
+                                    ]),
+                                  ),
+                                  child: CircleAvatar(
+                                    radius: 33,
+                                    backgroundColor: const Color(0xFF22263A),
+                                    backgroundImage: hasPhoto
+                                        ? NetworkImage(photoUrl!)
+                                        : null,
+                                    child: hasPhoto
+                                        ? null
+                                        : Text(
+                                            name.isNotEmpty
+                                                ? name[0].toUpperCase()
+                                                : '?',
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 26,
+                                                fontWeight: FontWeight.bold),
+                                          ),
+                                  ),
+                                ),
+                                if (online)
+                                  const Positioned(
+                                    right: 0,
+                                    bottom: 0,
+                                    child: SparkleStarBadge(size: 18),
+                                  ),
+                              ],
                             ),
                             const SizedBox(width: 14),
                             Expanded(

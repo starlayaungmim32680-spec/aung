@@ -10,7 +10,8 @@ import 'call_push_service.dart';
 import 'home_screen.dart';
 import 'media_utils.dart';
 import 'gifting.dart';
-import 'profile_screen.dart' show SkyNoteBubble;
+import 'sky_pass.dart';
+import '../app_config.dart';
 import 'presence_badge.dart';
 import '../block_service.dart';
 import '../friend_service.dart';
@@ -32,36 +33,55 @@ class PublicProfileScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text('Profile', style: TextStyle(color: Colors.white)),
-        actions: [
-          if (!isMe)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: Colors.white),
-              color: const Color(0xFF1E1E1E),
-              onSelected: (value) {
-                if (value == 'block') {
-                  _confirmBlockUser(context, userId);
-                } else if (value == 'report') {
-                  showReportSheet(context,
-                      type: ReportTargetType.user, targetId: userId);
-                }
-              },
-              itemBuilder: (ctx) => const [
-                PopupMenuItem(
-                  value: 'report',
-                  child: Text('Report user',
-                      style: TextStyle(color: Colors.white)),
-                ),
-                PopupMenuItem(
-                  value: 'block',
-                  child: Text('Block user',
-                      style: TextStyle(color: Colors.redAccent)),
-                ),
+      // AppBar = the top colour of THEIR sky (Sky Pass Phase 3).
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(kToolbarHeight),
+        child: StreamBuilder<DocumentSnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .doc(userId)
+              .snapshots(),
+          builder: (context, snap) {
+            final Object? off =
+                (snap.data?.data() as Map<String, dynamic>?)?['tzOffsetMin'];
+            return AppBar(
+              backgroundColor: skyTopColor(
+                  skyPhaseFor(skyTimeFor(off is num ? off.toInt() : null))),
+              surfaceTintColor: Colors.transparent,
+              scrolledUnderElevation: 0,
+              iconTheme: const IconThemeData(color: Colors.white),
+              title:
+                  const Text('Profile', style: TextStyle(color: Colors.white)),
+              actions: [
+                if (!isMe)
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert, color: Colors.white),
+                    color: const Color(0xFF1E1E1E),
+                    onSelected: (value) {
+                      if (value == 'block') {
+                        _confirmBlockUser(context, userId);
+                      } else if (value == 'report') {
+                        showReportSheet(context,
+                            type: ReportTargetType.user, targetId: userId);
+                      }
+                    },
+                    itemBuilder: (ctx) => const [
+                      PopupMenuItem(
+                        value: 'report',
+                        child: Text('Report user',
+                            style: TextStyle(color: Colors.white)),
+                      ),
+                      PopupMenuItem(
+                        value: 'block',
+                        child: Text('Block user',
+                            style: TextStyle(color: Colors.redAccent)),
+                      ),
+                    ],
+                  ),
               ],
-            ),
-        ],
+            );
+          },
+        ),
       ),
       // Blocked either way (see block_service.dart): the profile is closed.
       body: ValueListenableBuilder<Set<String>>(
@@ -142,69 +162,18 @@ class PublicProfileScreen extends StatelessWidget {
 
                       return CustomScrollView(
                         slivers: [
+                          // 7 Nov 2026 - Sky Pass Phase 3: their profile in
+                          // THEIR sky (the owner's time zone, tzOffsetMin;
+                          // older accounts without it = my time). Never
+                          // their weather - it would hint where they live.
                           SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                children: [
-                                  Stack(
-                                    clipBehavior: Clip.none,
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(3),
-                                        decoration: const BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          gradient: LinearGradient(
-                                            colors: [
-                                              Color(0xFFFF4B6E),
-                                              Color(0xFF9C4DFF)
-                                            ],
-                                          ),
-                                        ),
-                                        child: CircleAvatar(
-                                          radius: 44,
-                                          backgroundColor: Colors.grey[850],
-                                          backgroundImage: photoUrl.isNotEmpty
-                                              ? NetworkImage(photoUrl)
-                                              : null,
-                                          child: photoUrl.isEmpty
-                                              ? Text(
-                                                  displayName.isNotEmpty
-                                                      ? displayName[0]
-                                                          .toUpperCase()
-                                                      : '?',
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 36,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                )
-                                              : null,
-                                        ),
-                                      ),
-                                      if (isOnline)
-                                        const Positioned(
-                                          right: 2,
-                                          bottom: 2,
-                                          child: SparkleStarBadge(size: 22),
-                                        ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    displayName,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  // Sky Note - only shown to people who follow
-                                  // this person, same as Instagram Notes; a
-                                  // stranger just sees nothing here, not even
-                                  // an empty placeholder.
-                                  if (!isMe && myId != null)
-                                    StreamBuilder<DocumentSnapshot>(
+                            child: SkyPassHeader(
+                              offsetMinutes:
+                                  (profile?['tzOffsetMin'] as num?)?.toInt(),
+                              // Sky Note - only for people who follow this
+                              // person, same as before (Instagram Notes).
+                              thought: (!isMe && myId != null)
+                                  ? StreamBuilder<DocumentSnapshot>(
                                       stream: FirebaseFirestore.instance
                                           .collection('users')
                                           .doc(userId)
@@ -217,44 +186,61 @@ class PublicProfileScreen extends StatelessWidget {
                                         if (!amFollowing) {
                                           return const SizedBox.shrink();
                                         }
-                                        return Padding(
-                                          padding:
-                                              const EdgeInsets.only(top: 10),
-                                          child: SkyNoteBubble(
-                                            text: skyNoteText,
-                                            createdAt: skyNoteCreatedAt,
-                                          ),
+                                        return ThoughtCloud(
+                                          text: skyNoteText,
+                                          createdAt: skyNoteCreatedAt,
                                         );
                                       },
+                                    )
+                                  : ThoughtCloud(
+                                      text: skyNoteText,
+                                      createdAt: skyNoteCreatedAt,
                                     ),
-                                  const SizedBox(height: 16),
-
-                                  // Stats row: posts / followers / following
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      _StatColumn(
-                                          label: 'Posts', value: postCount),
-                                      _CountStat(
-                                        label: 'Followers',
-                                        collectionRef: FirebaseFirestore
-                                            .instance
-                                            .collection('users')
-                                            .doc(userId)
-                                            .collection('followers'),
-                                      ),
-                                      _CountStat(
-                                        label: 'Following',
-                                        collectionRef: FirebaseFirestore
-                                            .instance
-                                            .collection('users')
-                                            .doc(userId)
-                                            .collection('following'),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 18),
-
+                              pass: StreamBuilder<QuerySnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(userId)
+                                    .collection('followers')
+                                    .snapshots(),
+                                builder: (context, followersSnap) {
+                                  return StreamBuilder<QuerySnapshot>(
+                                    stream: FirebaseFirestore.instance
+                                        .collection('users')
+                                        .doc(userId)
+                                        .collection('following')
+                                        .snapshots(),
+                                    builder: (context, followingSnap) {
+                                      return FlyPassCard(
+                                        uid: userId,
+                                        name: displayName,
+                                        photoUrl: photoUrl,
+                                        online: isOnline,
+                                        // When they agreed to Fly's rules
+                                        // = when they started flying.
+                                        flyingSince:
+                                            (profile?['termsAcceptedAt']
+                                                    as Timestamp?)
+                                                ?.toDate(),
+                                        posts: postCount,
+                                        followers:
+                                            followersSnap.data?.docs.length ??
+                                                0,
+                                        following:
+                                            followingSnap.data?.docs.length ??
+                                                0,
+                                        qrData: AppConfig.profileLink(userId),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                              child: Column(
+                                children: [
                                   // Add Friend + Follow (row 1), then
                                   // Message + voice/video call (row 2).
                                   // Facebook style, hidden on your own
@@ -673,74 +659,6 @@ class _PublicProfileGridItem {
             (doc.data() as Map<String, dynamic>)['sharedBy'] as String?,
         sharedByPhoto =
             (doc.data() as Map<String, dynamic>)['sharedByPhoto'] as String?;
-}
-
-// A plain stat column (e.g. Posts) with a fixed number
-class _StatColumn extends StatelessWidget {
-  final String label;
-  final int value;
-
-  const _StatColumn({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          Text(
-            '$value',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Text(
-            label,
-            style: TextStyle(color: Colors.grey[500], fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// A stat column whose number comes live from a Firestore subcollection count
-class _CountStat extends StatelessWidget {
-  final String label;
-  final CollectionReference collectionRef;
-
-  const _CountStat({required this.label, required this.collectionRef});
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: collectionRef.snapshots(),
-      builder: (context, snapshot) {
-        final int count = snapshot.hasData ? snapshot.data!.docs.length : 0;
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              Text(
-                '$count',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                label,
-                style: TextStyle(color: Colors.grey[500], fontSize: 13),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
 }
 
 // Starts a call with [otherUserId] directly from their profile - same
