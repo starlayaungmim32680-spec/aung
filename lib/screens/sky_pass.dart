@@ -15,7 +15,12 @@
 //     person) and a decorative QR.
 // [saveMyTimezoneOffset] keeps users/{uid}.tzOffsetMin up to date, so
 // Phase 3 can show another person's profile in THEIR sky.
-// Phase 2 (later): share the pass as an image with a real QR.
+// Phase 2 (7 Nov 2026): the pass has a REAL QR = my profile link
+// https://<project>.firebaseapp.com/u/<uid> (AppConfig.profileLink - an
+// App Link: the phone camera opens Fly on that profile;
+// firebase_hosting/public/u.html for phones without Fly), and
+// [showFlyPassShareSheet] shares / saves the pass as a picture, and the
+// Scan button opens Fly's own QR scanner (pass_scanner_screen.dart).
 //
 // Weather (7 Nov 2026, Ko: "rain -> show rain, clouds -> clouds, sun ->
 // sun"): on MY OWN profile the sky also shows the real weather where I
@@ -27,12 +32,20 @@
 // to cycle through every weather for testing.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 import '../app_config.dart';
+import 'pass_scanner_screen.dart' show PassScannerScreen;
 import 'worker_auth.dart';
 
 // ---------------------------------------------------------------------
@@ -963,6 +976,17 @@ class FlyPassCard extends StatelessWidget {
   final int followers;
   final int following;
   final VoidCallback? onEdit;
+  final VoidCallback? onShare;
+
+  /// Opens the Fly Pass scanner (my own profile).
+  final VoidCallback? onScan;
+
+  /// Text in the QR (my profile link). Null = a decorative QR.
+  final String? qrData;
+
+  /// Frosted glass over the sky. Off for the shared picture
+  /// (RenderRepaintBoundary.toImage can't see what is behind a blur).
+  final bool blur;
 
   const FlyPassCard({
     super.key,
@@ -974,6 +998,10 @@ class FlyPassCard extends StatelessWidget {
     required this.followers,
     required this.following,
     this.onEdit,
+    this.onShare,
+    this.onScan,
+    this.qrData,
+    this.blur = true,
   });
 
   @override
@@ -983,6 +1011,7 @@ class FlyPassCard extends StatelessWidget {
     return ClipPath(
       clipper: _TicketClipper(notchY: 150),
       child: BackdropFilter(
+        enabled: blur,
         filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
         child: Container(
           decoration: BoxDecoration(
@@ -990,8 +1019,8 @@ class FlyPassCard extends StatelessWidget {
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
               colors: [
-                Colors.white.withValues(alpha: 0.20),
-                Colors.white.withValues(alpha: 0.07),
+                Colors.white.withValues(alpha: blur ? 0.20 : 0.24),
+                Colors.white.withValues(alpha: blur ? 0.07 : 0.10),
               ],
             ),
           ),
@@ -1010,13 +1039,27 @@ class FlyPassCard extends StatelessWidget {
                             const Icon(Icons.flight_takeoff,
                                 color: Colors.white, size: 15),
                             const SizedBox(width: 6),
-                            const Text('FLY PASS',
-                                style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11.5,
-                                    letterSpacing: 2.2,
-                                    fontWeight: FontWeight.w800)),
-                            const Spacer(),
+                            // Expanded (not Spacer) so 3 buttons fit on
+                            // small phones too - the label fades instead.
+                            const Expanded(
+                              child: Text('FLY PASS',
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  overflow: TextOverflow.fade,
+                                  style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11.5,
+                                      letterSpacing: 2.2,
+                                      fontWeight: FontWeight.w800)),
+                            ),
+                            if (onScan != null) ...[
+                              _pill(Icons.qr_code_scanner, null, onScan!),
+                              const SizedBox(width: 6),
+                            ],
+                            if (onShare != null)
+                              _pill(Icons.ios_share, 'Share', onShare!),
+                            if (onShare != null && onEdit != null)
+                              const SizedBox(width: 6),
                             if (onEdit != null)
                               GestureDetector(
                                 onTap: onEdit,
@@ -1132,12 +1175,26 @@ class FlyPassCard extends StatelessWidget {
                           const SizedBox(width: 22),
                           _field('FLIGHT', flyCodeFor(uid)),
                           const Spacer(),
-                          SizedBox(
-                            width: 46,
-                            height: 46,
-                            child: CustomPaint(
-                                painter: _FakeQrPainter(_fnv('qr:$uid'))),
-                          ),
+                          if (qrData != null)
+                            // Tap = the QR big, easy to scan (Ko, 7 Nov).
+                            GestureDetector(
+                              onTap: () => showBigFlyQr(context, qrData!, name),
+                              child: Container(
+                                padding: const EdgeInsets.all(3),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: _FlyQr(data: qrData!, size: 52),
+                              ),
+                            )
+                          else
+                            SizedBox(
+                              width: 46,
+                              height: 46,
+                              child: CustomPaint(
+                                  painter: _FakeQrPainter(_fnv('qr:$uid'))),
+                            ),
                         ],
                       ),
                     ],
@@ -1150,6 +1207,34 @@ class FlyPassCard extends StatelessWidget {
       ),
     );
   }
+
+  // label null = icon only (Scan).
+  Widget _pill(IconData icon, String? label, VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: EdgeInsets.symmetric(
+              horizontal: label == null ? 7 : 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: label == null ? 15 : 12, color: Colors.white),
+              if (label != null) ...[
+                const SizedBox(width: 4),
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700)),
+              ],
+            ],
+          ),
+        ),
+      );
 
   Widget _stat(String label, int value) => Expanded(
         child: Column(
@@ -1384,4 +1469,426 @@ class _SkyPassHeaderState extends State<SkyPassHeader>
       builder: (context, w, _) => _build(w),
     );
   }
+}
+
+// ---------------------------------------------------------------------
+// Share my pass (Phase 2)
+// ---------------------------------------------------------------------
+
+/// Bottom sheet: a picture of my pass on my sky (real QR = my profile
+/// link) with Share and Save.
+Future<void> showFlyPassShareSheet(
+  BuildContext context, {
+  required String uid,
+  required String name,
+  required String? photoUrl,
+  required DateTime? flyingSince,
+  required int posts,
+  required int followers,
+  required int following,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: const Color(0xFF15121C),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (_) => _FlyPassShareSheet(
+      pass: FlyPassCard(
+        uid: uid,
+        name: name,
+        photoUrl: photoUrl,
+        flyingSince: flyingSince,
+        posts: posts,
+        followers: followers,
+        following: following,
+        qrData: AppConfig.profileLink(uid),
+        blur: false,
+      ),
+      link: AppConfig.profileLink(uid),
+    ),
+  );
+}
+
+class _FlyPassShareSheet extends StatefulWidget {
+  final FlyPassCard pass;
+  final String link;
+  const _FlyPassShareSheet({required this.pass, required this.link});
+
+  @override
+  State<_FlyPassShareSheet> createState() => _FlyPassShareSheetState();
+}
+
+class _FlyPassShareSheetState extends State<_FlyPassShareSheet> {
+  final GlobalKey _shot = GlobalKey();
+  bool _busy = false;
+
+  Future<Uint8List?> _picture() async {
+    final RenderObject? ro = _shot.currentContext?.findRenderObject();
+    if (ro is! RenderRepaintBoundary) return null;
+    final ui.Image image = await ro.toImage(pixelRatio: 3);
+    final ByteData? data =
+        await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return data?.buffer.asUint8List();
+  }
+
+  void _toast(String text) {
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _share() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final Uint8List? png = await _picture();
+      if (png == null) throw Exception('no picture');
+      final Directory dir = await getTemporaryDirectory();
+      final File file = File(
+          '${dir.path}/fly_pass_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(png);
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'image/png')],
+        text: 'Fly with me! ${widget.link}',
+      );
+    } catch (_) {
+      _toast("Couldn't share your pass - please try again");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final Uint8List? png = await _picture();
+      if (png == null) throw Exception('no picture');
+      if (!await Gal.hasAccess()) {
+        if (!await Gal.requestAccess()) {
+          _toast('Gallery access is needed to save your pass');
+          return;
+        }
+      }
+      await Gal.putImageBytes(png,
+          album: 'Fly',
+          name: 'fly_pass_${DateTime.now().millisecondsSinceEpoch}');
+      _toast('Your Fly Pass was saved to your gallery');
+    } catch (_) {
+      _toast("Couldn't save your pass - please try again");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double maxH = MediaQuery.of(context).size.height * 0.62;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Share your Fly Pass',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            const Text('Friends scan the code to open your profile on Fly.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 13)),
+            const SizedBox(height: 14),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxH),
+              child: FittedBox(
+                child: RepaintBoundary(
+                  key: _shot,
+                  child: _ShareCard(pass: widget.pass),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _SheetButton(
+                    icon: Icons.download_rounded,
+                    label: 'Save',
+                    onTap: _busy ? null : _save,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _SheetButton(
+                    icon: Icons.ios_share,
+                    label: 'Share',
+                    filled: true,
+                    busy: _busy,
+                    onTap: _busy ? null : _share,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            TextButton.icon(
+              onPressed: () {
+                final NavigatorState nav = Navigator.of(context);
+                nav.pop();
+                nav.push(MaterialPageRoute(
+                    builder: (_) => const PassScannerScreen()));
+              },
+              icon: const Icon(Icons.qr_code_scanner,
+                  color: Color(0xFF35E1F2), size: 18),
+              label: const Text("Scan a friend's pass",
+                  style: TextStyle(
+                      color: Color(0xFF35E1F2), fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What the picture looks like: my sky (with my weather) + the pass.
+class _ShareCard extends StatelessWidget {
+  final FlyPassCard pass;
+  const _ShareCard({required this.pass});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 360,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: SkyBackdrop(
+                weather: WeatherService.current.value?.condition,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 22, 18, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.flight_takeoff, color: Colors.white, size: 20),
+                      SizedBox(width: 8),
+                      Text('Fly',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.5)),
+                      Spacer(),
+                      Text('BOARDING NOW',
+                          style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10.5,
+                              letterSpacing: 2,
+                              fontWeight: FontWeight.w800)),
+                    ],
+                  ),
+                  const SizedBox(height: 34),
+                  pass,
+                  const SizedBox(height: 16),
+                  const Text('Scan to fly with me on Fly',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool filled;
+  final bool busy;
+  const _SheetButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.filled = false,
+    this.busy = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Opacity(
+        opacity: onTap == null && !busy ? 0.5 : 1,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            gradient: filled
+                ? const LinearGradient(colors: [
+                    Color(0xFFFF4B6E),
+                    Color(0xFF9C4DFF),
+                    Color(0xFF3A8DFF),
+                  ])
+                : null,
+            color: filled ? null : Colors.white.withValues(alpha: 0.08),
+          ),
+          child: busy
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, color: Colors.white, size: 19),
+                    const SizedBox(width: 8),
+                    Text(label,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15.5,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// Big QR (tap the small one on the pass)
+// ---------------------------------------------------------------------
+
+class _FlyQr extends StatelessWidget {
+  final String data;
+  final double size;
+  const _FlyQr({required this.data, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return QrImageView(
+      data: data,
+      size: size,
+      padding: EdgeInsets.zero,
+      backgroundColor: Colors.white,
+      eyeStyle: const QrEyeStyle(
+        eyeShape: QrEyeShape.square,
+        color: Color(0xFF15121C),
+      ),
+      dataModuleStyle: const QrDataModuleStyle(
+        dataModuleShape: QrDataModuleShape.square,
+        color: Color(0xFF15121C),
+      ),
+    );
+  }
+}
+
+/// My QR, big in the middle of the screen, so a friend can scan it
+/// easily. Tap anywhere (or Back) to close.
+Future<void> showBigFlyQr(BuildContext context, String data, String name) {
+  return showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Close',
+    barrierColor: Colors.black.withValues(alpha: 0.82),
+    transitionDuration: const Duration(milliseconds: 260),
+    pageBuilder: (ctx, _, __) {
+      final double side =
+          (MediaQuery.of(ctx).size.width * 0.72).clamp(220.0, 340.0);
+      return GestureDetector(
+        onTap: () => Navigator.of(ctx).pop(),
+        child: Material(
+          type: MaterialType.transparency,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(28),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF9C4DFF).withValues(alpha: 0.5),
+                        blurRadius: 40,
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      _FlyQr(data: data, size: side),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.flight_takeoff,
+                              color: Color(0xFF9C4DFF), size: 18),
+                          const SizedBox(width: 6),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(maxWidth: side - 30),
+                            child: Text(name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Color(0xFF15121C),
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w800)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Text('Scan with Fly to open my profile',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                const Text('Tap anywhere to close',
+                    style: TextStyle(color: Colors.white54, fontSize: 12.5)),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+    transitionBuilder: (ctx, anim, _, child) {
+      final Animation<double> curved =
+          CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+      return FadeTransition(
+        opacity: anim,
+        child: ScaleTransition(scale: curved, child: child),
+      );
+    },
+  );
 }

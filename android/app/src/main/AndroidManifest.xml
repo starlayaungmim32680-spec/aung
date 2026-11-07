@@ -85,6 +85,11 @@
                     android:scheme="https"
                     android:host="${authLinkHost}"
                     android:pathPrefix="/__/auth/action" />
+                <!-- 7 Nov 2026: a Fly profile (the QR on the Fly Pass). -->
+                <data
+                    android:scheme="https"
+                    android:host="${authLinkHost}"
+                    android:pathPrefix="/u/" />
             </intent-filter>
             <!-- Fly handles its links itself (above) - Flutter's own deep
                  linking would push "/auth-action?..." as a route name. -->

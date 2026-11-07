@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- Fly profile link (7 Nov 2026): https://<project>.firebaseapp.com/u/<uid>
+     = the QR on a Fly Pass. On an Android phone with Fly, Android opens
+     Fly itself (App Link) and this page is never seen. Everyone else
+     lands here: "Open in Fly" (an intent link - opens Fly if it is
+     installed, otherwise its Play Store page). firebase.json rewrites
+     /u/** to this file. Nothing about the person is shown or loaded. -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fly with me on Fly</title>
+<meta name="robots" content="noindex">
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+background:linear-gradient(180deg,#241848 0%,#a53a6c 55%,#ff8a4c 85%,#07060b 100%);color:#fff;font-family:system-ui,-apple-system,sans-serif;text-align:center}
+.card{width:100%;max-width:380px;padding:28px 22px;border-radius:24px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.t{font-size:12px;letter-spacing:3px;font-weight:800;opacity:.8}
+.l{font-size:44px;font-weight:900;margin:6px 0 4px}
+p{line-height:1.45;opacity:.9;margin:8px 0 20px}
+.b{display:block;padding:15px;border-radius:16px;font-weight:800;font-size:16px;color:#fff;text-decoration:none;
+background:linear-gradient(90deg,#FF4B6E,#9C4DFF,#3A8DFF)}
+.s{font-size:12.5px;opacity:.7;margin-top:16px}
+</style></head>
+<body><div class="card">
+<div class="t">&#9992; FLY PASS</div>
+<div class="l">Fly</div>
+<p>Someone shared their Fly Pass with you. Open it in the Fly app to see their profile.</p>
+<a class="b" id="open" href="#">Open in Fly</a>
+<div class="s">Fly is an Android app for short videos, friends and live.</div>
+</div>
+<script>
+(function () {
+  var dev = location.hostname.indexOf('fly-dev') === 0;
+  var pkg = dev ? 'com.aungdev.fly.dev' : 'com.aungdev.fly';
+  var store = 'https://play.google.com/store/apps/details?id=' + pkg;
+  var a = document.getElementById('open');
+  if (/android/i.test(navigator.userAgent)) {
+    a.href = 'intent://' + location.host + location.pathname +
+      '#Intent;scheme=https;package=' + pkg +
+      ';S.browser_fallback_url=' + encodeURIComponent(store) + ';end';
+  } else {
+    a.href = store;
+  }
+})();
+</script>
+</body></html>

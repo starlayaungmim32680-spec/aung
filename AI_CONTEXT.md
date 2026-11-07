@@ -1500,6 +1500,55 @@ OK). Play Console: Terms URL =
 > it together with the rest of Sky Pass. Next: Phase 2 (share the pass
 > as an image with a real QR)._
 >
+> _7 Nov 2026 - **Sky Pass Phase 2: real QR, share / save the pass, and
+> Fly's own QR scanner** (confirmed by Ko on DEV with both phones,
+> `FlyDev-bn263111922.apk`, 238 s, 194.6 MB - +15 MB for CameraX + ML
+> Kit barcode; 5c NEW `Tap anywhere to close` True / OLD `Could not
+> send reset email - try again.` False). **Profile link** =
+> `https://<project>.firebaseapp.com/u/<uid>` (`AppConfig.linkHost`,
+> `AppConfig.profileLink(uid)`, `AppConfig.profileUidFromLink(text,
+> {anyFlavor})` - uid must match `^[A-Za-z0-9]{10,40}$`). Android App
+> Link: AndroidManifest.xml got a 2nd `<data>` pathPrefix `/u/` in the
+> same autoVerify filter (same host = same assetlinks.json, nothing to
+> add); MainActivity.kt `authLinkFrom` also passes `/u/`;
+> new_password_screen.dart `AuthLinks._open` -> `_openProfile(uid)` ->
+> PublicProfileScreen (only when signed in; waits for the navigator on
+> a cold start). Firebase Hosting: `firebase.json` rewrite `/u/**` ->
+> new `public/u.html` (Fly-styled "Open in Fly" page for browsers /
+> phones without Fly: Android gets an `intent://...;package=...;
+> S.browser_fallback_url=<Play page>` link, dev host -> the .dev
+> package; noindex; nothing about the person is loaded). Deployed to
+> fly-dev-58b29 only. sky_pass.dart: `FlyPassCard(qrData, onShare,
+> onScan, blur)` - real QR (`qr_flutter`, dark modules on a white
+> square, `_FlyQr`), **tap the small QR = `showBigFlyQr`** (QR ~72% of
+> the screen width + name, "Scan with Fly to open my profile", tap
+> anywhere to close); header buttons [scan icon] [Share] [Edit] with
+> "FLY PASS" in an Expanded (fades on small phones);
+> `showFlyPassShareSheet` = preview of `_ShareCard` (my sky + weather,
+> "Fly - BOARDING NOW", the pass without blur because
+> RenderRepaintBoundary.toImage can't see behind a BackdropFilter,
+> "Scan to fly with me on Fly"), captured at pixelRatio 3 -> **Share**
+> (share_plus shareXFiles PNG + text "Fly with me! <link>") / **Save**
+> (gal putImageBytes, album Fly) + "Scan a friend's pass". New
+> `lib/screens/pass_scanner_screen.dart` (`PassScannerScreen`,
+> `openPassScanner`): `mobile_scanner` ^7.0.1 (QR only,
+> DetectionSpeed.noDuplicates), full-screen camera (Stack fit expand,
+> every layer Positioned - the first build showed the camera only in a
+> strip at the top), dimmed outside a window with Fly-gradient corners
+> and a ✈ scan line, torch button, **Choose from gallery**
+> (image_picker + `analyzeImage`), haptic + pushReplacement to the
+> profile; other flavor's pass / other QR -> orange message; camera
+> permission asked by mobile_scanner when the scanner opens, denied ->
+> "Open settings" (permission_handler); stop/start on app pause/resume.
+> pubspec: `qr_flutter: ^4.1.0`, `mobile_scanner: ^7.0.1`. An older
+> phone with a Fly Dev from before the upload key (6 Nov) said "App not
+> installed as package conflicts with an existing package" - uninstall
+> Fly Dev once (dev data is in Firebase) and install again. **Prod still
+> to do for all of Sky Pass:** Worker -> livekit-token-worker,
+> `firebase deploy --only hosting --project aung-1756e` (u.html +
+> rewrite), prod APK. Next: Phase 3 (other people's profiles in the
+> owner's sky)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2501,6 +2550,10 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   and the `isUserOnline(userData)` helper (`isOnline == true` **and**
   `lastActive` within the last 60 seconds) used by both the Chat list and
   Profile screens.
+- `screens/pass_scanner_screen.dart` **(7 Nov 2026)** — Fly's own QR
+  scanner (`mobile_scanner`): scans a Fly Pass (camera or a gallery
+  picture) and opens that profile. Opened from the scan icon on my pass
+  and from the share sheet.
 - `screens/sky_pass.dart` **(7 Nov 2026)** — Sky Pass profile header:
   `SkyBackdrop`, `SkyClockChip`, `ThoughtCloud`, `FlyPassCard`,
   `SkyPassHeader`, `skyPhaseFor` / `skyTimeFor(offsetMinutes)` (dawn
@@ -2508,6 +2561,8 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   `flyCodeFor` (from the uid), `saveMyTimezoneOffset` (users.tzOffsetMin),
   `WeatherService` (real weather on MY profile only, Worker POST
   /weather, MET Norway; dev: long-press the sky chip to cycle weathers).
+  Phase 2: real QR = `AppConfig.profileLink(uid)` (tap = `showBigFlyQr`),
+  `showFlyPassShareSheet` (Share / Save the pass as a PNG).
 - `screens/settings_screen.dart` — small settings hub (Account status,
   Blocked accounts, Child safety, **Log out** since 7 Nov 2026 and,
   since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling

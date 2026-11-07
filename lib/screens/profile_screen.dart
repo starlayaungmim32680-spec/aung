@@ -17,6 +17,8 @@ import 'worker_auth.dart';
 import 'moderation_service.dart';
 import 'password_reset.dart';
 import 'sky_pass.dart';
+import 'pass_scanner_screen.dart' show openPassScanner;
+import '../app_config.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -798,6 +800,29 @@ class ProfileScreen extends StatelessWidget {
                                         followersSnap.data?.docs.length ?? 0,
                                     following:
                                         followingSnap.data?.docs.length ?? 0,
+                                    // Phase 2: real QR = my profile link,
+                                    // and Share (picture of my pass).
+                                    qrData: user == null
+                                        ? null
+                                        : AppConfig.profileLink(user.uid),
+                                    onScan: () => openPassScanner(context),
+                                    onShare: user == null
+                                        ? null
+                                        : () => showFlyPassShareSheet(
+                                              context,
+                                              uid: user.uid,
+                                              name: displayName,
+                                              photoUrl: photoUrl,
+                                              flyingSince:
+                                                  user.metadata.creationTime,
+                                              posts: postCount,
+                                              followers: followersSnap
+                                                      .data?.docs.length ??
+                                                  0,
+                                              following: followingSnap
+                                                      .data?.docs.length ??
+                                                  0,
+                                            ),
                                     onEdit: () {
                                       Navigator.push(
                                         context,

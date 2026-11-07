@@ -21,6 +21,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'password_reset.dart' show sendPasswordResetWithFeedback;
+import 'public_profile_screen.dart' show PublicProfileScreen;
 
 class AuthLinks {
   AuthLinks._();
@@ -50,6 +51,12 @@ class AuthLinks {
   static void _open(String link, [int tries = 0]) {
     final Uri? uri = Uri.tryParse(link);
     if (uri == null) return;
+    // 7 Nov 2026: /u/<uid> = someone's profile (the Fly Pass QR).
+    final List<String> parts = uri.pathSegments;
+    if (parts.length >= 2 && parts[0] == 'u') {
+      _openProfile(parts[1], tries);
+      return;
+    }
     final String mode = uri.queryParameters['mode'] ?? '';
     final String code = uri.queryParameters['oobCode'] ?? '';
     if (mode != 'resetPassword' || code.isEmpty) return;
@@ -63,6 +70,25 @@ class AuthLinks {
     }
     nav.push(MaterialPageRoute(
       builder: (_) => NewPasswordScreen(code: code),
+    ));
+  }
+
+  static void _openProfile(String uid, int tries) {
+    if (!RegExp(r'^[A-Za-z0-9]{10,40}$').hasMatch(uid)) return;
+    final NavigatorState? nav = _navigatorKey?.currentState;
+    // Wait for the first screen, and for Firebase to say who is signed in.
+    if (nav == null) {
+      if (tries < 40) {
+        Timer(const Duration(milliseconds: 150),
+            () => _openProfile(uid, tries + 1));
+      }
+      return;
+    }
+    // Not signed in: profiles are only for Fly users - the login screen
+    // stays (after signing in, scanning again opens it).
+    if (FirebaseAuth.instance.currentUser == null) return;
+    nav.push(MaterialPageRoute(
+      builder: (_) => PublicProfileScreen(userId: uid),
     ));
   }
 }

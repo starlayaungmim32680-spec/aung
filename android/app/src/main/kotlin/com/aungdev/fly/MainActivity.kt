@@ -86,13 +86,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // Only https password-reset links (the App Link) - nothing else.
+    // Only Fly's https App Links: password reset, and since 7 Nov 2026 a
+    // profile /u/<uid> (the Fly Pass QR) - nothing else. Dart decides
+    // what each one opens (new_password_screen.dart AuthLinks).
     private fun authLinkFrom(intent: Intent?): String? {
         if (intent?.action != Intent.ACTION_VIEW) return null
         val data = intent.data ?: return null
         if (data.scheme != "https") return null
         val path = data.path ?: return null
-        if (!path.startsWith("/__/auth/action") && !path.startsWith("/auth-action")) return null
+        if (!path.startsWith("/__/auth/action") &&
+            !path.startsWith("/auth-action") &&
+            !path.startsWith("/u/")) return null
         return data.toString()
     }
 
