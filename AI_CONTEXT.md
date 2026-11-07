@@ -1581,6 +1581,30 @@ OK). Play Console: Terms URL =
 > aung-1756e; cd ..` and check https://aung-1756e.firebaseapp.com/u/test1234567890,
 > 3) prod APK (5a-5e, --flavor prod)._
 >
+> _**Sky Pass prod DONE 7 Nov 2026 (confirmed by Ko on both phones):**
+> Worker deployed to livekit-token-worker (POST /weather + privacy page
+> "Last updated: 7 November 2026"); `firebase deploy --only hosting
+> --project aung-1756e` (3 files: index.html, u.html, assetlinks.json);
+> prod APK `Fly-bn263112204.apk` (232 s, 5c NEW `Scan to fly with me on
+> Fly` True / OLD `Could not send reset email - try again.` False),
+> installed as an Update (never uninstall prod). 5a note: Remove-Item
+> build failed once ("classes.dex ... used by another process") right
+> after the daemon stop - `flutter clean` then deleted build; next time
+> `Start-Sleep -Seconds 5; Remove-Item build -Recurse -Force` until
+> `Test-Path build` is False. **Open issue - Chrome "Dangerous site" on
+> https://aung-1756e.firebaseapp.com/u/...** (prod only; the same u.html
+> on fly-dev, the prod root page and /.well-known/assetlinks.json are
+> fine; Transparency Report for the host = "No available data"). Phones
+> with Fly are not affected (App Link opens Fly directly; the in-app
+> scanner never uses a browser) - only people WITHOUT Fly who open a
+> pass link in a browser see the warning. Reported as a false positive
+> on 7 Nov 2026 22:02 via safebrowsing.google.com/safebrowsing/
+> report_error ("Submission was successful"). **To do:** re-open the
+> link after 2-3 days; if still red after ~1 week: verify
+> aung-1756e.firebaseapp.com in Google Search Console (HTML file in
+> firebase_hosting/public, deploy) -> Security issues -> Request
+> review, or move the profile path (needs an app update)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
