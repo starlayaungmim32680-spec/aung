@@ -2,6 +2,9 @@
   "hosting": {
     "public": "public",
     "ignore": ["firebase.json", "**/node_modules/**"],
+    "rewrites": [
+      { "source": "/u/**", "destination": "/u.html" }
+    ],
     "headers": [
       {
         "source": "/.well-known/assetlinks.json",
