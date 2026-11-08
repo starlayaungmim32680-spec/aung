@@ -1651,7 +1651,7 @@ OK). Play Console: Terms URL =
 > after the age. 5a now has `Start-Sleep -Seconds 5` before Remove-Item
 > (the dex files were still locked right after the daemon stop). Not on
 > prod yet (Flight Path + mood go together)._
->>
+>
 > _8 Nov 2026 - **Bottom bar = "Sky Horizon" + "Neon Hologram" icons**
 > (Ko picked idea C of 6 bar mockups, then icon set F1 "the future look"
 > for every tab; confirmed by Ko on DEV, `FlyDev-bn263122011.apk`, 307 s;
@@ -1679,6 +1679,46 @@ OK). Play Console: Terms URL =
 > `kNavSilver` when not selected, Fly gradient + blur glow when
 > selected. The `'icon'` entries in `_menuItems` are no longer drawn.
 > Not on prod yet (goes with Flight Path + mood)._
+>
+> _8 Nov 2026 - **Day Scene = the story bar's background** (Ko: nature
+> instead of the black area - a different picture every day, never a
+> 7-day loop, the whole world in one build, no religious buildings
+> because religions differ per country, national days per country;
+> confirmed by Ko on DEV, `FlyDev-bn263122136.apk` then
+> `FlyDev-bn263122215.apk` (night brighter, land bigger, moon path);
+> 5c NEW `Merdeka Day` True / OLD `Create story` False). New
+> `lib/screens/day_scene.dart`: `DayScene` = `SkyBackdrop(weather,
+> showPlane: false)` (the Sky Pass sky by the phone's clock + real
+> weather) + `_LandscapePainter` + fireworks + a light bottom shade for
+> the names. `DaySceneSpec.forDay(local date, SkyWeatherInfo)` - seed =
+> FNV hash of "y-m-d-country", so everyone in one country sees the same
+> scene on one day and a new one the next: terrain (mountains / hills /
+> sea / lake / forest / fields / city / dunes / snowfield), tree (pine /
+> round / palm / cactus / bare), flowers, life (birds / butterflies /
+> balloons / kites by day, fireflies at night). Climate from the Worker:
+> tropical = palms + sea/hills, arid = dunes + cactus/palm, polar =
+> snowfield + pine, temperate winter (Dec-Feb north, Jun-Aug south) =
+> snow + pine/bare. Nature and plain buildings only - no religious or
+> cultural symbols. Moon (or sun) path on sea / lake under x 84% (82%
+> evening) only when the sky shows the sun/moon (clear / partly /
+> unknown). National days: `kNationalDays` (ISO country -> [month, day,
+> name], fixed-date happy days of ~100 countries, no solemn or
+> contested ones; MM 4 Jan + 12 Feb, MY 31 Aug + 16 Sep) + New Year
+> 1 Jan for everyone -> fireworks + "🎆 Happy ...!" chip. 5-minute timer
+> (phase / midnight) + `WeatherService.refresh()`. Dev only: long-press
+> the story bar = next day's scene + SnackBar "Day +n: terrain · tree ·
+> life" (every 5th = national-day preview; `daySceneDebugShift`).
+> story_screen.dart: StoriesBar = GestureDetector(dev long-press) ->
+> Stack[DayScene, `_buildRoute` (the old StreamBuilder; the scene stays
+> put while the stops scroll)]. sky_pass.dart: `SkyWeatherInfo` +
+> `country` / `zone` / `south`, `SkyBackdrop(showPlane)`. **Worker**
+> `/weather` now also returns `country` (cf.country), `zone`
+> (`weatherGeo`: arid if ARID_COUNTRIES and |lat| < 50, tropical |lat| <
+> 23.5, polar >= 60, else temperate) and `south` (lat < 0) - hints only,
+> never the location; privacy page "Weather and scenery", "Last
+> updated: 8 November 2026". Deployed to fly-dev-worker only. **Prod
+> (all together):** 1) Worker -> livekit-token-worker, 2) prod APK
+> (5a-5e, --flavor prod) = Flight Path + mood + bottom bar + Day Scene._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

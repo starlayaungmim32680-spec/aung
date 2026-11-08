@@ -5252,7 +5252,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
 <div class="wrap">
   <div class="logo">Fly</div>
   <h1>Privacy Policy</h1>
-  <p class="sub">Last updated: 7 November 2026</p>
+  <p class="sub">Last updated: 8 November 2026</p>
   <div class="tabs"><a href="/terms">Terms</a><a href="/terms#community-guidelines">Community Guidelines</a><a href="/privacy">Privacy</a><a href="/child-safety">Child Safety</a></div>
   
   <section>
@@ -5279,7 +5279,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li><b>Notification token</b> (Firebase Cloud Messaging) so we can send you notifications such as messages, calls and friend requests.</li>
       <li><b>Online status:</b> whether you are online and when you were last active.</li>
       <li><b>Time zone:</b> your phone's time zone (for example UTC+8), so your profile's sky can follow your local time.</li>
-      <li><b>Weather on your profile:</b> to show the weather in your own profile's sky, our server uses the approximate area of your internet connection (rounded to about 10 km) to ask MET Norway for the weather there. This area is not saved and is not shown to anyone.</li>
+      <li><b>Weather and scenery:</b> to show the weather in your own profile's sky and fitting scenery on Home (for example palm trees in the tropics, snow in winter, your country's national day), our server uses the approximate area of your internet connection (rounded to about 10 km) and its country. It asks MET Norway for the weather there and tells the app only the weather, the country and the climate zone. The area is not saved and is not shown to anyone.</li>
     </ul>
     <p>We do not collect your precise location, contacts or advertising ID.</p>
   </div>
@@ -5535,7 +5535,48 @@ function weatherConditionFrom(symbol) {
   return 'unknown';
 }
 
+// 8 Nov 2026 (Home "Day Scene", lib/screens/day_scene.dart): the answer
+// also carries the connection's COUNTRY code, a climate ZONE and whether
+// it is the SOUTHern half of the world - so the story bar's scenery fits
+// the place (palms in the tropics, snow in a northern winter, dunes in
+// desert countries) and national days can be celebrated. Never the area.
+const ARID_COUNTRIES = new Set([
+  'AE', 'SA', 'QA', 'KW', 'BH', 'OM', 'YE', 'EG', 'LY', 'DZ', 'TN', 'MA',
+  'EH', 'MR', 'ML', 'NE', 'TD', 'SD', 'DJ', 'SO', 'IQ', 'JO', 'NA', 'BW',
+  'TM', 'UZ', 'KZ', 'MN', 'AF', 'IR', 'PK',
+]);
+
+function weatherGeo(cf, lat) {
+  const country = typeof cf.country === 'string' ? cf.country.toUpperCase() : '';
+  let zone = 'temperate';
+  if (Number.isFinite(lat)) {
+    const a = Math.abs(lat);
+    if (ARID_COUNTRIES.has(country) && a < 50) zone = 'arid';
+    else if (a < 23.5) zone = 'tropical';
+    else if (a >= 60) zone = 'polar';
+  } else if (ARID_COUNTRIES.has(country)) {
+    zone = 'arid';
+  }
+  return {
+    country: /^[A-Z]{2}$/.test(country) ? country : null,
+    zone,
+    south: Number.isFinite(lat) ? lat < 0 : false,
+  };
+}
+
 async function handleWeather(request, env, url) {
+  const res = await handleWeatherCore(request, env, url);
+  // Add the place hints (computed fresh, not part of the 30 min cache).
+  try {
+    const cf = request.cf || {};
+    const data = await res.json();
+    return jsonResponse({ ...data, ...weatherGeo(cf, Number(cf.latitude)) });
+  } catch (_) {
+    return res;
+  }
+}
+
+async function handleWeatherCore(request, env, url) {
   const cf = request.cf || {};
   const lat = Number(cf.latitude);
   const lon = Number(cf.longitude);

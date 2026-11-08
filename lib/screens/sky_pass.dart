@@ -159,7 +159,17 @@ enum SkyWeather { clear, partly, cloudy, rain, thunder, fog, snow, unknown }
 class SkyWeatherInfo {
   final SkyWeather condition;
   final int? tempC;
-  const SkyWeatherInfo(this.condition, this.tempC);
+
+  /// 8 Nov 2026 (Home "Day Scene"): from the same Worker answer - the
+  /// country code of the connection (e.g. "MM"), the climate zone
+  /// ("tropical" / "temperate" / "polar" / "arid") and whether it is the
+  /// southern half of the world (seasons the other way round). Never the
+  /// area itself.
+  final String? country;
+  final String? zone;
+  final bool south;
+  const SkyWeatherInfo(this.condition, this.tempC,
+      {this.country, this.zone, this.south = false});
 }
 
 SkyWeather _weatherFromName(Object? name) {
@@ -202,9 +212,14 @@ class WeatherService {
       final Object? t = body['tempC'];
       _fetchedAt = DateTime.now();
       if (_testing) return;
+      final Object? country = body['country'];
+      final Object? zone = body['zone'];
       current.value = SkyWeatherInfo(
         _weatherFromName(body['condition']),
         t is num ? t.round() : null,
+        country: country is String && country.length == 2 ? country : null,
+        zone: zone is String ? zone : null,
+        south: body['south'] == true,
       );
     } catch (_) {
       // Offline / not signed in: keep the plain time-of-day sky.
@@ -221,8 +236,9 @@ class WeatherService {
     final List<SkyWeather> all =
         SkyWeather.values.where((w) => w != SkyWeather.unknown).toList();
     final int i = all.indexOf(now);
-    current.value =
-        SkyWeatherInfo(all[(i + 1) % all.length], current.value?.tempC ?? 28);
+    final SkyWeatherInfo? was = current.value;
+    current.value = SkyWeatherInfo(all[(i + 1) % all.length], was?.tempC ?? 28,
+        country: was?.country, zone: was?.zone, south: was?.south ?? false);
   }
 }
 
@@ -260,7 +276,12 @@ class SkyBackdrop extends StatefulWidget {
 
   /// Real weather to draw (null / unknown = just the time-of-day sky).
   final SkyWeather? weather;
-  const SkyBackdrop({super.key, this.offsetMinutes, this.weather});
+
+  /// The little Fly plane crossing the sky (off on Home's story bar,
+  /// which has its own plane).
+  final bool showPlane;
+  const SkyBackdrop(
+      {super.key, this.offsetMinutes, this.weather, this.showPlane = true});
 
   @override
   State<SkyBackdrop> createState() => _SkyBackdropState();
@@ -306,7 +327,7 @@ class _SkyBackdropState extends State<SkyBackdrop>
         duration: const Duration(milliseconds: 900),
         child: CustomPaint(
           key: ValueKey('${_phase.name}-${w.name}'),
-          painter: _SkyPainter(_phase, w, _anim),
+          painter: _SkyPainter(_phase, w, _anim, plane: widget.showPlane),
           child: const SizedBox.expand(),
         ),
       ),
@@ -318,7 +339,9 @@ class _SkyPainter extends CustomPainter {
   final SkyPhase phase;
   final SkyWeather weather;
   final Animation<double> t;
-  _SkyPainter(this.phase, this.weather, this.t) : super(repaint: t);
+  final bool plane;
+  _SkyPainter(this.phase, this.weather, this.t, {this.plane = true})
+      : super(repaint: t);
 
   // One loop of the animation = 48 s; "seconds" turns it into time.
   static const double _loopSeconds = 48;
@@ -412,7 +435,7 @@ class _SkyPainter extends CustomPainter {
       _paintRain(canvas, size, seconds);
     }
     if (weather == SkyWeather.snow) _paintSnow(canvas, size, seconds);
-    if (weather != SkyWeather.thunder && weather != SkyWeather.fog) {
+    if (plane && weather != SkyWeather.thunder && weather != SkyWeather.fog) {
       _paintPlane(canvas, size, v);
     }
     if (weather == SkyWeather.thunder) _paintLightning(canvas, size, seconds);

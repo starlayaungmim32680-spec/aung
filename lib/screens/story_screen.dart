@@ -18,6 +18,7 @@ import 'video_effects_screen.dart';
 import 'photo_effects_screen.dart';
 import 'story_music.dart';
 import 'story_mood.dart';
+import 'day_scene.dart';
 import 'sound_screen.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
@@ -570,203 +571,227 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
 
     return SizedBox(
       height: _kBarHeight,
-      child: StreamBuilder<QuerySnapshot>(
-        stream: _storiesStream,
-        builder: (context, snapshot) {
-          final docs = snapshot.data?.docs ?? [];
-          final DateTime now = DateTime.now();
-
-          // Group active stories by user (newest first within each user).
-          final Map<String, List<QueryDocumentSnapshot>> byUser = {};
-          for (final d in docs) {
-            final m = d.data() as Map<String, dynamic>;
-            final uid = (m['userId'] as String?) ?? '';
-            if (uid.isEmpty || hiddenIds.contains(uid)) continue;
-            // The query's `now` is fixed when the stream starts, so also
-            // drop stories that have expired since.
-            final Timestamp? exp = m['expiresAt'] as Timestamp?;
-            if (exp != null && exp.toDate().isBefore(now)) continue;
-            // Only a video story whose encoding FAILED is hidden from
-            // others (Early-Play: the rest play the original file).
-            if (!isVideoVisibleTo(m, myId)) continue;
-            byUser.putIfAbsent(uid, () => []).add(d);
-          }
-
-          // My own stories first, then people with stories I haven't
-          // seen yet, then the ones I've already watched (7 Nov 2026).
-          final Map<String, int> seen = StorySeen.instance.seen.value;
-          bool unseen(String u) => _newestMs(byUser[u]!) > (seen[u] ?? 0);
-          final List<String> userIds = byUser.keys.toList()
-            ..sort((a, b) {
-              if (a == myId) return -1;
-              if (b == myId) return 1;
-              final bool ua = unseen(a), ub = unseen(b);
-              if (ua != ub) return ua ? -1 : 1;
-              return 0;
-            });
-
-          // Open the first video of the first few people now, so tapping
-          // their story starts without a spinner. (The viewer plays each
-          // person's oldest story first.)
-          final List<Map<String, dynamic>> toWarm = [];
-          for (final String u in userIds.take(3)) {
-            final Map<String, dynamic> first =
-                byUser[u]!.last.data() as Map<String, dynamic>;
-            if (first['mediaType'] == 'video') toWarm.add(first);
-          }
-          // Also download the video FILES of the first people's stories, so
-          // they play like a local file (see story_file_prefetch.dart).
-          final List<String> toDownload = [
-            for (final String u in userIds.take(6))
-              for (final QueryDocumentSnapshot st
-                  in byUser[u]!.reversed.take(3))
-                if ((st.data() as Map<String, dynamic>)['mediaType'] == 'video')
-                  ((st.data() as Map<String, dynamic>)['mediaUrl']
-                          as String?) ??
-                      '',
-          ];
-          if (toDownload.isNotEmpty) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              for (final String u in toDownload) {
-                StoryFilePrefetch.prefetch(u);
+      child: GestureDetector(
+        // Dev app only: long-press = the next day's scene (day_scene.dart).
+        behavior: HitTestBehavior.translucent,
+        onLongPress: AppConfig.isDev
+            ? () {
+                final String label = DayScene.debugNextDay();
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(SnackBar(
+                    content: Text('Day +${daySceneDebugShift.value}: $label'),
+                    duration: const Duration(seconds: 2),
+                  ));
               }
-            });
-          }
-          if (toWarm.isNotEmpty) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              for (final Map<String, dynamic> m in toWarm) {
-                StoryVideoPrefetch.warm(
-                    (m['mediaUrl'] as String?) ?? '', m['videoReady'] == false);
-              }
-            });
-          }
+            : null,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Today's nature scene behind the route (stays put while the
+            // stops scroll).
+            const Positioned.fill(child: DayScene()),
+            Positioned.fill(child: _buildRoute(context, myId, hiddenIds)),
+          ],
+        ),
+      ),
+    );
+  }
 
-          final Map<String, int> seenNow = StorySeen.instance.seen.value;
+  Widget _buildRoute(
+      BuildContext context, String? myId, Set<String> hiddenIds) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _storiesStream,
+      builder: (context, snapshot) {
+        final docs = snapshot.data?.docs ?? [];
+        final DateTime now = DateTime.now();
 
-          // Stop 0 = me (add a story), then one stop per person.
-          final List<Widget> stops = [
-            _AddStoryStop(
-              profileStream: _myProfileStream,
-              onTap: () => addStory(context),
-            ),
-            for (final String uid in userIds)
-              Builder(builder: (context) {
-                final stories = byUser[uid]!;
-                final latest = stories.first.data() as Map<String, dynamic>;
-                final int newest = _newestMs(stories);
-                return _StoryStop(
-                  key: ValueKey(uid),
-                  name: uid == myId
-                      ? 'Your story'
-                      : (latest['userName'] as String? ?? 'User'),
-                  photoUrl: latest['userPhoto'] as String? ?? '',
-                  previewUrl: _storyPreviewUrl(latest),
-                  isVideo: latest['mediaType'] == 'video',
-                  drift: _drift,
-                  age: _storyAgeLabel(latest),
-                  storyCount: stories.length,
-                  seen: newest <= (seenNow[uid] ?? 0),
-                  onTap: () {
-                    // Everyone's stories, one group per person in the
-                    // same order as the bar, so the viewer can move on to
-                    // the next person by itself.
-                    final groups = [
-                      for (final u in userIds) byUser[u]!.reversed.toList(),
-                    ];
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => StoryViewerScreen(
-                          groups: groups,
-                          initialGroup: userIds.indexOf(uid),
-                        ),
-                      ),
-                    );
-                  },
-                );
-              }),
-          ];
+        // Group active stories by user (newest first within each user).
+        final Map<String, List<QueryDocumentSnapshot>> byUser = {};
+        for (final d in docs) {
+          final m = d.data() as Map<String, dynamic>;
+          final uid = (m['userId'] as String?) ?? '';
+          if (uid.isEmpty || hiddenIds.contains(uid)) continue;
+          // The query's `now` is fixed when the stream starts, so also
+          // drop stories that have expired since.
+          final Timestamp? exp = m['expiresAt'] as Timestamp?;
+          if (exp != null && exp.toDate().isBefore(now)) continue;
+          // Only a video story whose encoding FAILED is hidden from
+          // others (Early-Play: the rest play the original file).
+          if (!isVideoVisibleTo(m, myId)) continue;
+          byUser.putIfAbsent(uid, () => []).add(d);
+        }
 
-          // The newest story with a mood decides each person's feeling.
-          final List<MoodStop> moodStops = [];
-          for (int i = 0; i < userIds.length; i++) {
-            StoryMood? mood;
-            for (final QueryDocumentSnapshot d in byUser[userIds[i]]!) {
-              mood = storyMoodById((d.data() as Map<String, dynamic>)['mood']);
-              if (mood != null) break;
+        // My own stories first, then people with stories I haven't
+        // seen yet, then the ones I've already watched (7 Nov 2026).
+        final Map<String, int> seen = StorySeen.instance.seen.value;
+        bool unseen(String u) => _newestMs(byUser[u]!) > (seen[u] ?? 0);
+        final List<String> userIds = byUser.keys.toList()
+          ..sort((a, b) {
+            if (a == myId) return -1;
+            if (b == myId) return 1;
+            final bool ua = unseen(a), ub = unseen(b);
+            if (ua != ub) return ua ? -1 : 1;
+            return 0;
+          });
+
+        // Open the first video of the first few people now, so tapping
+        // their story starts without a spinner. (The viewer plays each
+        // person's oldest story first.)
+        final List<Map<String, dynamic>> toWarm = [];
+        for (final String u in userIds.take(3)) {
+          final Map<String, dynamic> first =
+              byUser[u]!.last.data() as Map<String, dynamic>;
+          if (first['mediaType'] == 'video') toWarm.add(first);
+        }
+        // Also download the video FILES of the first people's stories, so
+        // they play like a local file (see story_file_prefetch.dart).
+        final List<String> toDownload = [
+          for (final String u in userIds.take(6))
+            for (final QueryDocumentSnapshot st in byUser[u]!.reversed.take(3))
+              if ((st.data() as Map<String, dynamic>)['mediaType'] == 'video')
+                ((st.data() as Map<String, dynamic>)['mediaUrl'] as String?) ??
+                    '',
+        ];
+        if (toDownload.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            for (final String u in toDownload) {
+              StoryFilePrefetch.prefetch(u);
             }
-            if (mood == null) continue;
-            final bool wasSeen =
-                _newestMs(byUser[userIds[i]]!) <= (seenNow[userIds[i]] ?? 0);
-            // Stop 0 is "Add story", so person i is stop i + 1.
-            moodStops
-                .add(MoodStop(_stopCenter(i + 1), mood, wasSeen ? 0.45 : 1));
+          });
+        }
+        if (toWarm.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            for (final Map<String, dynamic> m in toWarm) {
+              StoryVideoPrefetch.warm(
+                  (m['mediaUrl'] as String?) ?? '', m['videoReady'] == false);
+            }
+          });
+        }
+
+        final Map<String, int> seenNow = StorySeen.instance.seen.value;
+
+        // Stop 0 = me (add a story), then one stop per person.
+        final List<Widget> stops = [
+          _AddStoryStop(
+            profileStream: _myProfileStream,
+            onTap: () => addStory(context),
+          ),
+          for (final String uid in userIds)
+            Builder(builder: (context) {
+              final stories = byUser[uid]!;
+              final latest = stories.first.data() as Map<String, dynamic>;
+              final int newest = _newestMs(stories);
+              return _StoryStop(
+                key: ValueKey(uid),
+                name: uid == myId
+                    ? 'Your story'
+                    : (latest['userName'] as String? ?? 'User'),
+                photoUrl: latest['userPhoto'] as String? ?? '',
+                previewUrl: _storyPreviewUrl(latest),
+                isVideo: latest['mediaType'] == 'video',
+                drift: _drift,
+                age: _storyAgeLabel(latest),
+                storyCount: stories.length,
+                seen: newest <= (seenNow[uid] ?? 0),
+                onTap: () {
+                  // Everyone's stories, one group per person in the
+                  // same order as the bar, so the viewer can move on to
+                  // the next person by itself.
+                  final groups = [
+                    for (final u in userIds) byUser[u]!.reversed.toList(),
+                  ];
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => StoryViewerScreen(
+                        groups: groups,
+                        initialGroup: userIds.indexOf(uid),
+                      ),
+                    ),
+                  );
+                },
+              );
+            }),
+        ];
+
+        // The newest story with a mood decides each person's feeling.
+        final List<MoodStop> moodStops = [];
+        for (int i = 0; i < userIds.length; i++) {
+          StoryMood? mood;
+          for (final QueryDocumentSnapshot d in byUser[userIds[i]]!) {
+            mood = storyMoodById((d.data() as Map<String, dynamic>)['mood']);
+            if (mood != null) break;
           }
+          if (mood == null) continue;
+          final bool wasSeen =
+              _newestMs(byUser[userIds[i]]!) <= (seenNow[userIds[i]] ?? 0);
+          // Stop 0 is "Add story", so person i is stop i + 1.
+          moodStops.add(MoodStop(_stopCenter(i + 1), mood, wasSeen ? 0.45 : 1));
+        }
 
-          final bool empty = userIds.isEmpty;
-          final double width = _kRouteStartX +
-              (stops.length - 1) * _kStopGap +
-              (empty ? 250 : 60);
+        final bool empty = userIds.isEmpty;
+        final double width =
+            _kRouteStartX + (stops.length - 1) * _kStopGap + (empty ? 250 : 60);
 
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: max(width, MediaQuery.of(context).size.width),
-              height: _kBarHeight,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // The route + the plane.
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: max(width, MediaQuery.of(context).size.width),
+            height: _kBarHeight,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // The route + the plane.
+                Positioned.fill(
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      painter: _FlightPathPainter(
+                        stops: stops.length,
+                        flow: _flow,
+                        trailOff: empty ? 200 : 40,
+                      ),
+                    ),
+                  ),
+                ),
+                // Feelings float behind the circles.
+                if (moodStops.isNotEmpty)
                   Positioned.fill(
-                    child: RepaintBoundary(
-                      child: CustomPaint(
-                        painter: _FlightPathPainter(
-                          stops: stops.length,
-                          flow: _flow,
-                          trailOff: empty ? 200 : 40,
+                    child: IgnorePointer(
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter:
+                              StoryMoodPainter(stops: moodStops, t: _moodT),
                         ),
                       ),
                     ),
                   ),
-                  // Feelings float behind the circles.
-                  if (moodStops.isNotEmpty)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: RepaintBoundary(
-                          child: CustomPaint(
-                            painter:
-                                StoryMoodPainter(stops: moodStops, t: _moodT),
-                          ),
-                        ),
+                for (int i = 0; i < stops.length; i++)
+                  Positioned(
+                    left: _stopCenter(i).dx - 40,
+                    top: _stopCenter(i).dy - _kStopSize / 2,
+                    width: 80,
+                    child: stops[i],
+                  ),
+                if (empty)
+                  Positioned(
+                    left: _kRouteStartX + 48,
+                    top: _stopCenter(0).dy - 18,
+                    child: const Text(
+                      'Your story flies here\nfor 24 hours ✈',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 12.5,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  for (int i = 0; i < stops.length; i++)
-                    Positioned(
-                      left: _stopCenter(i).dx - 40,
-                      top: _stopCenter(i).dy - _kStopSize / 2,
-                      width: 80,
-                      child: stops[i],
-                    ),
-                  if (empty)
-                    Positioned(
-                      left: _kRouteStartX + 48,
-                      top: _stopCenter(0).dy - 18,
-                      child: const Text(
-                        'Your story flies here\nfor 24 hours ✈',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 12.5,
-                          height: 1.35,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+                  ),
+              ],
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }
