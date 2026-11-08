@@ -1720,6 +1720,18 @@ OK). Play Console: Terms URL =
 > (all together):** 1) Worker -> livekit-token-worker, 2) prod APK
 > (5a-5e, --flavor prod) = Flight Path + mood + bottom bar + Day Scene._
 >
+> _**Flight Path + Story mood + Sky Horizon bar + Day Scene - prod DONE
+> 8 Nov 2026 (confirmed by Ko: "everything is fine"):** Worker
+> (`/weather` + country / zone / south, privacy "Last updated: 8 November
+> 2026") deployed to livekit-token-worker; prod APK `Fly-bn263122249.apk`
+> (235.8 s, 5c NEW `Merdeka Day` / `How do you feel?` / `Add story` all
+> True, OLD `Create story` False), installed as an Update. Root
+> `firebase.json` had been overwritten by the hosting config by mistake
+> (commit 2918e7f) - restored from 84be34d in 409534b; the hosting config
+> lives ONLY in `firebase_hosting/firebase.json`. Prod has no long-press
+> scene change (dev only, by design) - the scene changes by itself after
+> midnight, one per day per country._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
