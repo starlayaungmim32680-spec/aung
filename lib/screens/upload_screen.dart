@@ -17,6 +17,12 @@ import 'post_audience.dart';
 import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
 import 'posting_ban.dart';
+import 'upload_orbit.dart';
+import 'story_screen.dart' show addStory;
+
+/// Upload's "Go Live" shortcut asks the main screen (which owns the
+/// Go Live dialog) to start it - main_navigation_screen.dart listens.
+final ValueNotifier<int> goLiveSignal = ValueNotifier<int>(0);
 
 class UploadScreen extends StatefulWidget {
   // When opened from a sound page via "Use this sound", these carry the
@@ -197,12 +203,14 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   // Called when the user picks an upload type (Short or Video)
-  Future<void> _chooseType(String type) async {
+  // [source] = the planet already said camera or gallery (8 Nov 2026,
+  // Star Jet Orbit) - then the "Record / Gallery" sheet is skipped.
+  Future<void> _chooseType(String type, {ImageSource? source}) async {
     setState(() {
       _videoType = type;
       _errorMessage = null;
     });
-    await _pickAndTrimVideo();
+    await _pickAndTrimVideo(source: source);
     // If the user backed out without picking a video, return to the chooser
     if (_videoBytes == null && mounted) {
       setState(() => _videoType = null);
@@ -234,48 +242,51 @@ class _UploadScreenState extends State<UploadScreen> {
 
   // Asks the user whether to record a new video or pick one from the
   // gallery, then returns the picked file (or null if cancelled).
-  Future<XFile?> _pickVideoFile() async {
-    final ImageSource? source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 8),
-              ListTile(
-                leading:
-                    const Icon(Icons.videocam_rounded, color: Colors.white),
-                title: const Text('Record a video',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined,
-                    color: Colors.white),
-                title: const Text('Choose from gallery',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
-              ),
-              const SizedBox(height: 8),
-            ],
+  Future<XFile?> _pickVideoFile({ImageSource? preset}) async {
+    final ImageSource? source = preset ??
+        await showModalBottomSheet<ImageSource>(
+          context: context,
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
           ),
+          builder: (sheetContext) {
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 12),
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    leading:
+                        const Icon(Icons.videocam_rounded, color: Colors.white),
+                    title: const Text('Record a video',
+                        style: TextStyle(color: Colors.white)),
+                    onTap: () =>
+                        Navigator.pop(sheetContext, ImageSource.camera),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.photo_library_outlined,
+                        color: Colors.white),
+                    title: const Text('Choose from gallery',
+                        style: TextStyle(color: Colors.white)),
+                    onTap: () =>
+                        Navigator.pop(sheetContext, ImageSource.gallery),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
         );
-      },
-    );
 
     if (source == null) return null;
     if (source == ImageSource.camera) {
@@ -292,8 +303,8 @@ class _UploadScreenState extends State<UploadScreen> {
     return picker.pickVideo(source: source);
   }
 
-  Future<void> _pickAndTrimVideo() async {
-    final XFile? picked = await _pickVideoFile();
+  Future<void> _pickAndTrimVideo({ImageSource? source}) async {
+    final XFile? picked = await _pickVideoFile(preset: source);
 
     if (picked == null) return;
     if (!mounted) return;
@@ -527,10 +538,15 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Widget _buildUpload(BuildContext context) {
+    // The chooser draws the live sky behind a see-through app bar.
+    final bool choosing = _videoType == null;
     return Scaffold(
       backgroundColor: Colors.black,
+      extendBodyBehindAppBar: choosing,
       appBar: AppBar(
-        backgroundColor: Colors.black,
+        backgroundColor: choosing ? Colors.transparent : Colors.black,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         title: const Text('Upload', style: TextStyle(color: Colors.white)),
         leading: _videoType != null
             ? IconButton(
@@ -539,176 +555,123 @@ class _UploadScreenState extends State<UploadScreen> {
               )
             : null,
       ),
-      body: Column(
-        children: [
-          // Current sound status - shown once a sound has been picked
-          // (either via "Use this sound" from a sound page, or via the
-          // in-screen picker below).
-          if (_selectedSoundId != null && _selectedSoundId!.isNotEmpty)
-            Container(
-              width: double.infinity,
-              color: const Color(0xFF1E1E1E),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Row(
-                children: [
-                  const Icon(Icons.music_note,
-                      color: Colors.redAccent, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          [
-                            _selectedSoundTitle ?? 'Original sound',
-                            _selectedSoundOwnerName ?? '',
-                          ].where((s) => s.isNotEmpty).join(' - '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
+      body: choosing
+          ? Stack(
+              fit: StackFit.expand,
+              children: [
+                Positioned.fill(child: _buildTypeChooser()),
+                // A sound picked via "Use this sound" stays visible.
+                if (_selectedSoundId != null && _selectedSoundId!.isNotEmpty)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: MediaQuery.paddingOf(context).top + kToolbarHeight,
+                    child: _buildSoundStatus(),
+                  ),
+              ],
+            )
+          : Column(
+              children: [
+                // Current sound status - shown once a sound has been picked
+                // (either via "Use this sound" from a sound page, or via the
+                // in-screen picker below).
+                if (_selectedSoundId != null && _selectedSoundId!.isNotEmpty)
+                  _buildSoundStatus()
+                else if (_videoType != null)
+                  // No sound picked yet - offer the library once a video's
+                  // actually being posted (not on the initial type-chooser).
+                  Material(
+                    color: const Color(0xFF1E1E1E),
+                    child: InkWell(
+                      onTap: _pickSound,
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.music_note,
+                                color: Colors.white54, size: 18),
+                            SizedBox(width: 8),
+                            Text('Add sound',
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 14)),
+                            Spacer(),
+                            Icon(Icons.chevron_right,
+                                color: Colors.white38, size: 18),
+                          ],
                         ),
-                        const Text(
-                          'This sound will replace your video\'s audio',
-                          style: TextStyle(color: Colors.white54, fontSize: 12),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
-                  TextButton(
-                    onPressed: _pickSound,
-                    child: const Text('Change'),
-                  ),
-                  IconButton(
-                    onPressed: _clearSelectedSound,
-                    icon: const Icon(Icons.close,
-                        color: Colors.white54, size: 18),
-                    tooltip: 'Remove sound',
-                  ),
-                ],
-              ),
-            )
-          else if (_videoType != null)
-            // No sound picked yet - offer the library once a video's
-            // actually being posted (not on the initial type-chooser).
-            Material(
-              color: const Color(0xFF1E1E1E),
-              child: InkWell(
-                onTap: _pickSound,
-                child: Container(
-                  width: double.infinity,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.music_note, color: Colors.white54, size: 18),
-                      SizedBox(width: 8),
-                      Text('Add sound',
-                          style:
-                              TextStyle(color: Colors.white70, fontSize: 14)),
-                      Spacer(),
-                      Icon(Icons.chevron_right,
-                          color: Colors.white38, size: 18),
-                    ],
+                Expanded(
+                  child: _videoType == null
+                      ? _buildTypeChooser()
+                      : _buildUploadForm(),
+                ),
+              ],
+            ),
+    );
+  }
+
+  // The first screen: "Star Jet Orbit" (upload_orbit.dart, 8 Nov 2026) -
+  // 4 planets = Record Short / Record Video / Short or Video from Gallery,
+  // each straight to its start; Story + Go Live shortcuts under it (not
+  // when Upload was opened for a sound or a video reply).
+  Widget _buildTypeChooser() {
+    final bool plainUpload =
+        widget.presetSoundId == null && widget.replyToPostId == null;
+    return UploadOrbit(
+      onPlanet: (p) => _chooseType(p.type, source: p.source),
+      onStory: plainUpload ? () => addStory(context) : null,
+      onGoLive: plainUpload ? () => goLiveSignal.value++ : null,
+    );
+  }
+
+  // The picked sound (title, owner, Change / remove).
+  Widget _buildSoundStatus() {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF1E1E1E),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.music_note, color: Colors.redAccent, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  [
+                    _selectedSoundTitle ?? 'Original sound',
+                    _selectedSoundOwnerName ?? '',
+                  ].where((s) => s.isNotEmpty).join(' - '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-              ),
+                const Text(
+                  'This sound will replace your video\'s audio',
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
             ),
-          Expanded(
-            child:
-                _videoType == null ? _buildTypeChooser() : _buildUploadForm(),
+          ),
+          TextButton(
+            onPressed: _pickSound,
+            child: const Text('Change'),
+          ),
+          IconButton(
+            onPressed: _clearSelectedSound,
+            icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+            tooltip: 'Remove sound',
           ),
         ],
-      ),
-    );
-  }
-
-  // The first screen: choose Short or Video
-  Widget _buildTypeChooser() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text(
-            'What do you want to post?',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 28),
-          _buildChoiceCard(
-            type: 'short',
-            icon: Icons.smartphone,
-            title: 'Short Video',
-            subtitle: 'Full-screen vertical',
-            colors: const [Color(0xFFFF4B6E), Color(0xFF9C4DFF)],
-          ),
-          const SizedBox(height: 18),
-          _buildChoiceCard(
-            type: 'long',
-            icon: Icons.movie_outlined,
-            title: 'Video',
-            subtitle: 'Landscape',
-            colors: const [Color(0xFF3A8DFF), Color(0xFF1565C0)],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChoiceCard({
-    required String type,
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required List<Color> colors,
-  }) {
-    return GestureDetector(
-      onTap: () => _chooseType(type),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 20),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: colors,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.white, size: 40),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right, color: Colors.white),
-          ],
-        ),
       ),
     );
   }

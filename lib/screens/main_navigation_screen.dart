@@ -177,11 +177,17 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) => _openPendingPost());
     CoinService.instance.awardDailyLogin();
     navigateToHomeSignal.addListener(_onNavigateToHomeSignal);
+    // Upload's "Go Live" shortcut (Star Jet Orbit, 8 Nov 2026).
+    goLiveSignal.addListener(_onGoLiveSignal);
     // Call-reliability permissions (battery optimization, overlay,
     // full-screen intent, autostart) are intentionally NOT requested here
     // - they're only requested when a call actually starts, from
     // video_call_screen.dart, so opening the app never triggers a
     // permission prompt on its own. See call_permissions.dart.
+  }
+
+  void _onGoLiveSignal() {
+    if (mounted) _startLiveFlow();
   }
 
   // Called when UploadScreen pings navigateToHomeSignal right after a post
@@ -533,6 +539,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     _callSubscription?.cancel();
     _dingPlayer.dispose();
     navigateToHomeSignal.removeListener(_onNavigateToHomeSignal);
+    goLiveSignal.removeListener(_onGoLiveSignal);
     NotificationService.pendingChat.removeListener(_openPendingChat);
     NotificationService.pendingFriend.removeListener(_onPendingFriend);
     NotificationService.pendingPost.removeListener(_openPendingPost);

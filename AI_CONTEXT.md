@@ -1732,6 +1732,29 @@ OK). Play Console: Terms URL =
 > scene change (dev only, by design) - the scene changes by itself after
 > midnight, one per day per country._
 >
+> _8 Nov 2026 - **Upload chooser = "Star Jet Orbit"** (Ko picked idea B
+> of 3 mockups; confirmed by Ko on DEV, `FlyDev-bn263122333.apk`, 287 s;
+> 5c NEW `Tap a planet to start` True / OLD `Full-screen vertical`
+> False). New `lib/screens/upload_orbit.dart`: `UploadOrbit(onPlanet,
+> onStory, onGoLive)` = live sky (`SkyBackdrop(weather, showPlane:
+> false)`) + "Launch something" / "Tap a planet to start" + the Star Jet
+> core (`FlyNavIcon(upload, active)` big, breathing violet glow, "CREATE")
+> inside 2 rings (`_RingsPainter`: dashed violet outer, thin cyan inner
+> with 3 little moons) + 4 planets (`kUploadPlanets`) circling slowly
+> (48 s turn, labels stay upright): Record Short (pink, camera, 9:16),
+> Record Video (blue, camera, 16:9), Video from Gallery (cyan), Short
+> from Gallery (amber). Tap = the planet flies into the core (420 ms,
+> core flashes), then `_chooseType(type, source:)` - the old "Record a
+> video / Choose from gallery" sheet is skipped (`_pickVideoFile(preset)`;
+> the "change video" button still shows the sheet). Under the orbit:
+> Story (`addStory`) + Go Live shortcuts, hidden when Upload was opened
+> for a sound or a video reply. Go Live = `goLiveSignal` (upload_screen.dart)
+> -> main_navigation_screen.dart `_onGoLiveSignal` -> `_startLiveFlow`
+> (same dialog as the Live tab). upload_screen.dart: chooser = Stack
+> under a transparent app bar (`extendBodyBehindAppBar` while choosing);
+> `_buildChoiceCard` gone; the sound row is `_buildSoundStatus()` (also
+> shown over the orbit for "Use this sound"). Not on prod yet._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
