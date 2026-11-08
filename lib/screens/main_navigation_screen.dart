@@ -28,6 +28,7 @@ import '../search_service.dart';
 import 'public_profile_screen.dart';
 import 'moderation_service.dart';
 import 'terms_consent.dart';
+import 'nav_icons.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -51,7 +52,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // ever per account, then never again.
   bool _showSwipeHint = false;
 
-  late AnimationController _rotationController;
+  // Drives the selected bar icon's little motion (nav_icons.dart).
+  late final AnimationController _navFx = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 4),
+  )..repeat();
 
   StreamSubscription<QuerySnapshot>? _chatSubscription;
   bool _firstSnapshot = true;
@@ -157,10 +162,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     // person sees (a persistent, silent "You're online" notification -
     // unavoidable by Android's own rule for any foreground service).
     kBackgroundChannel.invokeMethod('startPresenceService').catchError((_) {});
-    _rotationController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
     _swipePageController = PageController(initialPage: 0); // start on Home
     _maybeShowOnboardingOnce();
     _listenForNewMessages();
@@ -524,7 +525,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     WidgetsBinding.instance.removeObserver(this);
     _presenceHeartbeatTimer?.cancel();
     kBackgroundChannel.invokeMethod('stopPresenceService').catchError((_) {});
-    _rotationController.dispose();
+    _navFx.dispose();
     _swipePageController.dispose();
     _chatSubscription?.cancel();
     BlockService.instance.hidden.removeListener(_recomputeUnread);
@@ -821,141 +822,248 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     return (width / 390).clamp(0.85, 1.2);
   }
 
-  // Menu item button. Size stays constant whether active or not — only the
-  // color/gradient changes, so selecting a tab never makes the button grow
-  // into a bigger box.
-  Widget _buildMenuItem(int i) {
-    final item = _menuItems[i];
-    final bool isActive = _currentIndex == i;
-    final List<Color> colors = (item['colors'] as List).cast<Color>();
-    final double scale = _uiScale(context);
+  // 8 Nov 2026 - "Sky Horizon" bottom bar (Ko picked idea C, exactly as
+  // the mockup): the bar's top edge is a curved horizon (low at both
+  // ends, high in the middle) drawn as a thin Fly-gradient line. The
+  // active tab sits ON the horizon like a rising sun - a soft glow behind
+  // it, its name underneath - and glides there when you switch; the other
+  // tabs rest just below the line. Upload is a gradient ✈ circle sitting
+  // on top of the curve in the middle. Same tabs and actions as before
+  // (Live opens the Go Live dialog), same unread badge on Chat.
+  // Same total height as the old bar (58), so the feed's "views" row
+  // and captions above it are not covered (8 Nov 2026 fix).
+  static const double _kHorizonEdge = 28; // curve y at both ends
+  static const double _kHorizonPeak = -8; // control point (middle ~10)
 
-    return GestureDetector(
-      onTap: () {
-        if (item['action'] == 'live') {
-          _startLiveFlow();
-        } else {
-          _selectTab(i);
-        }
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 280),
-        curve: Curves.easeOutCubic,
-        padding: EdgeInsets.symmetric(
-          horizontal: 14 * scale,
-          vertical: 12 * scale,
-        ),
-        // No background box behind the active icon (so the screen behind
-        // the menu row stays visible) - instead, Fly's own take on an
-        // "active" indicator: a small satellite dot continuously orbiting
-        // the icon, echoing the big orbit button's own theme, rather than
-        // the plain highlighted-background pill every other app uses.
-        child: SizedBox(
-          width: 26 * scale,
-          height: 26 * scale,
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              ShaderMask(
-                shaderCallback: (bounds) => (isActive
-                        ? LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: colors,
-                          )
-                        : const LinearGradient(
-                            colors: [Colors.white, Colors.white],
-                          ))
-                    .createShader(bounds),
-                child: Icon(
-                  item['icon'],
-                  color: Colors.white,
-                  size: 26 * scale,
-                  shadows: isActive
-                      ? [
-                          Shadow(
-                              color: colors.first.withOpacity(0.7),
-                              blurRadius: 12),
-                          const Shadow(color: Colors.black54, blurRadius: 6),
-                        ]
-                      : const [Shadow(color: Colors.black54, blurRadius: 6)],
-                ),
-              ),
-              // Unread messages badge on the Chat tab (Fly gradient, pops
-              // in/out, "99+" cap) - its own ValueListenableBuilder so a
-              // new message never rebuilds the whole bottom bar.
-              if (item['label'] == 'Chat')
-                Positioned(
-                  right: -10 * scale,
-                  top: -8 * scale,
-                  child: ValueListenableBuilder<int>(
-                    valueListenable: _unreadTotal,
-                    builder: (context, count, _) => AnimatedScale(
-                      scale: count > 0 ? 1 : 0,
-                      duration: const Duration(milliseconds: 280),
-                      curve: Curves.elasticOut,
-                      child: Container(
-                        padding: EdgeInsets.symmetric(
-                            horizontal: 5 * scale, vertical: 1.5 * scale),
-                        constraints: BoxConstraints(
-                            minWidth: 18 * scale, minHeight: 18 * scale),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10 * scale),
-                          gradient: const LinearGradient(colors: [
-                            Color(0xFFFF4B6E),
-                            Color(0xFF9C4DFF),
-                          ]),
-                          border: Border.all(color: Colors.black, width: 1.5),
-                        ),
-                        child: Text(
-                          count > 99 ? '99+' : '$count',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10 * scale,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+  /// y of the horizon at [t] (0 = left edge, 1 = right edge), unscaled.
+  static double _horizonY(double t) =>
+      (1 - t) * (1 - t) * _kHorizonEdge +
+      2 * (1 - t) * t * _kHorizonPeak +
+      t * t * _kHorizonEdge;
+
+  void _onMenuTap(int i) {
+    HapticFeedback.selectionClick();
+    if (_menuItems[i]['action'] == 'live') {
+      _startLiveFlow();
+    } else {
+      _selectTab(i);
+    }
+  }
+
+  // The icon of tab [i] (with the Chat unread badge).
+  static const Map<String, FlyNavKind> _kNavKinds = {
+    'Home': FlyNavKind.home,
+    'Chat': FlyNavKind.chat,
+    'Upload': FlyNavKind.upload,
+    'Profile': FlyNavKind.profile,
+    'Live': FlyNavKind.live,
+  };
+
+  Widget _menuIcon(int i, bool isActive, double scale) {
+    final item = _menuItems[i];
+    return SizedBox(
+      width: 26 * scale,
+      height: 26 * scale,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          // F1 "Neon Hologram" icons (nav_icons.dart, 8 Nov 2026).
+          OverflowBox(
+            maxWidth: 32 * scale,
+            maxHeight: 32 * scale,
+            child: FlyNavIcon(
+              kind: _kNavKinds[item['label']] ?? FlyNavKind.home,
+              active: isActive,
+              size: 32 * scale,
+              motion: _navFx,
+            ),
+          ),
+          // Unread messages badge on the Chat tab (Fly gradient, pops
+          // in/out, "99+" cap) - its own ValueListenableBuilder so a new
+          // message never rebuilds the whole bottom bar.
+          if (item['label'] == 'Chat')
+            Positioned(
+              right: -10 * scale,
+              top: -8 * scale,
+              child: ValueListenableBuilder<int>(
+                valueListenable: _unreadTotal,
+                builder: (context, unread, _) => AnimatedScale(
+                  scale: unread > 0 ? 1 : 0,
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.elasticOut,
+                  child: Container(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 5 * scale, vertical: 1.5 * scale),
+                    constraints: BoxConstraints(
+                        minWidth: 18 * scale, minHeight: 18 * scale),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10 * scale),
+                      gradient: const LinearGradient(colors: [
+                        Color(0xFFFF4B6E),
+                        Color(0xFF9C4DFF),
+                      ]),
+                      border: Border.all(color: Colors.black, width: 1.5),
+                    ),
+                    child: Text(
+                      unread > 99 ? '99+' : '$unread',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10 * scale,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
                 ),
-              if (isActive)
-                AnimatedBuilder(
-                  animation: _rotationController,
-                  builder: (context, child) {
-                    final double angle = _rotationController.value * 2 * pi;
-                    final double orbitRadius = 21 * scale;
-                    return Transform.translate(
-                      offset: Offset(
-                        orbitRadius * cos(angle),
-                        orbitRadius * sin(angle),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// The whole bar (without the bottom safe-area padding).
+  Widget _buildHorizonBar(double scale) {
+    const Duration move = Duration(milliseconds: 420);
+    const Curve curve = Curves.easeOutCubic;
+    final int n = _menuItems.length;
+    final double barH = 58 * scale;
+
+    return LayoutBuilder(builder: (context, box) {
+      final double w = box.maxWidth;
+      final double slot = w / n;
+      double cx(int i) => slot * (i + 0.5);
+      double lineY(int i) => _horizonY((i + 0.5) / n) * scale;
+
+      final int active = _currentIndex.clamp(0, n - 1);
+      final bool activeIsUpload = _menuItems[active]['label'] == 'Upload';
+      final Color sunColor =
+          ((_menuItems[active]['colors'] as List).cast<Color>()).first;
+      final double sun = 56 * scale;
+
+      return SizedBox(
+        height: barH,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Sky + horizon line.
+            Positioned.fill(
+              child: CustomPaint(painter: _HorizonPainter(scale: scale)),
+            ),
+            // The rising "sun" behind the active tab - glides between tabs.
+            AnimatedPositioned(
+              duration: move,
+              curve: curve,
+              left: cx(active) - sun / 2,
+              top: lineY(active) - sun / 2,
+              width: sun,
+              height: sun,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: activeIsUpload ? 0 : 1,
+                  duration: const Duration(milliseconds: 200),
+                  child: TweenAnimationBuilder<Color?>(
+                    tween: ColorTween(end: sunColor),
+                    duration: move,
+                    builder: (context, c, _) => DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(colors: [
+                          (c ?? sunColor).withValues(alpha: 0.75),
+                          (c ?? sunColor).withValues(alpha: 0.0),
+                        ]),
                       ),
-                      child: child,
-                    );
-                  },
-                  child: Container(
-                    width: 6 * scale,
-                    height: 6 * scale,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: colors.last,
-                      boxShadow: [
-                        BoxShadow(
-                          color: colors.last.withOpacity(0.8),
-                          blurRadius: 6,
-                          spreadRadius: 1,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // The tabs.
+            for (int i = 0; i < n; i++)
+              if (_menuItems[i]['label'] == 'Upload')
+                Positioned(
+                  left: cx(i) - 25 * scale,
+                  top: lineY(i) - 25 * scale,
+                  width: 50 * scale,
+                  height: 50 * scale,
+                  child: GestureDetector(
+                    onTap: () => _onMenuTap(i),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 280),
+                      // F1: a dark glass circle with a neon rim and the
+                      // Star Jet inside (its orbit ring always turns).
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: const Color(0xFF0B0B10),
+                        border: Border.all(
+                          color: active == i
+                              ? Colors.white
+                              : const Color(0xFF9C4DFF),
+                          width: 2 * scale,
                         ),
+                        boxShadow: [
+                          BoxShadow(
+                            color:
+                                const Color(0xFF9C4DFF).withValues(alpha: 0.75),
+                            blurRadius: 20 * scale,
+                          ),
+                        ],
+                      ),
+                      child: Center(
+                        child: FlyNavIcon(
+                          kind: FlyNavKind.upload,
+                          active: true,
+                          size: 36 * scale,
+                          motion: _navFx,
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                AnimatedPositioned(
+                  duration: move,
+                  curve: Curves.easeOutBack,
+                  left: cx(i) - slot / 2,
+                  width: slot,
+                  // Active: the icon sits ON the horizon; others just below.
+                  top: (active == i ? lineY(i) : lineY(i) + 18 * scale) -
+                      13 * scale,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _onMenuTap(i),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _menuIcon(i, active == i, scale),
+                        SizedBox(height: 4 * scale),
+                        AnimatedOpacity(
+                          opacity: active == i ? 1 : 0,
+                          duration: const Duration(milliseconds: 240),
+                          child: Text(
+                            _menuItems[i]['label'] as String,
+                            style: TextStyle(
+                              color: Color.lerp(
+                                  ((_menuItems[i]['colors'] as List)
+                                          .cast<Color>())
+                                      .first,
+                                  Colors.white,
+                                  0.3),
+                              fontSize: 11 * scale,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        SizedBox(height: 8 * scale),
                       ],
                     ),
                   ),
                 ),
-            ],
-          ),
+          ],
         ),
-      ),
-    );
+      );
+    });
   }
 
   // Handles the phone's system Back button/gesture app-wide, Facebook-style:
@@ -1127,22 +1235,23 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   ),
                 );
               },
+              // 8 Nov 2026: Sky Horizon (see _buildHorizonBar).
               child: Container(
-                padding: EdgeInsets.only(bottom: bottomSafe, top: 6 * scale),
-                decoration: const BoxDecoration(
-                  color: Color(0xFF0B0B0B),
-                  border: Border(
-                    top: BorderSide(color: Colors.white12, width: 0.5),
-                  ),
-                ),
-                child: SizedBox(
-                  height: 52 * scale,
-                  child: Row(
-                    children: List.generate(
-                      _menuItems.length,
-                      (i) => Expanded(child: Center(child: _buildMenuItem(i))),
+                color: Colors.transparent,
+                padding: EdgeInsets.only(bottom: bottomSafe),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    // The dark sky under the curve also fills the safe area.
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: -bottomSafe,
+                      height: bottomSafe + 1,
+                      child: const ColoredBox(color: Color(0xFF09080D)),
                     ),
-                  ),
+                    _buildHorizonBar(scale),
+                  ],
                 ),
               ),
             ),
@@ -1156,6 +1265,62 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
       ),
     );
   }
+}
+
+// The bar's background: the dark sky under a curved horizon (low at the
+// ends, high in the middle) with a thin Fly-gradient line along it
+// (Sky Horizon, 8 Nov 2026). Same curve as _horizonY.
+class _HorizonPainter extends CustomPainter {
+  final double scale;
+  const _HorizonPainter({required this.scale});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double w = size.width;
+    final double edge = 28 * scale;
+    final double peak = -8 * scale;
+    final Path top = Path()
+      ..moveTo(0, edge)
+      ..quadraticBezierTo(w / 2, peak, w, edge);
+    final Path fill = Path.from(top)
+      ..lineTo(w, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(
+      fill,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF15121F), Color(0xFF09080D)],
+        ).createShader(Offset.zero & size),
+    );
+    // F1 neon horizon: cyan -> violet with a soft glow under it.
+    final Shader neon = const LinearGradient(colors: [
+      Color(0xFF35E1F2),
+      Color(0xFF3A8DFF),
+      Color(0xFF9C4DFF),
+    ]).createShader(Rect.fromLTWH(0, 0, w, edge));
+    canvas.drawPath(
+      top,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4
+        ..shader = neon
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    canvas.drawPath(
+      top,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..shader = neon,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _HorizonPainter oldDelegate) =>
+      oldDelegate.scale != scale;
 }
 
 // Stacks the network-status banner above the minimized-call bar at the

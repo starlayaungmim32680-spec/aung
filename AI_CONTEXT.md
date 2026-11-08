@@ -1651,6 +1651,34 @@ OK). Play Console: Terms URL =
 > after the age. 5a now has `Start-Sleep -Seconds 5` before Remove-Item
 > (the dex files were still locked right after the daemon stop). Not on
 > prod yet (Flight Path + mood go together)._
+>>
+> _8 Nov 2026 - **Bottom bar = "Sky Horizon" + "Neon Hologram" icons**
+> (Ko picked idea C of 6 bar mockups, then icon set F1 "the future look"
+> for every tab; confirmed by Ko on DEV, `FlyDev-bn263122011.apk`, 307 s;
+> no new text - 5c stale check `How do you feel?` True / `Create story`
+> False, the phone is the proof). main_navigation_screen.dart:
+> `_buildHorizonBar` (LayoutBuilder + Stack, height 58*scale = same as
+> the old bar so the feed's "views"/caption rows are not covered - a
+> first build at 64 covered "8 views"): `_HorizonPainter` = dark sky
+> under a quadratic curve (`_kHorizonEdge` 28 at both ends, control
+> `_kHorizonPeak` -8, middle ~10) with a cyan -> blue -> violet neon line
+> (blurred copy under it); `_horizonY(t)` = the same curve; the active
+> tab sits ON the line (AnimatedPositioned, easeOutBack) with its name
+> under it, the others 18 below; a radial "sun" in the tab's colour
+> glides behind the active tab (AnimatedPositioned + ColorTween, hidden
+> on Upload); Upload = dark glass circle on the top of the curve with a
+> violet neon rim (white when on Upload) and the Star Jet inside;
+> `_onMenuTap` (haptic, Live -> Go Live dialog), `_menuIcon` (+ Chat
+> unread badge). The old orbiting dot and its always-running
+> `_rotationController` are gone; `_navFx` (4 s repeat) drives the
+> icons. New `lib/screens/nav_icons.dart`: `FlyNavIcon(kind, active,
+> size, motion)`, `FlyNavKind` home / chat / upload / profile / live,
+> hand-drawn on a 40x40 grid (CustomPainter): Hex Portal, Signal Bubble
+> (wave moves when active), Star Jet (orbit ring turns), Face Scan (scan
+> line runs when active), Radar (arm sweeps when active); silver
+> `kNavSilver` when not selected, Fly gradient + blur glow when
+> selected. The `'icon'` entries in `_menuItems` are no longer drawn.
+> Not on prod yet (goes with Flight Path + mood)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
