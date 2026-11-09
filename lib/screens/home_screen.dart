@@ -24,6 +24,7 @@ import 'upload_screen.dart';
 import 'live_screen.dart';
 import 'sound_screen.dart';
 import 'video_effects_screen.dart';
+import 'video_filters.dart';
 import 'translation_service.dart';
 import 'text_overlay_style.dart';
 import 'gifting.dart';

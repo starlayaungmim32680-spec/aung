@@ -15,6 +15,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
+import 'video_filters.dart';
 import 'photo_effects_screen.dart';
 import 'story_music.dart';
 import 'story_mood.dart';
@@ -1527,11 +1528,7 @@ class _UserStoriesPageState extends State<_UserStoriesPage>
   // devices render even an identity ColorFilter with a slight shift).
   Widget _withOptionalFilter(String filterType, Widget child) {
     if (filterType == 'none') return child;
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(
-          kVideoFilterMatrices[filterType] ?? kVideoFilterMatrices['none']!),
-      child: child,
-    );
+    return FlyLook(look: filterType, child: child);
   }
 
   Widget _positionedOverlayText(TextOverlayData overlay) {

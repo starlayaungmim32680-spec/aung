@@ -119,4 +119,7 @@ dependencies {
     // Works around a known upstream bug in the `camera` plugin's CameraX
     // dependency (camera-core 1.5.x is missing this transitive dependency).
     implementation("androidx.concurrent:concurrent-futures:1.2.0")
+    // Beauty Lab (9 Nov 2026): GPUPixel v1.3.1 (github.com/pixpark/gpupixel,
+    // Apache-2.0) - Fly Dev only while we test it, prod does not get it.
+    "devImplementation"(files("libs/gpupixel-release.aar"))
 }

@@ -1755,6 +1755,66 @@ OK). Play Console: Terms URL =
 > `_buildChoiceCard` gone; the sound row is `_buildSoundStatus()` (also
 > shown over the orbit for "Use this sound"). Not on prod yet._
 >
+> _9-10 Nov 2026 - **Record camera: Fly Looks + Beauty + camera fixes +
+> GPUPixel Beauty Lab** (all DEV only, not on prod; Ko tested each build on
+> his phone; last dev build `FlyDev-bn263140008.apk`). Ko wants a TikTok-
+> level camera; plan: Filters -> record tools -> screen effects -> face
+> AR -> background, and for beauty the free GPUPixel engine.
+> 1) **Fly Looks** (`lib/screens/video_filters.dart`, new): 23 colour looks
+> `kFlyFilters` (the 5 old ids none/warm/cool/bw/vintage keep their exact
+> matrices) + `FilterSwatch` thumbnails. Saved as the same `filterType`
+> string, now `"<id>|b<0-100>|s..|g..|r..|n.."` (b colour beauty, s smooth,
+> g glow/bright, r rosy, n night; `makeLook` / `lookParam` / `withFilter`).
+> Played back everywhere through `FlyLook(look, child)` (feed
+> `home_video_post.dart`, story viewer, upload + effects previews, photo
+> effects, camera) = colour matrix + "lighten-blur" beauty (BackdropFilter
+> blur of a darker copy, BlendMode.lighten = fills pores, + a dim
+> BlendMode.screen glow; `Stack(fit: passthrough)`). Old app versions show
+> unknown looks as no filter (`?? none`). `kVideoFilterMatrices` is now
+> built from `kFlyFilters`; use `videoFilterMatrix(look)`.
+> 2) **GPU shader `shaders/fly_beauty.frag`** (bilateral skin smoothing,
+> glow, rosy, night) works ONLY with Impeller. Test: dev app with Impeller
+> ON (temporary src/dev/AndroidManifest.xml) -> the shader ran, BUT the
+> FullScreenVideoScreen ghost / duplicated action bar CAME BACK -> removed
+> again, Impeller stays OFF everywhere, `FlyBeautyEngine.kUseGpuShader =
+> false` (shader kept for the future; pubspec `shaders:` entry).
+> 3) **Camera = `camera_android`** (pubspec `camera_android: ^0.10.10`,
+> overrides the default CameraX): with CameraX `stopVideoRecording()`
+> never finished on Ko's phone (TimeoutException after 10 s - the stop
+> button "did nothing"). Stop now has a 10 s timeout + SnackBar "Could not
+> stop the recording: ...".
+> 4) **Record camera UI** (`face_filter_camera_screen.dart`): Filters tab
+> (swipe left/right on the preview changes look, name flashes) / Faces tab
+> (old emoji stickers, "Faces show on the camera only for now"); right
+> tools Timer 3/10 s countdown, Beauty (Off / Natural default / Glow /
+> Doll + Smooth / Bright / Rosy + Night auto/on/off from the Y-plane
+> brightness), Light (exposure slider + white "Ring light" frame), Grid;
+> record ring + "0:12 / 60s", auto-stop at 60 s; 720p
+> (ResolutionPreset.high); top bar pinned to the top. The look string goes
+> to the effects screen (`FaceFilterCameraScreen.takeLook()` ->
+> `VideoEffectsScreen(initialFilterType:)`).
+> 5) **Beauty Lab = GPUPixel test** (dev app only, Upload app bar flask
+> button -> `lib/screens/beauty_lab_screen.dart`): GPUPixel v1.3.1
+> (github.com/pixpark/gpupixel, Apache-2.0; `android/app/libs/
+> gpupixel-release.aar`, `"devImplementation"(files(...))` in
+> build.gradle.kts, `proguard-rules.pro` keeps `com.pixpark.gpupixel.**`).
+> v1.3.1 has NO SinkSurface: Camera2 YUV -> RGBA -> rotate -> FaceDetector
+> (mars-face-kit landmarks) -> Lipstick -> Blusher -> BeautyFace
+> (skin_smoothing, whiteness) -> FaceReshape (thin_face /16, big_eye /4) ->
+> SinkRawData -> Bitmap drawn on a Flutter SurfaceTexture (Texture widget,
+> mirrored in Dart). Native: `android/app/src/dev/kotlin/com/aungdev/fly/
+> BeautyLab.kt` (channel `fly/beauty_lab`: start/set/fps/stop), prod stub
+> `src/prod/kotlin/.../BeautyLabRegistrar.kt`, registered in
+> MainActivity.configureFlutterEngine. Result on Ko's phone: **25 fps,
+> face clearly slimmer, lipstick on the lips, smooth skin - Ko: "not far
+> from TikTok", go on.** Dev APK +9.6 MB. Open points: picture too bright
+> with a bright background (exposure), lipstick strong, lab layout (top
+> row centred, Blush row cut). mars-face-kit is a closed binary without
+> its own licence file - check before prod.
+> **Next:** GPUPixel recording (processed frames -> MediaCodec H.264 +
+> AudioRecord AAC -> MediaMuxer mp4, beauty baked into the file) and make
+> it the Record camera (keep looks / timer / light / 60 s)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky

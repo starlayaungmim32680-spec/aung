@@ -103,11 +103,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
     final String effectiveFilter =
         widget.effectsBaked ? 'none' : widget.filterType;
     if (effectiveFilter == 'none') return child;
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(kVideoFilterMatrices[effectiveFilter] ??
-          kVideoFilterMatrices['none']!),
-      child: child,
-    );
+    // Colour look + Fly Beauty Engine (video_filters.dart).
+    return FlyLook(look: effectiveFilter, child: child);
   }
 
   VideoPlayerController? _controller;

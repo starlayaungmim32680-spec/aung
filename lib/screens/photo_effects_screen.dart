@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'video_effects_screen.dart';
+import 'video_filters.dart';
 import 'text_overlay_style.dart';
 import 'story_music.dart';
 
@@ -29,22 +30,8 @@ class PhotoEffectsResult {
   });
 }
 
-// Display names for the shared filter presets in kVideoFilterMatrices.
-String photoFilterLabel(String id) {
-  switch (id) {
-    case 'warm':
-      return 'Warm';
-    case 'cool':
-      return 'Cool';
-    case 'bw':
-      return 'B&W';
-    case 'vintage':
-      return 'Vintage';
-    case 'none':
-    default:
-      return 'Normal';
-  }
-}
+// Display names for the shared filter presets (Fly Looks, video_filters.dart).
+String photoFilterLabel(String id) => filterLabel(id);
 
 class PhotoEffectsScreen extends StatefulWidget {
   final File imageFile;
@@ -209,11 +196,7 @@ class _PhotoEffectsScreenState extends State<PhotoEffectsScreen> {
   // viewer) so the editor preview never shows an identity-matrix tint.
   Widget _filtered(String filterType, Widget child) {
     if (filterType == 'none') return child;
-    return ColorFiltered(
-      colorFilter: ColorFilter.matrix(
-          kVideoFilterMatrices[filterType] ?? kVideoFilterMatrices['none']!),
-      child: child,
-    );
+    return FlyLook(look: filterType, child: child);
   }
 
   Widget _buildDraggableOverlay(int index, double width, double height) {

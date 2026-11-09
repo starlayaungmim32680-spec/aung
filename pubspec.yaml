@@ -35,6 +35,11 @@ dependencies:
   permission_handler: ^11.3.1
   wakelock_plus: ^1.5.2
   camera: ^0.11.0+2
+  # 9 Nov 2026: Android camera = camera_android (Camera2 + MediaRecorder)
+  # instead of the default camera_android_camerax - on Ko's phone CameraX
+  # never finished stopVideoRecording (TimeoutException, the Record stop
+  # button did nothing). Listing it here makes Flutter use it.
+  camera_android: ^0.10.10
   google_mlkit_face_mesh_detection: ^0.4.2
   google_mlkit_translation: ^0.13.1
   google_mlkit_language_id: ^0.13.0
@@ -63,3 +68,7 @@ flutter:
   # see lib/app_config.dart). Use --flavor dev for the Fly Dev test app.
   default-flavor: prod
   uses-material-design: true
+  # Fly Beauty Engine (9 Nov 2026) - GPU skin smoothing / glow / night,
+  # see shaders/fly_beauty.frag and lib/screens/video_filters.dart.
+  shaders:
+    - shaders/fly_beauty.frag

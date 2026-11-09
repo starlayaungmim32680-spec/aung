@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'trim_editor_screen.dart';
 import 'video_effects_screen.dart';
+import 'video_filters.dart';
 import 'text_overlay_style.dart';
 import 'face_filter_camera_screen.dart';
 import 'sounds_library_screen.dart';
@@ -18,6 +19,8 @@ import 'home_screen.dart' show navigateToHomeSignal;
 import '../network_service.dart';
 import 'posting_ban.dart';
 import 'upload_orbit.dart';
+import 'beauty_lab_screen.dart';
+import '../app_config.dart';
 import 'story_screen.dart' show addStory;
 
 /// Upload's "Go Live" shortcut asks the main screen (which owns the
@@ -65,6 +68,8 @@ class _UploadScreenState extends State<UploadScreen> {
   int? _trimEndSeconds;
   double _videoSpeed = 1.0;
   String _filterType = 'none';
+  // The look picked on the Record camera for the current video.
+  String _cameraLook = 'none';
   List<TextOverlayData> _textOverlays = [];
   // True only during the short pause before the one-shot auto-retry (see
   // _uploadPost's catch block) - lets the progress UI say "retrying"
@@ -297,8 +302,12 @@ class _UploadScreenState extends State<UploadScreen> {
         context,
         MaterialPageRoute(builder: (_) => const FaceFilterCameraScreen()),
       );
+      // The camera's look + Beauty (Fly Looks, 9 Nov 2026) - the effects
+      // screen starts with it, so the post looks like the camera did.
+      _cameraLook = FaceFilterCameraScreen.takeLook();
       return recorded;
     }
+    _cameraLook = 'none';
     final ImagePicker picker = ImagePicker();
     return picker.pickVideo(source: source);
   }
@@ -328,6 +337,7 @@ class _UploadScreenState extends State<UploadScreen> {
         builder: (context) => VideoEffectsScreen(
           videoFile: result.originalFile,
           startSeconds: result.startSeconds,
+          initialFilterType: _cameraLook,
         ),
       ),
     );
@@ -554,6 +564,18 @@ class _UploadScreenState extends State<UploadScreen> {
                 onPressed: _resetToChooser,
               )
             : null,
+        // Fly Dev only: the Beauty Lab (GPUPixel test, 9 Nov 2026).
+        actions: [
+          if (AppConfig.isDev && choosing)
+            IconButton(
+              tooltip: 'Beauty Lab',
+              icon: const Icon(Icons.science_outlined, color: Colors.white),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BeautyLabScreen()),
+              ),
+            ),
+        ],
       ),
       body: choosing
           ? Stack(
@@ -756,9 +778,8 @@ class _UploadScreenState extends State<UploadScreen> {
                             return Stack(
                               fit: StackFit.expand,
                               children: [
-                                ColorFiltered(
-                                  colorFilter: ColorFilter.matrix(
-                                      kVideoFilterMatrices[_filterType]!),
+                                FlyLook(
+                                  look: _filterType,
                                   child: VideoPlayer(_previewController!),
                                 ),
                                 for (final overlay in _textOverlays)

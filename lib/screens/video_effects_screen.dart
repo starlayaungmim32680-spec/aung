@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 import 'text_overlay_style.dart';
 import 'story_music.dart';
 import 'sound_moderation.dart';
+import 'video_filters.dart';
 
 // One piece of text (or a big emoji "sticker") placed on top of the video.
 // Position is stored as a fraction (0.0-1.0) of the video's width/height so
@@ -265,120 +266,12 @@ class VideoEffectsResult {
   });
 }
 
-// Preset color-adjustment matrices. Shared by name ('none', 'warm', ...) so
-// playback anywhere in the app can reproduce the same look without needing
-// the original pixel data re-encoded.
-const Map<String, List<double>> kVideoFilterMatrices = {
-  'none': <double>[
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-  ],
-  'warm': <double>[
-    1.15,
-    0,
-    0,
-    0,
-    12,
-    0,
-    1.05,
-    0,
-    0,
-    6,
-    0,
-    0,
-    0.85,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-  ],
-  'cool': <double>[
-    0.9,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1.0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1.2,
-    0,
-    12,
-    0,
-    0,
-    0,
-    1,
-    0,
-  ],
-  'bw': <double>[
-    0.33,
-    0.59,
-    0.11,
-    0,
-    0,
-    0.33,
-    0.59,
-    0.11,
-    0,
-    0,
-    0.33,
-    0.59,
-    0.11,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-  ],
-  'vintage': <double>[
-    1.05,
-    0.05,
-    0.05,
-    0,
-    12,
-    0,
-    0.95,
-    0.05,
-    0,
-    6,
-    0.05,
-    0.1,
-    0.75,
-    0,
-    0,
-    0,
-    0,
-    0,
-    1,
-    0,
-  ],
+// Preset colour looks by id - since 9 Nov 2026 built from kFlyFilters
+// (video_filters.dart, 23 looks incl. the 5 original ones unchanged).
+// Playback should use videoFilterMatrix(filterType), which also reads a
+// saved camera Beauty ("golden|b40").
+final Map<String, List<double>> kVideoFilterMatrices = {
+  for (final FlyFilter f in kFlyFilters) f.id: f.matrix,
 };
 
 const List<double> kSpeedOptions = [0.5, 1.0, 1.5, 2.0];
@@ -792,12 +685,16 @@ class VideoEffectsScreen extends StatefulWidget {
   // need the sound baked into the uploaded file (not supported on Bunny
   // yet - see upload_screen.dart).
   final bool enableMusic;
+  // The look picked on the camera (Fly Looks, 9 Nov 2026), e.g.
+  // "golden|b40" - the filter row starts there.
+  final String initialFilterType;
 
   const VideoEffectsScreen({
     super.key,
     required this.videoFile,
     required this.startSeconds,
     this.enableMusic = false,
+    this.initialFilterType = 'none',
   });
 
   @override
@@ -808,7 +705,7 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
   VideoPlayerController? _controller;
   bool _isInitialized = false;
   double _speed = 1.0;
-  String _filterType = 'none';
+  late String _filterType = widget.initialFilterType;
   final List<TextOverlayData> _textOverlays = [];
 
   // Story background music (only when widget.enableMusic).
@@ -889,8 +786,9 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
     _controller?.setPlaybackSpeed(speed);
   }
 
-  void _setFilter(String filterType) {
-    setState(() => _filterType = filterType);
+  // Picking another filter keeps the camera's Beauty.
+  void _setFilter(String filterId) {
+    setState(() => _filterType = withFilter(_filterType, filterId));
   }
 
   Future<void> _addSticker() async {
@@ -1081,9 +979,8 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
                     return Stack(
                       fit: StackFit.expand,
                       children: [
-                        ColorFiltered(
-                          colorFilter: ColorFilter.matrix(
-                              kVideoFilterMatrices[_filterType]!),
+                        FlyLook(
+                          look: _filterType,
                           child: VideoPlayer(_controller!),
                         ),
                         for (int i = 0; i < _textOverlays.length; i++)
@@ -1136,36 +1033,33 @@ class _VideoEffectsScreenState extends State<VideoEffectsScreen> {
               }).toList(),
             ),
           ),
-          // Filter picker
+          // Filter picker - the Fly Looks, each as a little picture.
           SizedBox(
-            height: 64,
+            height: 78,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              children: kVideoFilterMatrices.keys.map((name) {
-                final bool isActive = _filterType == name;
+              children: kFlyFilters.map((f) {
+                final bool isActive = lookFilterId(_filterType) == f.id;
                 return GestureDetector(
-                  onTap: () => _setFilter(name),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 10),
-                    width: 64,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color:
-                            isActive ? const Color(0xFFFF4B6E) : Colors.white24,
-                        width: isActive ? 2 : 1,
-                      ),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      name,
-                      style: TextStyle(
-                        color: isActive ? Colors.white : Colors.white70,
-                        fontSize: 12,
-                        fontWeight:
-                            isActive ? FontWeight.bold : FontWeight.normal,
-                      ),
+                  onTap: () => _setFilter(f.id),
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: Column(
+                      children: [
+                        FilterSwatch(
+                            look: f.id, size: 52, selected: isActive),
+                        const SizedBox(height: 4),
+                        Text(
+                          f.name,
+                          style: TextStyle(
+                            color: isActive ? Colors.white : Colors.white70,
+                            fontSize: 11,
+                            fontWeight:
+                                isActive ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 );
