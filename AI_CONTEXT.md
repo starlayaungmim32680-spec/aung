@@ -11,8 +11,9 @@
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
 > _Latest: 14-15 Nov 2026 - GPUPixel camera ready for prod (both flavors,
 > licence note + To-do "GPUPixel camera on prod") and Settings ->
-> Open-source licenses; see the 14 Nov and 15 Nov entries after
-> "11-14 Nov 2026". Next: the prod APK._
+> Open-source licenses - **both on prod since 15 Nov 2026**
+> (`Fly-bn263190102.apk`); see the 14 Nov and 15 Nov entries after
+> "11-14 Nov 2026". Open: gpupixel issue #253 before Play._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -1949,6 +1950,20 @@ OK). Play Console: Terms URL =
 > `prefer_adjacent_string_concatenation`). **Next:** prod APK (5a-5e,
 > `--flavor prod`) with the GPUPixel camera + this page, test on A and B._
 >
+> _**GPUPixel camera + Open-source licenses - prod DONE 15 Nov 2026**
+> (confirmed by Ko: "အဆင်ပြေတယ်"): prod APK `Fly-bn263190102.apk` (commit
+> `76e0c98`, 227 s, 204.2 MB), 5c NEW `Software Fly is built with` True +
+> `start on this phone. Please close it and try again.` True / OLD `Camera
+> could not start: ` False, `libmars-face-kit.so` True, apksigner SHA-256
+> = Fly upload key `9c8a679b...92e5b7d9`; installed as an **Update** on A
+> and B (no uninstall). Real users' Record camera is now the GPUPixel
+> camera (beauty baked into the mp4); no Beauty Lab button on prod;
+> Settings -> Open-source licenses shows "Version 1.0.0 (263190102)".
+> 5a note: right after a build, `Remove-Item build` can fail on locked
+> `.dex` files even after killing Java - `Start-Sleep -Seconds 5` first
+> (now part of the 5a block used that night). Still open: gpupixel issue
+> #253 (mars-face-kit licence) before the Play Store release._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3833,7 +3848,7 @@ unanswered):
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
      Open-source licenses, `open_source_licenses.dart`).
-  b. Prod APK (5a-5e, `--flavor prod`) and test on A and B.
+  b. ~~Prod APK~~ - DONE 15 Nov 2026 (`Fly-bn263190102.apk`, A and B).
   c. Before the Play Store release: re-check gpupixel issue #253
      (mars-face-kit licence) - if PixPark says the binary/models are NOT
      free for commercial use, swap the face detector (ML Kit face mesh).
