@@ -3,11 +3,16 @@
 // on Ko's phone: front camera with Smooth / White / Thin face / Big eyes /
 // Lipstick / Blush, plus the frames per second, to compare with TikTok
 // before it goes into the Record camera. Opened from the Upload screen's
-// flask button (dev app only). Preview only - no recording yet.
+// flask button (dev app only). 10 Nov 2026: a Record button writes the
+// beautified frames + sound into an mp4 (native BeautyRecorder.kt) and
+// plays it back (_LabReview) to check the beauty is really in the file.
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:video_player/video_player.dart';
 
 class BeautyLabScreen extends StatefulWidget {
   const BeautyLabScreen({super.key});
@@ -25,6 +30,9 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
   double _fps = 0;
   Timer? _fpsTimer;
   bool _showPanel = true;
+  bool _recording = false;
+  bool _busy = false;
+  final Stopwatch _recWatch = Stopwatch();
 
   final Map<String, double> _v = {
     'smooth': 0.7,
@@ -51,6 +59,20 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
   }
 
   Future<void> _start() async {
+    // 10 Nov 2026: the lab opens the camera itself (native Camera2), so it
+    // must ask for the camera permission itself too - without it Android
+    // throws SecurityException "cannot open camera without camera
+    // permission" (seen on Ko's phone).
+    final PermissionStatus cam = await Permission.camera.request();
+    if (!cam.isGranted) {
+      if (mounted) {
+        setState(() => _error = cam.isPermanentlyDenied
+            ? 'Camera permission is off for Fly Dev. Turn it on in Settings.'
+            : 'Beauty Lab needs the camera permission.');
+      }
+      if (cam.isPermanentlyDenied) await openAppSettings();
+      return;
+    }
     try {
       final Map<dynamic, dynamic>? r =
           await _ch.invokeMapMethod<dynamic, dynamic>('start');
@@ -89,6 +111,43 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
       _v['blush'] = b;
     });
     _send();
+  }
+
+  Future<void> _toggleRecord() async {
+    if (_busy || _textureId == null) return;
+    setState(() => _busy = true);
+    try {
+      if (!_recording) {
+        final PermissionStatus mic = await Permission.microphone.request();
+        await _ch.invokeMethod('startRecording', {'audio': mic.isGranted});
+        _recWatch
+          ..reset()
+          ..start();
+        HapticFeedback.heavyImpact();
+        if (mounted) setState(() => _recording = true);
+      } else {
+        final String? path = await _ch.invokeMethod<String>('stopRecording');
+        _recWatch.stop();
+        if (mounted) setState(() => _recording = false);
+        if (!mounted) return;
+        if (path == null) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Recording failed - no video file.')));
+        } else {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => _LabReview(path: path)),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Record error: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -153,7 +212,11 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
                           style: const TextStyle(color: Colors.white)),
                     ),
             ),
-          SafeArea(
+          Positioned(
+            left: 0,
+            right: 0,
+            top: 0,
+            child: SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(8),
               child: Row(
@@ -170,7 +233,11 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
                             Shadow(color: Colors.black54, blurRadius: 4)
                           ])),
                   const Spacer(),
-                  Text('${_fps.toStringAsFixed(0)} fps',
+                  Text(
+                      _recording
+                          ? 'REC ${_recWatch.elapsed.inSeconds}s  '
+                              '${_fps.toStringAsFixed(0)} fps'
+                          : '${_fps.toStringAsFixed(0)} fps',
                       style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w700,
@@ -186,6 +253,7 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
                 ],
               ),
             ),
+          ),
           ),
           if (_showPanel)
             Align(
@@ -215,6 +283,35 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
                         ),
                       ),
                       const SizedBox(height: 6),
+                      GestureDetector(
+                        onTap: _toggleRecord,
+                        child: Container(
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 4),
+                          ),
+                          alignment: Alignment.center,
+                          child: _busy
+                              ? const SizedBox(
+                                  width: 26,
+                                  height: 26,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 3, color: Colors.white))
+                              : AnimatedContainer(
+                                  duration: const Duration(milliseconds: 200),
+                                  width: _recording ? 24 : 48,
+                                  height: _recording ? 24 : 48,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFF4B6E),
+                                    borderRadius: BorderRadius.circular(
+                                        _recording ? 6 : 24),
+                                  ),
+                                ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
                       for (final String k in _labels.keys)
                         Row(
                           children: [
@@ -250,6 +347,74 @@ class _BeautyLabScreenState extends State<BeautyLabScreen> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Plays the recorded lab video (looping) - the beauty must be in it.
+class _LabReview extends StatefulWidget {
+  final String path;
+  const _LabReview({required this.path});
+
+  @override
+  State<_LabReview> createState() => _LabReviewState();
+}
+
+class _LabReviewState extends State<_LabReview> {
+  late final VideoPlayerController _c =
+      VideoPlayerController.file(File(widget.path));
+  String _info = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _c.initialize().then((_) {
+      if (!mounted) return;
+      final int kb = File(widget.path).lengthSync() ~/ 1024;
+      setState(() => _info =
+          '${_c.value.size.width.toInt()}x${_c.value.size.height.toInt()}  '
+          '${_c.value.duration.inMilliseconds / 1000}s  $kb KB');
+      _c
+        ..setLooping(true)
+        ..play();
+    }).catchError((Object e) {
+      if (mounted) setState(() => _info = 'Cannot play: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: const Text('Recorded (beauty in the file)'),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: _c.value.isInitialized
+                  ? AspectRatio(
+                      aspectRatio: _c.value.aspectRatio,
+                      child: VideoPlayer(_c),
+                    )
+                  : const CircularProgressIndicator(color: Colors.white),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(_info, style: const TextStyle(color: Colors.white70)),
+          ),
         ],
       ),
     );

@@ -1815,6 +1815,64 @@ OK). Play Console: Terms URL =
 > AudioRecord AAC -> MediaMuxer mp4, beauty baked into the file) and make
 > it the Record camera (keep looks / timer / light / 60 s)._
 >
+> _11-14 Nov 2026 - **GPUPixel Record camera (dev): recording with beauty
+> in the file, TikTok-style UI, Glam, low light, Ring light = front
+> flash** (DEV only, prod still uses FaceFilterCameraScreen; Ko tested
+> every build, last `FlyDev-bn263180047.apk`; Ko: video smooth, works).
+> 1) **`BeautyRecorder.kt`** (new, `android/app/src/dev/kotlin/com/aungdev/
+> fly/`): the SAME beautified Bitmap that goes to the preview is drawn
+> (lockHardwareCanvas) on a MediaCodec H.264 input Surface (6 Mbps, 30 fps
+> nominal, I-frame 1 s) + AudioRecord CAMCORDER 44.1 kHz mono AAC 128 k on
+> its own thread -> MediaMuxer mp4 (`cacheDir/flycam_<ts>.mp4`),
+> timestamps from System.nanoTime. The beauty is baked into the video:
+> every viewer sees it, nothing to apply at playback.
+> 2) **`BeautyLab.kt`** channel `fly/beauty_lab` now: start {front} ->
+> {textureId,width,height,front}, set {smooth,white,thin,eyes,lips,blush},
+> switchCamera, setExposure {-1..1 = EV range}, startRecording {audio},
+> stopRecording -> path, stats (dev read-out), screenBright {on}, fps,
+> stop. Camera2 TEMPLATE_RECORD, <=1280x720 YUV, CONTINUOUS_VIDEO AF,
+> FACE_PRIORITY scene mode when supported. Slider scales: whiteness x0.4,
+> lipstick x0.6, thin_face /12, big_eye /3 (were /16, /4 - raised for
+> Glam). **Do NOT add GPUPixel CONTRAST_FILTER** (or other non-beauty
+> GPUPixel filters) to the chain: CONTRAST_FILTER crashed the app natively
+> as the camera opened (13 Nov) - removed.
+> **Light / fps logic (tuned with Ko's phone read-out):** bright = 24-30
+> (or best up-to-30) fps, EDGE_MODE_HIGH_QUALITY, NR FAST. A capture
+> callback (`lightWatch`) watches SENSOR_SENSITIVITY / EXPOSURE_TIME:
+> ISO >= min(isoMax/2,1600) (or shutter >= 28 ms with ISO >= half that)
+> for 20 frames -> LOW: 24-24/24-30 fps, EDGE FAST, NR HIGH_QUALITY; back
+> after 45 frames at ISO <= 30 % of that. Ko's front camera: ISO max 3200,
+> ranges 10-10 8-15 15-15 8-24 24-24 8-30 30-30. A test with 8-30 gave
+> 1/25 s but bad motion blur and ISO still at max (room too dark for the
+> front camera) -> LOW is capped at ~1/24 s; dark rooms need light.
+> 3) **`lib/screens/gpu_camera_screen.dart`** (`GpuCameraScreen`, new) =
+> the dev Record camera (`upload_screen.dart`: `AppConfig.isDev ?
+> GpuCameraScreen() : FaceFilterCameraScreen()`). TikTok-style clean
+> screen: right column Flip / Timer (3/10 s) / Beauty / Filters / Light /
+> Grid; ONE bottom panel at a time (`_panel` 0 none 1 Beauty 2 Filters
+> 3 Light), tap the camera to close it; when closed only "<look> · Beauty
+> on" + the record button. Beauty panel: presets Off / Natural (default)
+> / Glow / Doll / **Glam** (smooth 1, white .6, slim 1, eyes .85, lips .45,
+> blush .4) + Night chip, 6 items (Smooth / White / Slim / Eyes / Lips /
+> Blush, pink ring = in use) with ONE slider for the selected item
+> (moving it = Custom, `_custom = -1`). Filters panel = the 23 Fly Looks
+> (+ swipe left/right on the camera); the look + Night go in the look
+> string and are applied at playback as before. Light panel: exposure
+> slider + **Ring light = TikTok front flash** (56 px white frame + screen
+> brightness 1.0 via `screenBright`, reset on off / dispose). Front
+> preview mirrored in Dart. Record ring, auto-stop 60 s, then
+> `FaceFilterCameraScreen.lastLook = _look; Navigator.pop(XFile(path))` ->
+> the usual Trim -> Effects -> Post. Dev read-out at the top (ISO /
+> shutter / fps / LOW / fps ranges, `_stats` ValueNotifier, polled 1 s) -
+> remove it before this camera goes to prod.
+> Honest limits told to Ko: GPUPixel cannot make a "different face" like
+> TikTok's AI Bold Glamour (that needs a generative model); ~20-25 fps
+> processing; dark rooms stay grainy at ISO 3200 without the Ring light.
+> **Next:** check the mars-face-kit licence, then GPUPixel camera on prod
+> (AAR to `implementation`, move BeautyLab/BeautyRecorder to `src/main`,
+> drop the prod stub, remove the dev read-out); later Face AR stickers /
+> effects._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky

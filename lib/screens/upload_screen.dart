@@ -20,6 +20,7 @@ import '../network_service.dart';
 import 'posting_ban.dart';
 import 'upload_orbit.dart';
 import 'beauty_lab_screen.dart';
+import 'gpu_camera_screen.dart';
 import '../app_config.dart';
 import 'story_screen.dart' show addStory;
 
@@ -300,7 +301,12 @@ class _UploadScreenState extends State<UploadScreen> {
       // video file yet; see face_filter_camera_screen.dart).
       final XFile? recorded = await Navigator.push<XFile>(
         context,
-        MaterialPageRoute(builder: (_) => const FaceFilterCameraScreen()),
+        // Dev app (11 Nov 2026): the GPUPixel beauty camera; prod keeps
+        // the Flutter camera until GPUPixel ships there too.
+        MaterialPageRoute(
+            builder: (_) => AppConfig.isDev
+                ? const GpuCameraScreen()
+                : const FaceFilterCameraScreen()),
       );
       // The camera's look + Beauty (Fly Looks, 9 Nov 2026) - the effects
       // screen starts with it, so the post looks like the camera did.
