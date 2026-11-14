@@ -9,9 +9,10 @@
 > _Last major update: 26 Sep 2026 (photo-story effects, story music, sound
 > copyright safeguards, full Firestore rules, Bunny upload fixes + "video
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
-> _Latest: 14 Nov 2026 - GPUPixel camera ready for prod (both flavors,
-> licence note + To-do "GPUPixel camera on prod"); see the 14 Nov entry
-> after "11-14 Nov 2026"._
+> _Latest: 14-15 Nov 2026 - GPUPixel camera ready for prod (both flavors,
+> licence note + To-do "GPUPixel camera on prod") and Settings ->
+> Open-source licenses; see the 14 Nov and 15 Nov entries after
+> "11-14 Nov 2026". Next: the prod APK._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -1922,6 +1923,32 @@ OK). Play Console: Terms URL =
 > prod release of this camera, then the prod APK (5a-5e, `--flavor prod`);
 > later Face AR stickers / effects._
 >
+> _15 Nov 2026 - **Settings -> Open-source licenses** (confirmed by Ko on
+> DEV `FlyDev-bn263182359.apk`, 235 s; 5c NEW `Software Fly is built with`
+> True + `The LibYuv Project Authors` True / OLD `Camera could not start: `
+> False; phone: dark page, gradient "f" badge, "Version 1.0.0-dev
+> (263182359)", GPUPixel / mars-face-kit / libyuv / stb_image entries open
+> with their full text). New **`lib/screens/open_source_licenses.dart`**:
+> `openOpenSourceLicenses(context)` pushes Flutter's `LicensePage` inside
+> a dark Fly `Theme` (pink/violet colorScheme), `applicationName: 'Fly'`,
+> version + build number from `package_info_plus`, `_FlyMark` gradient
+> "f" icon, legalese "Fly is built with the open-source software listed
+> below. Thank you to all of their authors." Flutter fills the list with
+> every Dart package + engine library by itself (a long list is normal);
+> `registerNativeLicenses()` (runs once, before the page opens) adds the
+> NATIVE code from `gpupixel-release.aar` that Flutter can't know about:
+> **GPUPixel** (Apache-2.0), **mars-face-kit** (PixPark, "the license of
+> the GPUPixel repository", Apache-2.0), **MNN** (Alibaba, found linked
+> inside `libmars-face-kit.so`, Apache-2.0), **libyuv** (BSD-3) and
+> **stb_image** (MIT) - texts copied from the GPUPixel repo `ef552bf`.
+> **Any future native library (AAR / .so) must be added there too.**
+> `settings_screen.dart`: new row "Open-source licenses" / "Software Fly
+> is built with" under Copyright & Sounds. No pubspec / main.dart / rules
+> / Worker change. Analyze: 4 harmless style infos from the new file
+> (`prefer_interpolation_to_compose_strings` x3,
+> `prefer_adjacent_string_concatenation`). **Next:** prod APK (5a-5e,
+> `--flavor prod`) with the GPUPixel camera + this page, test on A and B._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -2940,7 +2967,9 @@ friendRequests` ordered by `createdAt` desc, stream built in initState),
   via `offsetMinutes`, no weather, `FlyPassCard(online:)`).
 - `screens/settings_screen.dart` — small settings hub (Account status,
   Blocked accounts, Child safety, **Log out** since 7 Nov 2026 and,
-  since Sep 2026, "Copyright & Sounds"; a natural place to add future settings instead of piling
+  since Sep 2026, "Copyright & Sounds"; since 15 Nov 2026 "Open-source
+  licenses" -> `screens/open_source_licenses.dart`, see the 15 Nov 2026
+  entry at the top); a natural place to add future settings instead of piling
   onto `profile_screen.dart`'s 3-dot menu). Opened via a gear icon in
   `profile_screen.dart`'s AppBar.
 - `screens/blocked_users_screen.dart` — lists everyone the current user has
@@ -3802,10 +3831,8 @@ unanswered):
      Gmail account)?
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
-  a. Open-source licences page in the app (Settings) with the GPUPixel
-     Apache-2.0 text - required before a prod build with this camera
-     goes to real users (e.g. `LicenseRegistry.addLicense` +
-     `showLicensePage`).
+  a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
+     Open-source licenses, `open_source_licenses.dart`).
   b. Prod APK (5a-5e, `--flavor prod`) and test on A and B.
   c. Before the Play Store release: re-check gpupixel issue #253
      (mars-face-kit licence) - if PixPark says the binary/models are NOT

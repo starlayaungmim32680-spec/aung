@@ -5,6 +5,7 @@ import 'blocked_users_screen.dart';
 import 'sound_moderation.dart';
 import 'account_status_screen.dart';
 import 'terms_consent.dart' show kChildSafetyUrl, openFlyWebPage;
+import 'open_source_licenses.dart';
 
 // Fly's settings hub - starts with just Blocked accounts, but gives
 // future settings (notifications, privacy, etc.) a proper home instead
@@ -111,6 +112,19 @@ class SettingsScreen extends StatelessWidget {
                     builder: (_) => const CopyrightPolicyScreen()),
               );
             },
+          ),
+          // 14 Nov 2026: the licenses of the open-source code inside Fly
+          // (all Dart packages + the native GPUPixel camera libraries) -
+          // Apache-2.0 asks apps to show them (open_source_licenses.dart).
+          ListTile(
+            leading: const Icon(Icons.description_outlined,
+                color: Colors.white),
+            title: const Text('Open-source licenses',
+                style: TextStyle(color: Colors.white)),
+            subtitle: const Text('Software Fly is built with',
+                style: TextStyle(color: Colors.white54, fontSize: 12.5)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+            onTap: () => openOpenSourceLicenses(context),
           ),
           const Divider(color: Colors.white12, height: 24),
           ListTile(
