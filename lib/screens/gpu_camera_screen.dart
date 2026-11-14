@@ -1,8 +1,9 @@
 // Fly Camera with the GPUPixel beauty engine (11 Nov 2026) - the Record
-// camera of the dev app (Upload -> Record Short / Record Video). Ko tested
-// GPUPixel in the Beauty Lab ("not far from TikTok"), so it becomes the
-// real camera here:
-//   - Native (android/app/src/dev/kotlin/com/aungdev/fly/BeautyLab.kt,
+// camera (Upload -> Record Short / Record Video). Ko tested GPUPixel in the
+// Beauty Lab ("not far from TikTok"), so it becomes the real camera here.
+// 14 Nov 2026: used by BOTH flavors (dev and prod); the dev read-out
+// (ISO / shutter / fps) was removed for prod.
+//   - Native (android/app/src/main/kotlin/com/aungdev/fly/BeautyLab.kt,
 //     channel "fly/beauty_lab"): Camera2 -> face landmarks -> lipstick /
 //     blush / smoothing / whiteness / thin face / big eyes -> Flutter
 //     texture; BeautyRecorder.kt writes the SAME frames + the microphone
@@ -19,7 +20,8 @@
 //     (on / off, lifts dark videos at playback), Grid, front / back.
 //   - Record ring + time, auto-stop at 60 s, then the usual Trim ->
 //     Effects -> Post (returns the mp4 like FaceFilterCameraScreen did).
-// The prod app has no GPUPixel yet and keeps FaceFilterCameraScreen.
+// FaceFilterCameraScreen stays in the code (lastLook / takeLook /
+// kMaxRecording are shared from it) but is no longer opened for recording.
 import 'dart:async';
 import 'dart:math';
 import 'package:camera/camera.dart' show XFile;
@@ -105,10 +107,6 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
   Timer? _countdownTimer;
   final ValueNotifier<String?> _flashName = ValueNotifier<String?>(null);
   Timer? _flashTimer;
-  // 13 Nov 2026: dev-only camera read-out (ISO / shutter / fps / LOW) to
-  // tune low light on Ko's phone; a ValueNotifier so only the text redraws.
-  final ValueNotifier<String> _stats = ValueNotifier<String>('');
-  Timer? _statsTimer;
 
   bool _recording = false;
   bool _busy = false;
@@ -129,7 +127,6 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
   void initState() {
     super.initState();
     _start();
-    _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) => _pollStats());
   }
 
   Future<void> _start() async {
@@ -150,7 +147,11 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
       setState(() => _textureId = (r['textureId'] as num).toInt());
       await _sendBeauty();
     } catch (e) {
-      if (mounted) setState(() => _error = 'Camera could not start: $e');
+      debugPrint('GpuCameraScreen start failed: $e');
+      if (mounted) {
+        setState(() => _error =
+            "The camera couldn't start on this phone. Please close it and try again.");
+      }
     }
   }
 
@@ -159,23 +160,6 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
     final int h = (r['height'] as num).toInt();
     _front = r['front'] == true;
     if (w > 0 && h > 0) _aspect = w / h;
-  }
-
-  Future<void> _pollStats() async {
-    if (_textureId == null) return;
-    try {
-      final Map<dynamic, dynamic>? r =
-          await _ch.invokeMapMethod<dynamic, dynamic>('stats');
-      if (r == null || !mounted) return;
-      final int iso = (r['iso'] as num?)?.toInt() ?? 0;
-      final int isoMax = (r['isoMax'] as num?)?.toInt() ?? 0;
-      final double ms = (r['expMs'] as num?)?.toDouble() ?? 0;
-      final double fps = (r['fps'] as num?)?.toDouble() ?? 0;
-      final String shutter = ms > 0 ? '1/${(1000 / ms).round()}s' : '-';
-      _stats.value = 'ISO $iso/$isoMax · $shutter · '
-          '${fps.toStringAsFixed(0)}fps${r['low'] == true ? ' · LOW' : ''}\n'
-          'use ${r['range']} · has ${r['ranges']}';
-    } catch (_) {}
   }
 
   // 14 Nov 2026: the Ring light works like TikTok's front flash - a thick
@@ -302,8 +286,6 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
     if (_ringLight) {
       _ch.invokeMethod('screenBright', {'on': false}).catchError((_) => null);
     }
-    _statsTimer?.cancel();
-    _stats.dispose();
     _countdownTimer?.cancel();
     _flashTimer?.cancel();
     _flashName.dispose();
@@ -677,34 +659,6 @@ class _GpuCameraScreenState extends State<GpuCameraScreen>
                         ])),
               ),
             ),
-          // Dev read-out (top centre, under the close button row).
-          Positioned(
-            left: 0,
-            right: 0,
-            top: MediaQuery.paddingOf(context).top + 62,
-            child: IgnorePointer(
-              child: Center(
-                child: ValueListenableBuilder<String>(
-                  valueListenable: _stats,
-                  builder: (context, t, _) => t.isEmpty
-                      ? const SizedBox.shrink()
-                      : Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(8)),
-                          child: Text(t,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600)),
-                        ),
-                ),
-              ),
-            ),
-          ),
           // Top: close + recording time.
           Positioned(
             left: 0,

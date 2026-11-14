@@ -9,6 +9,9 @@
 > _Last major update: 26 Sep 2026 (photo-story effects, story music, sound
 > copyright safeguards, full Firestore rules, Bunny upload fixes + "video
 > ready" webhook). Sections marked **(Sep 2026)** describe that batch._
+> _Latest: 14 Nov 2026 - GPUPixel camera ready for prod (both flavors,
+> licence note + To-do "GPUPixel camera on prod"); see the 14 Nov entry
+> after "11-14 Nov 2026"._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -1873,6 +1876,52 @@ OK). Play Console: Terms URL =
 > drop the prod stub, remove the dev read-out); later Face AR stickers /
 > effects._
 >
+> _14 Nov 2026 - **GPUPixel camera made ready for prod** (code in BOTH
+> flavors; confirmed by Ko on DEV `FlyDev-bn263182237.apk`, 350 s; 5c NEW
+> `start on this phone. Please close it and try again.` True / OLD `Camera
+> could not start: ` False / `lib\arm64-v8a\libmars-face-kit.so` present
+> True; phone: camera opens without the ISO read-out, recorded + posted
+> video has the beauty baked in). **No prod APK built yet.**
+> 1) **mars-face-kit licence check:** the AAR has no LICENSE/NOTICE; in
+> the GPUPixel repo (`ef552bf`) `third_party/mars-face-kit/` (headers
+> "Created by PixPark", SDK v0.0.2, closed `.so` + `face_det` /
+> `face_align` `.mars_model`) has no licence of its own, and the README
+> says the whole repository is Apache-2.0 -> reasonably covered by
+> Apache-2.0, but nothing explicit for the binary/models (training data
+> unknown). Upstream **issue #253** ("Licensing clarification for bundled
+> Mars Face Kit binaries and models", opened 21 Oct 2026) asks exactly
+> this - still Open, no maintainer answer (checked by Ko 14 Nov). Ko chose
+> **way 1**: go ahead on Apache-2.0, watch #253, decide finally before the
+> Play Store release (other ways: wait; or swap the detector for ML Kit
+> face mesh). Apache-2.0 needs the licence text in the app -> To-do.
+> 2) **Native moved to `src/main`:** `git mv` of `BeautyLab.kt` +
+> `BeautyRecorder.kt` from `android/app/src/dev/kotlin/com/aungdev/fly/`
+> to `android/app/src/main/kotlin/com/aungdev/fly/` (comments only
+> changed); prod stub `src/prod/kotlin/.../BeautyLabRegistrar.kt` DELETED
+> (`src/prod` is empty now - two `BeautyLabRegistrar` objects would be a
+> Kotlin redeclaration error). `build.gradle.kts`:
+> `implementation(files("libs/gpupixel-release.aar"))` (was
+> `"devImplementation"`); `proguard-rules.pro` comment (keep rule needed
+> by both flavors). MainActivity comment only. Prod APK grows ~9.6 MB.
+> 3) **Dev read-out removed:** `gpu_camera_screen.dart` no longer has
+> `_stats` / `_statsTimer` / `_pollStats` / the top-centre ISO box;
+> BeautyLab.kt no longer has the `"stats"` channel method nor
+> `lastIso` / `lastExpNs` / `fpsAll` (the low-light logic - `lightWatch`,
+> `isoMax`, `fpsLow`, 20 / 45 frames - is unchanged). A camera that can't
+> start (e.g. an x86 device: the AAR has only arm64-v8a / armeabi-v7a, the
+> `start` call catches the `UnsatisfiedLinkError`) now shows "The camera
+> couldn't start on this phone. Please close it and try again." instead of
+> the raw error.
+> 4) **`upload_screen.dart`: BOTH flavors open `GpuCameraScreen`** for
+> Record (the `AppConfig.isDev ? GpuCameraScreen() :
+> FaceFilterCameraScreen()` switch is gone). `FaceFilterCameraScreen`
+> stays in the code (`lastLook` / `takeLook()` / `kMaxRecording` are used
+> from it) but is no longer opened. The Beauty Lab flask button stays
+> **dev only** (`AppConfig.isDev && choosing`). Impeller stays OFF.
+> **Next:** Open-source licences page (GPUPixel Apache-2.0) before any
+> prod release of this camera, then the prod APK (5a-5e, `--flavor prod`);
+> later Face AR stickers / effects._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3464,6 +3513,14 @@ button taps, via `actionId`) land in `pendingFriend`({kind, userId, name, action
   (it was a text file by mistake until 12 Oct 2026).
 - `kotlin/com/aungdev/fly/CallForegroundService.kt`,
   `PresenceForegroundService.kt` — see §3.
+- `kotlin/com/aungdev/fly/BeautyLab.kt` + `BeautyRecorder.kt` **(14 Nov
+  2026: moved here from `src/dev`, both flavors)** — the GPUPixel beauty
+  camera (channel `fly/beauty_lab`, registered by `BeautyLabRegistrar` in
+  `MainActivity.configureFlutterEngine`), used by
+  `lib/screens/gpu_camera_screen.dart` (Record camera) and the dev-only
+  `beauty_lab_screen.dart`. Needs `android/app/libs/gpupixel-release.aar`
+  (`implementation(files(...))`) and the `com.pixpark.gpupixel.**` keep
+  rule in `proguard-rules.pro`. There is NO `src/prod` code any more.
 
 ### Outside the Flutter repo
 
@@ -3743,6 +3800,16 @@ unanswered):
      with at least 12 testers for 14 days in a row before production.)
   3. Can Ko find 12 closed-testing testers (friends / family with a
      Gmail account)?
+
+**GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
+  a. Open-source licences page in the app (Settings) with the GPUPixel
+     Apache-2.0 text - required before a prod build with this camera
+     goes to real users (e.g. `LicenseRegistry.addLicense` +
+     `showLicensePage`).
+  b. Prod APK (5a-5e, `--flavor prod`) and test on A and B.
+  c. Before the Play Store release: re-check gpupixel issue #253
+     (mars-face-kit licence) - if PixPark says the binary/models are NOT
+     free for commercial use, swap the face detector (ML Kit face mesh).
 Ready for that step: Child Safety Standards link
 `https://livekit-token-worker.chakaboycom.workers.dev/child-safety`,
 point of contact = Ko + chakaboycom@gmail.com, Privacy `/privacy`, Terms

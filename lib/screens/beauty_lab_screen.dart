@@ -1,5 +1,5 @@
 // Beauty Lab (9 Nov 2026, Fly Dev only) - tries the GPUPixel beauty
-// engine (native, android/app/src/dev/kotlin/com/aungdev/fly/BeautyLab.kt)
+// engine (native, android/app/src/main/kotlin/com/aungdev/fly/BeautyLab.kt)
 // on Ko's phone: front camera with Smooth / White / Thin face / Big eyes /
 // Lipstick / Blush, plus the frames per second, to compare with TikTok
 // before it goes into the Record camera. Opened from the Upload screen's

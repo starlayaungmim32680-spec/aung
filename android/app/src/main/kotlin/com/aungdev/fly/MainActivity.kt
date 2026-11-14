@@ -119,8 +119,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        // 7. "fly/beauty_lab" (9 Nov 2026) - GPUPixel beauty test, Fly Dev
-        //    only (src/dev/kotlin/.../BeautyLab.kt; prod = empty stub).
+        // 7. "fly/beauty_lab" (9 Nov 2026) - the GPUPixel beauty camera
+        //    (BeautyLab.kt + BeautyRecorder.kt, both flavors since 14 Nov
+        //    2026; the old prod stub is gone).
         BeautyLabRegistrar.register(this, flutterEngine)
         linksChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fly/links").also {
             it.setMethodCallHandler { call, result ->

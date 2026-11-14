@@ -1,9 +1,11 @@
 package com.aungdev.fly
 
-// Beauty Lab (9 Nov 2026, Fly Dev only) - a test of the GPUPixel beauty
-// engine (github.com/pixpark/gpupixel v1.3.1, Apache-2.0, AAR in
-// android/app/libs/gpupixel-release.aar, dev flavor only) on Ko's phone,
-// to compare with TikTok before building it into the Record camera.
+// GPUPixel beauty camera (github.com/pixpark/gpupixel v1.3.1, Apache-2.0,
+// AAR in android/app/libs/gpupixel-release.aar). Started 9 Nov 2026 as the
+// Fly Dev "Beauty Lab" test; since 11 Nov it also drives the Record camera
+// (lib/screens/gpu_camera_screen.dart). 14 Nov 2026: moved from src/dev to
+// src/main - both flavors (dev AND prod) have it now; the Beauty Lab screen
+// itself stays dev only (Dart side).
 //
 // Pipeline (all on one background thread):
 //   Camera2 (front, YUV_420_888, <= 1280x720)
@@ -14,7 +16,7 @@ package com.aungdev.fly
 //      (TextureRegistry SurfaceTexture) that lib/screens/beauty_lab_screen
 //      .dart shows with a Texture widget (mirrored there for the selfie).
 // Channel "fly/beauty_lab": start -> {textureId, width, height}, set
-// (smooth / white / thin / eyes / lips / blush, 0..1), stop,
+// (smooth / white / thin / eyes / lips / blush, 0..1), fps, stop,
 // startRecording {audio} / stopRecording -> mp4 path (BeautyRecorder.kt,
 // 10 Nov 2026 - the beauty is baked into the file).
 
@@ -150,13 +152,9 @@ class BeautyLab(
                 result.success(null)
             }
             "fps" -> result.success(lastFps)
-            // 13 Nov 2026: dev read-out for tuning low light on Ko's phone.
-            "stats" -> result.success(mapOf(
-                "fps" to lastFps, "iso" to lastIso, "isoMax" to isoMax,
-                "expMs" to lastExpNs / 1_000_000.0, "low" to lowLight,
-                "range" to ((if (lowLight) fpsLow ?: fpsRange else fpsRange)
-                    ?.let { "${it.lower}-${it.upper}" } ?: "-"),
-                "ranges" to fpsAll))
+            // 14 Nov 2026: the "stats" dev read-out (ISO / shutter / fps
+            // ranges, used 13-14 Nov to tune low light) was removed before
+            // prod - the low-light logic below is unchanged.
             "startRecording" -> {
                 val h = handler
                 val withAudio = call.argument<Boolean>("audio") ?: true
@@ -235,9 +233,6 @@ class BeautyLab(
     private var isoMax = 0
     @Volatile private var lowLight = false
     private var darkFrames = 0
-    @Volatile private var lastIso = 0
-    private var fpsAll = "-"
-    @Volatile private var lastExpNs = 0L
     private var brightFrames = 0
 
     @SuppressLint("MissingPermission")
@@ -298,7 +293,6 @@ class BeautyLab(
         // reduction + the Ring light (screen flash) for dark rooms.
         fpsLow = fpsRanges?.filter { it.upper <= 30 && it.lower == 24 }
             ?.maxByOrNull { it.upper } ?: fpsRange
-        fpsAll = fpsRanges?.joinToString(" ") { "${it.lower}-${it.upper}" } ?: "-"
         isoMax = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
             ?.upper ?: 0
         darkFrames = 0
@@ -439,8 +433,6 @@ class BeautyLab(
         ) {
             val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
             val exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
-            lastIso = iso
-            lastExpNs = exp
             val hi = if (isoMax > 0) minOf(isoMax / 2, 1600) else 1600
             val lo = hi * 3 / 10
             // Dark = high ISO, or the shutter already at the 30 fps limit

@@ -301,12 +301,9 @@ class _UploadScreenState extends State<UploadScreen> {
       // video file yet; see face_filter_camera_screen.dart).
       final XFile? recorded = await Navigator.push<XFile>(
         context,
-        // Dev app (11 Nov 2026): the GPUPixel beauty camera; prod keeps
-        // the Flutter camera until GPUPixel ships there too.
-        MaterialPageRoute(
-            builder: (_) => AppConfig.isDev
-                ? const GpuCameraScreen()
-                : const FaceFilterCameraScreen()),
+        // The GPUPixel beauty camera - dev since 11 Nov 2026, prod too
+        // since 14 Nov 2026 (FaceFilterCameraScreen is no longer opened).
+        MaterialPageRoute(builder: (_) => const GpuCameraScreen()),
       );
       // The camera's look + Beauty (Fly Looks, 9 Nov 2026) - the effects
       // screen starts with it, so the post looks like the camera did.

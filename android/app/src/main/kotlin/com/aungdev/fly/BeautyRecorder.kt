@@ -1,8 +1,8 @@
 package com.aungdev.fly
 
-// Beauty Lab recorder (10 Nov 2026, Fly Dev only) - writes the GPUPixel
-// (beautified) frames + the microphone into an mp4, so the beauty is
-// baked into the video file itself.
+// Beauty camera recorder (10 Nov 2026; in src/main = dev AND prod since
+// 14 Nov 2026) - writes the GPUPixel (beautified) frames + the microphone
+// into an mp4, so the beauty is baked into the video file itself.
 //
 //   video: every processed frame is drawn (hardware Canvas) onto the
 //          input Surface of a MediaCodec H.264 encoder (6 Mbps, 30 fps,
