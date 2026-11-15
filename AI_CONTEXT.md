@@ -1995,6 +1995,14 @@ OK). Play Console: Terms URL =
 > hologram grid, galaxy / aurora, liquid chrome) + fix the light halo
 > around the hair; then record, outfit effects, Face AR, merge into Fly._
 >
+> _16 Nov 2026 - **Fly Lab step 3 WORKS** (Fly NOT changed): 6 futuristic
+> animated backgrounds as AGSL `RuntimeShader`s (Android 13+; city, warp,
+> matrix, grid, aurora, chrome - `LabBackgrounds.kt`) with a neon rim glow
+> around the person, and a halo-free Blur (background blurred with the
+> person weighted out). Ko's V2250: still 24-25 fps, mask 32-40 ms (CPU).
+> Open: thin white fringe / stair-stepped edge on the shader backgrounds.
+> Details in fly-lab `LAB_NOTES.md`._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
