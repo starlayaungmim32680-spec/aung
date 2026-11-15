@@ -14,6 +14,9 @@
 > Open-source licenses - **both on prod since 15 Nov 2026**
 > (`Fly-bn263190102.apk`); see the 14 Nov and 15 Nov entries after
 > "11-14 Nov 2026". Open: gpupixel issue #253 before Play._
+> _Since 15-16 Nov 2026: camera effects are built in the separate **Fly
+> Lab** app first (repo `fly-lab`, LAB_NOTES.md) - see the 15-16 Nov
+> entry._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -1964,6 +1967,34 @@ OK). Play Console: Terms URL =
 > (now part of the 5a block used that night). Still open: gpupixel issue
 > #253 (mars-face-kit licence) before the Play Store release._
 >
+> _15-16 Nov 2026 - **Fly Lab started (separate test app, Fly NOT
+> changed).** Ko asked for TikTok-style camera effects: many **futuristic
+> backgrounds** (incl. the user's own photo / video) and **futuristic
+> "outfit" effects on the person's clothes**, plus Face AR stickers; and
+> decided (Ko's idea) to build and test every effect OUTSIDE Fly first and
+> merge only what works. So: new Flutter project **Fly Lab** - GitHub
+> `starlayaungmim32680-spec/fly-lab` (public), PC
+> `C:\Users\AUNG\Desktop\fly_lab`, package `com.aungdev.fly_lab`
+> (installs next to Fly + Fly Dev, debug-signed, arm64-only builds in
+> ~20-150 s, `*.apk` git-ignored). **Its own notes: `LAB_NOTES.md` in that
+> repo - read it before Lab work.** Honest limits told to Ko: backgrounds =
+> GPU shaders (no licence issues, unlimited); clothes = only a texture /
+> light effect on the clothes area (MediaPipe multiclass model, slow: ~71 ms
+> GPU / 218 ms CPU on a Pixel 6), NOT a new 3D garment (that needs cloud
+> generative AI); no 3D masks. **Lab step 1 WORKS** (FlyLab-bn263200046,
+> commit `5979622`): Fly's GPUPixel camera (copied) + MediaPipe Tasks
+> `ImageSegmenter` (`selfie_segmenter.tflite`, Apache-2.0) person cut-out +
+> background Blur; Ko's V2250: camera 23-25 fps, mask 35-42 ms on the CPU
+> (16-18/s). **Lessons for the later Fly merge:** (1) R8 needs keep rules
+> for `com.google.mediapipe.**`, `com.google.protobuf.**`,
+> `com.google.common.flogger.**` (else "no caller found on the stack for:
+> v0.c") and `com.google.common.**`; (2) MediaPipe's **GPU delegate crashes
+> natively on the V2250** -> use the CPU delegate; (3) MediaPipe sends
+> anonymous usage metrics to Google -> privacy policy. **Next (Lab step
+> 3):** futuristic backgrounds (cyber city, warp tunnel, matrix rain,
+> hologram grid, galaxy / aurora, liquid chrome) + fix the light halo
+> around the hair; then record, outfit effects, Face AR, merge into Fly._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3844,6 +3875,10 @@ unanswered):
      with at least 12 testers for 14 days in a row before production.)
   3. Can Ko find 12 closed-testing testers (friends / family with a
      Gmail account)?
+
+**Fly Lab camera effects (since 15 Nov 2026, repo `fly-lab`, see its
+LAB_NOTES.md):** futuristic backgrounds -> record -> outfit effects -> Face
+AR stickers -> merge into Fly Dev -> prod (R8 keep rules + CPU delegate).
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
