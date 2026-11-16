@@ -2025,6 +2025,17 @@ OK). Play Console: Terms URL =
 > (Movies/FlyLab). Ko's V2250: 240 frames made in 3.0 s, 9.5 MB. Next: step
 > 2 = cut-out templates (3D Pop, Future)._
 >
+> _17 Nov 2026 - **Fly Lab editor step 3 WORKS** (Fly NOT changed,
+> `FlyLab-bn263210025.apk`). Step 2 (cut-out templates) was tried and
+> DROPPED - Ko: no background removal in the editor (PhotoMatting.kt and
+> the 16 MB multiclass model removed). Instead: 13 templates grouped by
+> FEELING (Love: Dreamy, Heartbeat; Hype: Pulse Zoom, Flash Beat, Glitch;
+> Cinema: Cinematic, Focus In, Golden Hour; Feel: Sad Rain, Memory
+> polaroid, Retro Film; Night: Neon Lines, Snow) + the user's own look on
+> top of any template (8 Filters with strength, Adjust sliders, Length
+> 5/8/10/15 s) - all baked into the mp4. Ko wants MANY more templates,
+> CapCut-like variety but neatly organised. See fly-lab `LAB_NOTES.md`._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3907,9 +3918,10 @@ unanswered):
      Gmail account)?
 
 **Fly Lab (repo `fly-lab`, see its LAB_NOTES.md):** since 16 Nov 2026 the
-PHOTO / VIDEO EDITOR (8 steps, starting with "engine + 3 templates from one
-photo"); live camera effects paused (R8 keep rules + CPU delegate noted for
-any later merge).
+PHOTO / VIDEO EDITOR; live camera effects paused (R8 keep rules + CPU
+delegate noted for any later merge). Editor: step 1 (engine) and step 3
+(13 feeling templates + filters / adjust / length) WORK; cut-out templates
+dropped (17 Nov 2026). Next: a bigger, neatly organised template library.
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
