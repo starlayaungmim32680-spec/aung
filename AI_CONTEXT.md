@@ -2003,6 +2003,20 @@ OK). Play Console: Terms URL =
 > Open: thin white fringe / stair-stepped edge on the shader backgrounds.
 > Details in fly-lab `LAB_NOTES.md`._
 >
+> _16 Nov 2026 (~03:00) - **Fly Lab: live camera effects PAUSED, new
+> direction = PHOTO / VIDEO EDITOR** (Fly NOT changed). After edge /
+> motion / speed / quality passes (no white shadow, ~19 fps, low-light mode,
+> Glow beauty - working; last "hair pass" untested) Ko judged live cut-out
+> still not TikTok quality (honest limit: free 256x256 model on the CPU).
+> Ko's new plan: pick existing photos / videos -> templates with many
+> effects (main wish: ONE PHOTO -> a VIDEO) -> mp4 with the effects baked in
+> -> post straight to Fly; plus a lite hand editor and "write text ->
+> effects" (LLM via the Worker picks from OUR effects; no generative video).
+> Fly's own effect designs (not copies of CapCut). Order: 1) engine + 3
+> photo templates, 2) cut-out templates, 3) template panel, 4) slideshow +
+> music, 5) effects on videos, 6) lite editor, 7) write-text, 8) merge into
+> Fly. Built in Fly Lab first; see its `LAB_NOTES.md`._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3884,9 +3898,10 @@ unanswered):
   3. Can Ko find 12 closed-testing testers (friends / family with a
      Gmail account)?
 
-**Fly Lab camera effects (since 15 Nov 2026, repo `fly-lab`, see its
-LAB_NOTES.md):** futuristic backgrounds -> record -> outfit effects -> Face
-AR stickers -> merge into Fly Dev -> prod (R8 keep rules + CPU delegate).
+**Fly Lab (repo `fly-lab`, see its LAB_NOTES.md):** since 16 Nov 2026 the
+PHOTO / VIDEO EDITOR (8 steps, starting with "engine + 3 templates from one
+photo"); live camera effects paused (R8 keep rules + CPU delegate noted for
+any later merge).
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
