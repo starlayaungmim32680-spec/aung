@@ -2043,6 +2043,16 @@ OK). Play Console: Terms URL =
 > (channel "thumbs", offscreen FBO). Ko next: many more + COMBINE effects
 > (one on top of another)._
 >
+> _17 Nov 2026 (01:30) - **Fly Lab editor step 5 WORKS**
+> (`FlyLab-bn263210118.apk`): COMBINE - a template + up to 3 stackable
+> EFFECTS (Sparkle, Hearts, Snow, Rain, Bokeh, Film Dust, Light Rays, Lens
+> Flare, Bubbles, Film Strip, Fireworks, Balloons), rendered as a chain of
+> GPU passes (offscreen ping-pong textures; only the last pass applies the
+> user's look + fade) - live preview and the mp4 (Ko's test: 8 s, 240
+> frames, 4.1 MB). 42 templates in 8 categories (new: Spin, Dolly Zoom,
+> Aurora, Kaleido, Art = Comic / Pop Art / Sketch / Duotone). Idea for
+> later: auto-balance brightness when several bright effects are stacked._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3927,9 +3937,11 @@ unanswered):
 **Fly Lab (repo `fly-lab`, see its LAB_NOTES.md):** since 16 Nov 2026 the
 PHOTO / VIDEO EDITOR; live camera effects paused (R8 keep rules + CPU
 delegate noted for any later merge). Editor: step 1 (engine) and step 3
-(13 feeling templates + filters / adjust / length) and step 4 (35-template
-library, photo preview cards) WORK; cut-out templates dropped (17 Nov
-2026). Next: more templates + stacking effects on top of a template.
+(13 feeling templates + filters / adjust / length), step 4 (template
+library, photo preview cards) and step 5 (42 templates + 12 stackable
+effects, combine up to 3) WORK; cut-out templates dropped (17 Nov 2026).
+Next (plan): many photos -> slideshow + music, effects on videos, lite
+editor, write-text recipe, merge into Fly.
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
