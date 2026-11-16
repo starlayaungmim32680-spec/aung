@@ -2036,6 +2036,13 @@ OK). Play Console: Terms URL =
 > 5/8/10/15 s) - all baked into the mp4. Ko wants MANY more templates,
 > CapCut-like variety but neatly organised. See fly-lab `LAB_NOTES.md`._
 >
+> _17 Nov 2026 (01:10) - **Fly Lab editor step 4 WORKS**
+> (`FlyLab-bn263210050.apk`): template LIBRARY - 35 templates, each in ONE
+> category (CapCut-style text tabs For You / Love / Beat / Cinema / Feel /
+> Night / Fun / Retro), preview cards rendered from the user's own photo
+> (channel "thumbs", offscreen FBO). Ko next: many more + COMBINE effects
+> (one on top of another)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3920,8 +3927,9 @@ unanswered):
 **Fly Lab (repo `fly-lab`, see its LAB_NOTES.md):** since 16 Nov 2026 the
 PHOTO / VIDEO EDITOR; live camera effects paused (R8 keep rules + CPU
 delegate noted for any later merge). Editor: step 1 (engine) and step 3
-(13 feeling templates + filters / adjust / length) WORK; cut-out templates
-dropped (17 Nov 2026). Next: a bigger, neatly organised template library.
+(13 feeling templates + filters / adjust / length) and step 4 (35-template
+library, photo preview cards) WORK; cut-out templates dropped (17 Nov
+2026). Next: more templates + stacking effects on top of a template.
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
