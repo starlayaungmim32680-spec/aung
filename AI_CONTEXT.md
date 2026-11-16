@@ -2017,6 +2017,14 @@ OK). Play Console: Terms URL =
 > music, 5) effects on videos, 6) lite editor, 7) write-text, 8) merge into
 > Fly. Built in Fly Lab first; see its `LAB_NOTES.md`._
 >
+> _16 Nov 2026 evening - **Fly Lab editor step 1 WORKS** (Fly NOT
+> changed): one photo -> an 8 s 720x1280 30 fps mp4 with a template baked
+> in (Cinematic / Pulse Zoom / Retro Film = GLSL shaders in
+> `PhotoTemplates.kt`, the same shader for the live preview and the
+> MediaCodec export in `PhotoVideoEngine.kt`), saved to the gallery
+> (Movies/FlyLab). Ko's V2250: 240 frames made in 3.0 s, 9.5 MB. Next: step
+> 2 = cut-out templates (3D Pop, Future)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
