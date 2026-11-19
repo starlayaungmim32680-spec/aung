@@ -775,14 +775,18 @@ class _SearchVideoThumbnailState extends State<_SearchVideoThumbnail> {
           Positioned(
             left: 6,
             bottom: 6,
-            child: StreamBuilder<QuerySnapshot>(
+            // 19 Nov 2026: read the post's viewCount (one doc) instead of
+            // downloading the whole viewers list for every tile.
+            child: StreamBuilder<DocumentSnapshot>(
               stream: FirebaseFirestore.instance
                   .collection('posts')
                   .doc(widget.postId)
-                  .collection('views')
                   .snapshots(),
               builder: (context, snap) {
-                final int views = snap.hasData ? snap.data!.docs.length : 0;
+                final Object? data = snap.data?.data();
+                final int views = data is Map<String, dynamic>
+                    ? ((data['viewCount'] as num?)?.toInt() ?? 0)
+                    : 0;
                 return Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [

@@ -344,6 +344,10 @@ export default {
     if (request.method === 'GET' && url.pathname === '/migrate-reactions') {
       return handleMigrateReactions(env, url);
     }
+    // One-time: count each post's views docs into post.viewCount (19 Nov 2026).
+    if (request.method === 'GET' && url.pathname === '/migrate-views') {
+      return handleMigrateViews(env, url);
+    }
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
     }
@@ -3061,6 +3065,105 @@ async function handleMigrateReactions(env, url) {
       return html(
         `<h2>⏳ Working...</h2>${summary}` +
           `<p><a style="font-size:20px" href="/migrate-reactions?${next}">` +
+          `Next page →</a></p>`,
+      );
+    }
+    return html(`<h2>🎉 All done</h2>${summary}`);
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${String(err.message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// View count migration (19 Nov 2026): GET /migrate-views
+// ---------------------------------------------------------------------
+// Until 19 Nov 2026 the app showed a video's views by downloading the
+// WHOLE posts/{postId}/views list and counting it (every grid tile!).
+// Now the post keeps the number itself, viewCount, raised by 1 together
+// with a viewer's first views/{uid} doc (firestore.rules viewCountStep).
+// This page sets viewCount = the number of views docs, for every post.
+// Recounting is always correct, so running it twice is harmless.
+// Same style as /migrate-reactions: SEARCH_ADMIN_TOKEN, 15 posts per
+// page, a "Next page" link, ONE commit per page. Subrequests per page:
+// 1 Google token + 1 list + 1 count list per 300 views of each post +
+// 1 commit - under the free plan's 50 at Fly's current size. (A page of
+// posts with many thousands of views each would need a smaller page.)
+async function handleMigrateViews(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:640px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  const pageToken = url.searchParams.get('page') || '';
+  const seenSoFar = Number(url.searchParams.get('seen') || '0') || 0;
+  const viewsSoFar = Number(url.searchParams.get('views') || '0') || 0;
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const params = new URLSearchParams({ pageSize: '15' });
+    params.append('mask.fieldPaths', 'viewCount');
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`${firestoreBase(env)}/posts?${params}`, {
+      headers: { Authorization: `Bearer ${dbToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore list failed: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const docs = data.documents || [];
+
+    let views = 0;
+    const writes = [];
+    for (const d of docs) {
+      const postId = d.name.split('/').pop();
+      // Count posts/{postId}/views with the cheapest list (ids only).
+      let count = 0;
+      let sub = '';
+      do {
+        const q = new URLSearchParams({ pageSize: '300' });
+        q.append('mask.fieldPaths', 'createdAt');
+        if (sub) q.set('pageToken', sub);
+        const r = await fetch(
+          `${firestoreBase(env)}/posts/${postId}/views?${q}`,
+          { headers: { Authorization: `Bearer ${dbToken}` } },
+        );
+        if (!r.ok) {
+          throw new Error(`Views list failed: ${await r.text()}`);
+        }
+        const page = await r.json();
+        count += (page.documents || []).length;
+        sub = page.nextPageToken || '';
+      } while (sub);
+      views += count;
+      writes.push({
+        ...fsUpdateWrite(env, `posts/${postId}`, { viewCount: count }),
+        currentDocument: { exists: true },
+      });
+    }
+    if (writes.length) await firestoreCommit(env, dbToken, writes);
+
+    const seen = seenSoFar + docs.length;
+    const viewsDone = viewsSoFar + views;
+    const summary =
+      `<p>Project: <b>${env.FIREBASE_PROJECT_ID}</b></p>` +
+      `<p>Posts counted: <b>${seen}</b> · views: <b>${viewsDone}</b></p>`;
+    if (data.nextPageToken) {
+      const next = new URLSearchParams({
+        token,
+        page: data.nextPageToken,
+        seen: String(seen),
+        views: String(viewsDone),
+      });
+      return html(
+        `<h2>⏳ Working...</h2>${summary}` +
+          `<p><a style="font-size:20px" href="/migrate-views?${next}">` +
           `Next page →</a></p>`,
       );
     }

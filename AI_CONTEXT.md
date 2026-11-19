@@ -21,6 +21,8 @@
 > bar + owner-only **"who reacted"** sheet + **private reactions** (rules
 > + Worker live on both; migration run on DEV only) on DEV - prod later in
 > one release, see the 19 Nov "PROD RELEASE CHECKLIST"._
+> _20 Nov 2026: view numbers come from `post.viewCount` (DEV); next is the
+> opt-in "who viewed" list (3b)._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2189,14 +2191,20 @@ OK). Play Console: Terms URL =
 > `posts/{id}/reactions` ordered by createdAt desc. Comments / replies /
 > stories / live keep their own reactions as before.
 > **PROD RELEASE CHECKLIST (do in this order, same day):** (a) build the
-> prod APK (5a-5e) with Fly Dock + who-reacted + private reactions; (b) run
+> prod APK (5a-5e) with Fly Dock + who-reacted + private reactions + view
+> count (20 Nov entry); (b) run
 > `https://livekit-token-worker.chakaboycom.workers.dev/migrate-reactions?token=...`
-> until "All done"; (c) install on A and B and test likes; (d) raise the
-> force-update minimum (`/app-version`) to this build so old apps update;
-> (e) then remove the "TRANSITION ONLY" `onlyMyReaction()` line from the
-> posts update rule and publish rules to both projects. Old app versions
-> write likes into the map (lost after migration) - that is why (d) and
-> (e) matter._
+> AND `.../migrate-views?token=...` until "All done"; (c) install on A and
+> B and test likes + views; (d) raise the force-update minimum
+> (`/app-version`) to this build so old apps update; (e) then, in
+> `firestore.rules`, remove the "TRANSITION ONLY" `onlyMyReaction()` line
+> from the posts update rule AND change `views` read (also "TRANSITION
+> ONLY") to `allow get: if isMe(viewerId) || isPostOwner(postId); allow
+> list: if isPostOwner(postId);` and make views create require the count
+> step (`countAfter`-style, like reactions), then publish rules to both
+> projects. Old app versions write likes into the map (lost after
+> migration) and count views by listing them - that is why (d) and (e)
+> matter._
 >>
 > _19 Nov 2026 - **Dock middle button = "Wing F" mark** (confirmed by Ko
 > on DEV `FlyDev-bn263232150.apk`, 336 s; 5c pair from the last text
@@ -2210,6 +2218,34 @@ OK). Play Console: Terms URL =
 > width 11 round; top feather and middle feather cubic paths; white). No
 > image asset. The **app icon is NOT changed** (still the blue gradient
 > "f"); C (FLY bird) is kept as an idea for a later splash / app icon._
+>
+> _20 Nov 2026 (00:00) - **View count = `post.viewCount`** (part 3a of "who
+> viewed"; confirmed by Ko on DEV `FlyDev-bn263232324.apk`, 242 s; 5c pair
+> from the last text change True / False; phone: "N views" right, grid
+> counts show, a new viewer from phone B = +1, watching again = no +1,
+> playback normal). Found while planning "who viewed": every view number
+> (caption line + EVERY profile / public profile / search grid tile)
+> streamed the WHOLE `posts/{id}/views` list and counted it - cost grows
+> with every viewer. Now: 1) `firestore.rules` `viewCountStep(postId)`:
+> the post may change ONLY viewCount, +1, with my first views/{me} doc
+> created in the same batch (published to BOTH projects); `views` read is
+> still `signedIn()`, marked TRANSITION ONLY (old prod apps count by
+> listing). 2) Worker **`GET /migrate-views?token=<SEARCH_ADMIN_TOKEN>`**
+> (`handleMigrateViews`, both Workers deployed): 15 posts / page, counts
+> each post's views docs and sets viewCount, ONE commit per page, safe to
+> run again. **Run on DEV only** (22 posts, 65 views). 3) App:
+> `_recordView` (home_video_post.dart) = batch set views/{me} + viewCount
+> increment(1) on the first view; `_OwnerInfo` gets `viewCount` (from the
+> live post doc) instead of its own views stream (home_post_info.dart);
+> the grid tiles in profile_screen / public_profile_screen / search_screen
+> stream the post doc and show `viewCount`. **Next (3b): "who viewed"**,
+> agreed design: opt-in setting OFF by default, mutual (only viewers who
+> also turned it on are listed), 16+ only (DOB from signup), last 30
+> days, owner-only list enforced by rules (views doc gets a `visible`
+> flag; owner may read only visible == true), one line in the Privacy
+> Policy. Ko asked about cost + law first: cost small (reads only when
+> the owner opens the list); law: personal data -> transparency + opt-out
+> (TikTok: off by default, 16+, both sides; LinkedIn: per-user opt-out)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

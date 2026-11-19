@@ -339,7 +339,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
     try {
       final snap = await viewRef.get();
       if (!snap.exists) {
-        await viewRef.set({'createdAt': FieldValue.serverTimestamp()});
+        // 19 Nov 2026: my first view + the post's viewCount +1 in ONE
+        // batch (firestore.rules viewCountStep) - the app shows the
+        // number, it no longer downloads the whole viewers list.
+        final WriteBatch batch = FirebaseFirestore.instance.batch();
+        batch.set(viewRef, {'createdAt': FieldValue.serverTimestamp()});
+        batch.update(postRef, {'viewCount': FieldValue.increment(1)});
+        await batch.commit();
       }
     } catch (_) {
       // Ignore view-tracking errors so playback is never affected.
@@ -1573,6 +1579,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
             ((livePostData?['reactionCount'] as num?)?.toInt() ??
                 widget.reactionCount));
         final String? myReaction = user != null ? _myReaction : null;
+        // 19 Nov 2026: unique viewers, kept on the post as a number.
+        final int viewCount =
+            max(0, (livePostData?['viewCount'] as num?)?.toInt() ?? 0);
 
         // Which sound this video uses, so it can be credited and opened.
         final String? soundId = livePostData?['soundId'] as String?;
@@ -2118,6 +2127,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           soundId: soundId,
                           soundLabel: soundLabel,
                           reactionCount: reactionCount,
+                          viewCount: viewCount,
                           replyToPostId:
                               livePostData?['replyToPostId'] as String?,
                           replyToOwnerId:
@@ -2135,6 +2145,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         soundId: soundId,
                         soundLabel: soundLabel,
                         reactionCount: reactionCount,
+                        viewCount: viewCount,
                         replyToPostId:
                             livePostData?['replyToPostId'] as String?,
                         replyToOwnerId:

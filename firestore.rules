@@ -150,6 +150,17 @@ service cloud.firestore {
           || (after == before - 1 && exists(mine) && !existsAfter(mine)));
     }
 
+    // 19 Nov 2026 (view count): a post's viewCount may only go up by
+    // exactly 1, in the same batch that creates MY first
+    // posts/{postId}/views/{me} doc - so nobody can fake the count.
+    function viewCountStep(postId) {
+      let before = resource.data.get('viewCount', 0);
+      let after = request.resource.data.get('viewCount', 0);
+      let mine = /databases/$(database)/documents/posts/$(postId)/views/$(request.auth.uid);
+      return changedKeys().hasOnly(['viewCount'])
+        && after == before + 1 && !exists(mine) && existsAfter(mine);
+    }
+
     // posts/{postId}/reactions/{uid} = { type, createdAt }.
     function validReaction() {
       return request.resource.data.keys().hasOnly(['type', 'createdAt'])
@@ -316,6 +327,8 @@ service cloud.firestore {
         || (canSeePost(resource.data) && onlyMyReaction())
         // 19 Nov 2026: private reactions - only the count, by exactly 1.
         || (canSeePost(resource.data) && reactionCountStep(postId))
+        // 19 Nov 2026: view count - +1 with my first view doc.
+        || (canSeePost(resource.data) && viewCountStep(postId))
       );
       allow delete: if signedIn() && resource.data.userId == request.auth.uid;
 
@@ -340,6 +353,9 @@ service cloud.firestore {
 
       // views / saves / shares: one doc per user, doc id = that user's uid
       match /views/{viewerId} {
+        // TRANSITION ONLY: old app versions count views by reading the
+        // whole list. At the prod release of the viewCount version this
+        // becomes owner / me only (see AI_CONTEXT 19 Nov "views").
         allow read: if signedIn();
         allow create, update: if isMe(viewerId);
         allow delete: if false;

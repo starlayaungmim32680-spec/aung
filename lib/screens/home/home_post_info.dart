@@ -278,6 +278,8 @@ class _OwnerInfo extends StatelessWidget {
   // count separately. Purely visual, computed from data already on hand
   // (no extra reads).
   final int reactionCount;
+  // Unique viewers (post.viewCount, 19 Nov 2026).
+  final int viewCount;
   // "Reply Video Chain": when this video is itself a reply to someone
   // else's post, these carry who it's replying to, so a small "Replying
   // to @X" chip can link back to the original.
@@ -297,6 +299,7 @@ class _OwnerInfo extends StatelessWidget {
     this.soundId,
     this.soundLabel = '',
     this.reactionCount = 0,
+    this.viewCount = 0,
     this.replyToPostId,
     this.replyToOwnerId,
     this.replyToOwnerName,
@@ -597,38 +600,27 @@ class _OwnerInfo extends StatelessWidget {
               // View count below the video (unique viewers)
               if (postId.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('posts')
-                      .doc(postId)
-                      .collection('views')
-                      .snapshots(),
-                  builder: (context, viewSnap) {
-                    final int viewCount =
-                        viewSnap.hasData ? viewSnap.data!.docs.length : 0;
-                    return Row(
-                      children: [
-                        const Icon(
-                          Icons.remove_red_eye,
-                          color: Colors.white,
-                          size: 16,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          viewCount == 1 ? '1 view' : '$viewCount views',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            shadows: [
-                              Shadow(color: Colors.black, blurRadius: 6)
-                            ],
-                          ),
-                        ),
-                      ],
-                    );
-                  },
+                // 19 Nov 2026: post.viewCount (passed in) - no longer a
+                // stream of the whole viewers list.
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.remove_red_eye,
+                      color: Colors.white,
+                      size: 16,
+                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      viewCount == 1 ? '1 view' : '$viewCount views',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ], // end if (!compact)
