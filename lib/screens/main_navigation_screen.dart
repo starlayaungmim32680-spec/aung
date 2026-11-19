@@ -1117,7 +1117,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                             ),
                           ],
                         ),
-                        child: Center(child: _FlyWordmark(scale: scale)),
+                        child: Center(child: _WingFMark(size: 30 * scale)),
                       ),
                     ),
                   ),
@@ -1383,71 +1383,65 @@ class _DockPainter extends CustomPainter {
       old.dockTop != dockTop || old.collarR != collarR || old.slots != slots;
 }
 
-// The little "fly" wordmark with a wing on the y, for the middle button.
-class _FlyWordmark extends StatelessWidget {
-  final double scale;
-  const _FlyWordmark({required this.scale});
+// 19 Nov 2026 - the Fly mark in the middle button ("Wing F", Ko: simple
+// and not like other apps): one slanted F whose two bars are feathers.
+// Drawn as a vector, so it is sharp on every screen (no image file).
+class _WingFMark extends StatelessWidget {
+  final double size;
+  const _WingFMark({required this.size});
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 36 * scale,
-      height: 24 * scale,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            left: 0,
-            bottom: 0,
-            child: Text(
-              'fly',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 19 * scale,
-                height: 1,
-                fontWeight: FontWeight.w900,
-                fontStyle: FontStyle.italic,
-                letterSpacing: -0.8 * scale,
-              ),
-            ),
-          ),
-          Positioned(
-            right: -1 * scale,
-            top: 0,
-            width: 15 * scale,
-            height: 13 * scale,
-            child: const CustomPaint(painter: _WingPainter()),
-          ),
-        ],
+    return Semantics(
+      label: 'Fly',
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: const CustomPaint(painter: _WingFPainter()),
       ),
     );
   }
 }
 
-// Three swept feathers, rising to the top right.
-class _WingPainter extends CustomPainter {
-  const _WingPainter();
+// Paths on a 100 x 100 grid, scaled to the widget's size.
+class _WingFPainter extends CustomPainter {
+  const _WingFPainter();
 
   @override
   void paint(Canvas canvas, Size size) {
-    final double w = size.width;
-    final double h = size.height;
-    final Paint p = Paint()..color = Colors.white;
-    for (int k = 0; k < 3; k++) {
-      final double tipX = w * (1.0 - k * 0.14);
-      final double tipY = h * (k * 0.24);
-      final double thick = h * (0.22 - k * 0.04);
-      final Path f = Path()
-        ..moveTo(0, h)
-        ..quadraticBezierTo(w * 0.45, h * (0.62 - k * 0.12), tipX, tipY)
-        ..quadraticBezierTo(w * 0.5, h * (0.62 - k * 0.12) + thick * 2.2, 0, h)
-        ..close();
-      canvas.drawPath(f, p);
-    }
+    canvas.scale(size.width / 100, size.height / 100);
+    // The stem.
+    canvas.drawLine(
+      const Offset(34, 86),
+      const Offset(46, 24),
+      Paint()
+        ..color = Colors.white
+        ..strokeWidth = 11
+        ..strokeCap = StrokeCap.round,
+    );
+    final Paint fill = Paint()..color = Colors.white;
+    // Top bar = a long feather.
+    canvas.drawPath(
+      Path()
+        ..moveTo(44, 19)
+        ..cubicTo(58, 11, 76, 7, 94, 9)
+        ..cubicTo(84, 19, 66, 27, 44, 31)
+        ..close(),
+      fill,
+    );
+    // Middle bar = a shorter feather.
+    canvas.drawPath(
+      Path()
+        ..moveTo(40, 45)
+        ..cubicTo(52, 39, 64, 36, 78, 37)
+        ..cubicTo(70, 45, 56, 51, 39, 55)
+        ..close(),
+      fill,
+    );
   }
 
   @override
-  bool shouldRepaint(covariant _WingPainter old) => false;
+  bool shouldRepaint(covariant _WingFPainter old) => false;
 }
 
 // Stacks the network-status banner above the minimized-call bar at the

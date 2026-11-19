@@ -2197,6 +2197,19 @@ OK). Play Console: Terms URL =
 > posts update rule and publish rules to both projects. Old app versions
 > write likes into the map (lost after migration) - that is why (d) and
 > (e) matter._
+>>
+> _19 Nov 2026 - **Dock middle button = "Wing F" mark** (confirmed by Ko
+> on DEV `FlyDev-bn263232150.apk`, 336 s; 5c pair from the last text
+> change, True / False). Ko wanted the middle logo "simple and not like
+> other apps"; four ideas were drawn on the design canvas "Fly bottom nav
+> - redesign options" (A fly + wing, B Wing F, C FLY bird, D Swift - D
+> dropped, too close to a famous bird logo). Picked **B**: one slanted F
+> whose two bars are feathers. `main_navigation_screen.dart`: `_FlyWordmark`
+> / `_WingPainter` replaced by `_WingFMark(size: 30 * scale)` +
+> `_WingFPainter` (vector paths on a 100x100 grid: stem line (34,86)-(46,24)
+> width 11 round; top feather and middle feather cubic paths; white). No
+> image asset. The **app icon is NOT changed** (still the blue gradient
+> "f"); C (FLY bird) is kept as an idea for a later splash / app icon._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
