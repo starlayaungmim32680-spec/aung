@@ -18,7 +18,8 @@
 > Lab** app first (repo `fly-lab`, LAB_NOTES.md) - see the 15-16 Nov
 > entry._
 > _19 Nov 2026: Fly Lab paused (Fly app first); new **"Fly Dock"** bottom
-> bar on DEV - see the 19 Nov entries._
+> bar + owner-only **"who reacted"** sheet on DEV (prod later, in one
+> release) - see the 19 Nov entries._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2126,6 +2127,26 @@ OK). Play Console: Terms URL =
 > unchanged. Analyze: only the 3 old infos (2 `unnecessary_cast`, 1
 > `use_build_context_synchronously`). **Next:** prod APK (5a-5e,
 > `--flavor prod`) after Ko's OK._
+>
+> _19 Nov 2026 - **"Who reacted" - owner only** (confirmed by Ko on DEV
+> `FlyDev-bn263231909.apk`, 213.6 s; 5c NEW `Only you can see who reacted`
+> True / OLD `Camera could not start: ` False). Only
+> `lib/screens/home/home_video_post.dart` changed: on MY video (existing
+> `_isMyPost` getter; reposts = the original video's owner) the like count
+> under the heart gets a small `>` and opens `_openReactors` ->
+> `_PostReactorsSheet` (new class at the end of the file): live stream of
+> `posts/{postId}`, reads the existing `reactions` map {uid: type}, chips
+> "All N" + one per reaction type with its count, rows = avatar + name
+> from `users/{uid}` (displayName, photoUrl; cached per sheet) + the
+> reaction emoji, tap a row -> `PublicProfileScreen` (not for "You"),
+> note "Only you can see who reacted". The video pauses while the sheet
+> is open and resumes after. Everyone else sees only the number (not
+> tappable). Like tap / long-press reactions unchanged. No rules / Worker
+> change. **Privacy note:** this is app-level only - the `reactions` map
+> is still inside the post doc, which any signed-in user can read; true
+> privacy would need reactions moved to an owner-readable subcollection
+> + rules (not done). Prod: together with the Fly Dock in one later
+> release (Ko: "prod later, all at once")._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

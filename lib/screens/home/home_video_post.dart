@@ -1433,6 +1433,26 @@ class _VideoPostItemState extends State<_VideoPostItem>
   }
 
   // Small count text shown under each action icon
+  // Owner only: a sheet listing who reacted to this video (live), with a
+  // filter per reaction. The video pauses while it is open.
+  void _openReactors(Map<String, dynamic> reactions) {
+    if (!_isMyPost || reactions.isEmpty) return;
+    HapticFeedback.selectionClick();
+    final bool wasPlaying = _controller?.value.isPlaying ?? false;
+    _controller?.pause();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF121216),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _PostReactorsSheet(postId: widget.postId),
+    ).whenComplete(() {
+      if (wasPlaying && mounted) _controller?.play();
+    });
+  }
+
   Widget _countLabel(String text) {
     return Padding(
       // Sits close under its icon, like Facebook Reels' counts.
@@ -2183,7 +2203,40 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                 ),
                               ),
                             ),
-                            _countLabel(_formatCount(liveReactions.length)),
+                            // 19 Nov 2026: the video's OWNER can tap the
+                            // count to see who reacted; everyone else just
+                            // sees the number.
+                            _isMyPost && liveReactions.isNotEmpty
+                                ? GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => _openReactors(liveReactions),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          _countLabel(_formatCount(
+                                              liveReactions.length)),
+                                          const Padding(
+                                            padding: EdgeInsets.only(top: 2),
+                                            child: Icon(
+                                              Icons.chevron_right_rounded,
+                                              size: 14,
+                                              color: Colors.white,
+                                              shadows: [
+                                                Shadow(
+                                                    color: Colors.black,
+                                                    blurRadius: 6),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                : _countLabel(
+                                    _formatCount(liveReactions.length)),
                           ],
                         ),
                       ),
@@ -2971,6 +3024,234 @@ class _FeedDelayedSpinnerState extends State<_FeedDelayedSpinner> {
         child: CircularProgressIndicator(
           color: Colors.white,
           strokeWidth: 2.5,
+        ),
+      ),
+    );
+  }
+}
+
+// 19 Nov 2026 - "Who reacted" sheet, shown only to the video's owner.
+// Reactions live in the post doc as {'reactions': {uid: type}}; this sheet
+// listens to that doc, so new reactions show up while it is open. Names
+// and photos come from users/{uid} (displayName, photoUrl), read once per
+// person and kept for the life of the sheet.
+class _PostReactorsSheet extends StatefulWidget {
+  final String postId;
+  const _PostReactorsSheet({required this.postId});
+
+  @override
+  State<_PostReactorsSheet> createState() => _PostReactorsSheetState();
+}
+
+class _PostReactorsSheetState extends State<_PostReactorsSheet> {
+  late final Stream<DocumentSnapshot> _post = FirebaseFirestore.instance
+      .collection('posts')
+      .doc(widget.postId)
+      .snapshots();
+  final Map<String, Future<DocumentSnapshot>> _users = {};
+  String? _filter; // null = All
+
+  Future<DocumentSnapshot> _user(String uid) => _users.putIfAbsent(
+      uid, () => FirebaseFirestore.instance.collection('users').doc(uid).get());
+
+  Widget _chip(String label, bool on, VoidCallback onTap) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          constraints: const BoxConstraints(minHeight: 36),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: on ? Colors.white : const Color(0xFF1E1E24),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+                color:
+                    on ? Colors.white : Colors.white.withValues(alpha: 0.10)),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: on ? Colors.black : Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final String? me = FirebaseAuth.instance.currentUser?.uid;
+    return SafeArea(
+      top: false,
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: StreamBuilder<DocumentSnapshot>(
+          stream: _post,
+          builder: (context, snap) {
+            final Map<String, dynamic> data =
+                (snap.data?.data() as Map<String, dynamic>?) ?? const {};
+            final Map<String, dynamic> reactions =
+                (data['reactions'] as Map<String, dynamic>?) ?? const {};
+            // How many of each type, in the usual reaction order.
+            final Map<String, int> counts = {};
+            for (final Object? t in reactions.values) {
+              if (t is String) counts[t] = (counts[t] ?? 0) + 1;
+            }
+            final List<String> types =
+                kReactions.keys.where((t) => (counts[t] ?? 0) > 0).toList();
+            final String? filter =
+                (_filter != null && counts.containsKey(_filter))
+                    ? _filter
+                    : null;
+            final List<MapEntry<String, dynamic>> rows = reactions.entries
+                .where((e) => filter == null || e.value == filter)
+                .toList();
+
+            return Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Reactions',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 4),
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.lock_outline_rounded,
+                        size: 12, color: Color(0xFF9A9AA6)),
+                    SizedBox(width: 4),
+                    Text(
+                      'Only you can see who reacted',
+                      style: TextStyle(color: Color(0xFF9A9AA6), fontSize: 12),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 36,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    children: [
+                      _chip('All ${reactions.length}', filter == null,
+                          () => setState(() => _filter = null)),
+                      for (final String t in types)
+                        _chip('${kReactions[t]} ${counts[t]}', filter == t,
+                            () => setState(() => _filter = t)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Divider(color: Colors.white12, height: 1),
+                Expanded(
+                  child: rows.isEmpty
+                      ? const Center(
+                          child: Text('No reactions yet',
+                              style: TextStyle(color: Colors.grey)),
+                        )
+                      : ListView.builder(
+                          itemCount: rows.length,
+                          itemBuilder: (context, i) {
+                            final String uid = rows[i].key;
+                            final String emoji =
+                                kReactions[rows[i].value] ?? '👍';
+                            return FutureBuilder<DocumentSnapshot>(
+                              future: _user(uid),
+                              builder: (context, us) {
+                                final Map<String, dynamic> u = (us.data?.data()
+                                        as Map<String, dynamic>?) ??
+                                    const {};
+                                final String name =
+                                    (u['displayName'] as String?)?.trim() ?? '';
+                                final String photo =
+                                    (u['photoUrl'] as String?) ?? '';
+                                final String shown = uid == me
+                                    ? 'You'
+                                    : (name.isNotEmpty
+                                        ? name
+                                        : (us.connectionState ==
+                                                ConnectionState.done
+                                            ? 'Fly user'
+                                            : '...'));
+                                return ListTile(
+                                  onTap: uid == me
+                                      ? null
+                                      : () => Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) =>
+                                                  PublicProfileScreen(
+                                                      userId: uid),
+                                            ),
+                                          ),
+                                  leading: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      CircleAvatar(
+                                        radius: 22,
+                                        backgroundColor: Colors.grey[850],
+                                        backgroundImage: photo.isNotEmpty
+                                            ? CachedNetworkImageProvider(photo)
+                                            : null,
+                                        child: photo.isEmpty
+                                            ? Text(
+                                                shown.isNotEmpty
+                                                    ? shown[0].toUpperCase()
+                                                    : '?',
+                                                style: const TextStyle(
+                                                    color: Colors.white),
+                                              )
+                                            : null,
+                                      ),
+                                      Positioned(
+                                        right: -4,
+                                        bottom: -4,
+                                        child: Text(emoji,
+                                            style:
+                                                const TextStyle(fontSize: 16)),
+                                      ),
+                                    ],
+                                  ),
+                                  title: Text(
+                                    shown,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                  trailing: uid == me
+                                      ? null
+                                      : const Icon(Icons.chevron_right_rounded,
+                                          color: Colors.white38),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
