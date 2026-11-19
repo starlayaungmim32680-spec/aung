@@ -14,7 +14,8 @@ class _VideoPostItem extends StatefulWidget {
   final String videoUrl;
   final String caption;
   final String userEmail;
-  final Map<String, dynamic> reactions;
+  // Reaction count known by the list (before the post doc streams in).
+  final int reactionCount;
   final String videoType;
   final VoidCallback onVideoEnd;
   // When this video is being shown as a repost, these carry the sharer's
@@ -59,7 +60,7 @@ class _VideoPostItem extends StatefulWidget {
     required this.videoUrl,
     required this.caption,
     required this.userEmail,
-    required this.reactions,
+    this.reactionCount = 0,
     required this.videoType,
     required this.onVideoEnd,
     this.repostNote,
@@ -161,6 +162,13 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // inside build() would resubscribe on every rebuild.
   Stream<DocumentSnapshot>? _postDocStream;
 
+  // 19 Nov 2026 - private reactions: MY reaction lives in its own doc,
+  // posts/{postId}/reactions/{myUid} = {type, createdAt} (only I and the
+  // video owner can read it). [_myReaction] follows that doc, and is also
+  // set right away when I tap, so quick taps always see the newest value.
+  StreamSubscription<DocumentSnapshot>? _myReactionSub;
+  String? _myReaction;
+
   @override
   void initState() {
     super.initState();
@@ -170,6 +178,21 @@ class _VideoPostItemState extends State<_VideoPostItem>
           .collection('posts')
           .doc(widget.postId)
           .snapshots();
+      final String? me = FirebaseAuth.instance.currentUser?.uid;
+      if (me != null) {
+        _myReactionSub = FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.postId)
+            .collection('reactions')
+            .doc(me)
+            .snapshots()
+            .listen((d) {
+          final String? type = d.exists ? (d.data()?['type'] as String?) : null;
+          if (mounted && type != _myReaction) {
+            setState(() => _myReaction = type);
+          }
+        }, onError: (_) {});
+      }
     }
     ReportedPosts.instance.ids.addListener(_onReportedChanged);
     _initializeVideo();
@@ -834,39 +857,68 @@ class _VideoPostItemState extends State<_VideoPostItem>
     });
   }
 
-  // Toggles a reaction. [currentReactions] must be the FRESHEST reactions map
-  // available (from the live post-document stream, not a value cached from
-  // when this widget was first built) so the like/unlike decision below is
-  // always correct, even if several taps happen quickly.
-  Future<void> _setReaction(
-      String type, Map<String, dynamic> currentReactions) async {
+  // Toggles a reaction (19 Nov 2026 - private reactions). One batch:
+  //   - new reaction:   create reactions/{me} + reactionCount +1
+  //   - same again:     delete reactions/{me} + reactionCount -1
+  //   - other emoji:    only change reactions/{me}.type
+  // firestore.rules only accept the count moving by exactly 1 together
+  // with my doc. A batch (not a transaction) shows up on screen at once
+  // and also works offline; [_myReaction] is updated right away so a
+  // quick second tap undoes the first one correctly.
+  Future<void> _setReaction(String type) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    if (user == null || widget.postId.isEmpty) return;
 
-    final postRef =
+    final DocumentReference<Map<String, dynamic>> postRef =
         FirebaseFirestore.instance.collection('posts').doc(widget.postId);
-    final String? currentReaction = currentReactions[user.uid] as String?;
+    final DocumentReference<Map<String, dynamic>> myRef =
+        postRef.collection('reactions').doc(user.uid);
+    final String? current = _myReaction;
+    final WriteBatch batch = FirebaseFirestore.instance.batch();
+    String? next;
 
-    setState(() => _showReactionPicker = false);
-
-    if (currentReaction == type) {
-      await postRef.update({'reactions.${user.uid}': FieldValue.delete()});
+    if (current == type) {
+      batch.delete(myRef);
+      batch.update(postRef, {'reactionCount': FieldValue.increment(-1)});
+      next = null;
+    } else if (current == null) {
+      batch.set(myRef, {
+        'type': type,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      batch.update(postRef, {'reactionCount': FieldValue.increment(1)});
+      next = type;
     } else {
-      await postRef.update({'reactions.${user.uid}': type});
-      _spawnFlyingEmojis(kReactions[type]!);
-      _createNotification(type: 'reaction', text: kReactions[type]!);
+      batch.update(myRef, {'type': type});
+      next = type;
+    }
+
+    setState(() {
+      _showReactionPicker = false;
+      _myReaction = next;
+    });
+    if (next != null) {
+      _spawnFlyingEmojis(kReactions[next]!);
+      _createNotification(type: 'reaction', text: kReactions[next]!);
+    }
+    try {
+      await batch.commit();
+    } catch (_) {
+      // Refused (e.g. the post was deleted): go back to what the server
+      // has; the reaction doc stream corrects it too.
+      if (mounted) setState(() => _myReaction = current);
     }
   }
 
-  void _quickToggleLike(Map<String, dynamic> currentReactions) {
-    _setReaction('like', currentReactions);
+  void _quickToggleLike() {
+    _setReaction('like');
   }
 
   // Double-tap anywhere on the video (15 Oct 2026, TikTok style): a big
   // heart pops where the finger landed, and the video gets my like if I
   // haven't reacted yet. Like TikTok it NEVER takes a like back - tapping
   // twice again just shows another heart.
-  void _onDoubleTapLike(Map<String, dynamic> currentReactions) {
+  void _onDoubleTapLike() {
     HapticFeedback.lightImpact();
     final Offset? pos = _doubleTapPos;
     if (pos != null) {
@@ -875,8 +927,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
     }
     final String? uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    if (currentReactions[uid] == null) {
-      _setReaction('like', currentReactions);
+    if (_myReaction == null) {
+      _setReaction('like');
     }
   }
 
@@ -1435,8 +1487,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
   // Small count text shown under each action icon
   // Owner only: a sheet listing who reacted to this video (live), with a
   // filter per reaction. The video pauses while it is open.
-  void _openReactors(Map<String, dynamic> reactions) {
-    if (!_isMyPost || reactions.isEmpty) return;
+  void _openReactors() {
+    if (!_isMyPost) return;
     HapticFeedback.selectionClick();
     final bool wasPlaying = _controller?.value.isPlaying ?? false;
     _controller?.pause();
@@ -1487,6 +1539,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
   @override
   void dispose() {
     ReportedPosts.instance.ids.removeListener(_onReportedChanged);
+    _myReactionSub?.cancel();
     flyRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _processingRetryTimer?.cancel();
@@ -1512,13 +1565,14 @@ class _VideoPostItemState extends State<_VideoPostItem>
       builder: (context, postSnap) {
         final Map<String, dynamic>? livePostData =
             (postSnap.data?.data()) as Map<String, dynamic>?;
-        // Fall back to the reactions passed in from the list while the
-        // document stream is still loading its first snapshot.
-        final Map<String, dynamic> liveReactions =
-            (livePostData?['reactions'] as Map<String, dynamic>?) ??
-                widget.reactions;
-        final String? myReaction =
-            user != null ? liveReactions[user.uid] as String? : null;
+        // 19 Nov 2026: the post keeps only the NUMBER of reactions; who
+        // reacted is private (posts/{id}/reactions, owner only). Falls back
+        // to the count from the list while the doc stream is loading.
+        final int reactionCount = max(
+            0,
+            ((livePostData?['reactionCount'] as num?)?.toInt() ??
+                widget.reactionCount));
+        final String? myReaction = user != null ? _myReaction : null;
 
         // Which sound this video uses, so it can be credited and opened.
         final String? soundId = livePostData?['soundId'] as String?;
@@ -1531,7 +1585,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
           behavior: HitTestBehavior.opaque,
           onTap: _handleScreenTap,
           onDoubleTapDown: (d) => _doubleTapPos = d.localPosition,
-          onDoubleTap: () => _onDoubleTapLike(liveReactions),
+          onDoubleTap: _onDoubleTapLike,
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -2063,7 +2117,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                           postId: widget.postId,
                           soundId: soundId,
                           soundLabel: soundLabel,
-                          reactionCount: liveReactions.length,
+                          reactionCount: reactionCount,
                           replyToPostId:
                               livePostData?['replyToPostId'] as String?,
                           replyToOwnerId:
@@ -2080,7 +2134,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         postId: widget.postId,
                         soundId: soundId,
                         soundLabel: soundLabel,
-                        reactionCount: liveReactions.length,
+                        reactionCount: reactionCount,
                         replyToPostId:
                             livePostData?['replyToPostId'] as String?,
                         replyToOwnerId:
@@ -2143,8 +2197,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             return _AnimatedEmoji(
                               emoji: entry.value,
                               delayMs: i * 90,
-                              onTap: () =>
-                                  _setReaction(entry.key, liveReactions),
+                              onTap: () => _setReaction(entry.key),
                             );
                           }).toList(),
                         ),
@@ -2169,7 +2222,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                     children: [
                       // Like (long-press for reactions)
                       GestureDetector(
-                        onTap: () => _quickToggleLike(liveReactions),
+                        onTap: _quickToggleLike,
                         onLongPress: () =>
                             setState(() => _showReactionPicker = true),
                         child: Column(
@@ -2206,18 +2259,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             // 19 Nov 2026: the video's OWNER can tap the
                             // count to see who reacted; everyone else just
                             // sees the number.
-                            _isMyPost && liveReactions.isNotEmpty
+                            _isMyPost && reactionCount > 0
                                 ? GestureDetector(
                                     behavior: HitTestBehavior.opaque,
-                                    onTap: () => _openReactors(liveReactions),
+                                    onTap: _openReactors,
                                     child: Padding(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 6),
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          _countLabel(_formatCount(
-                                              liveReactions.length)),
+                                          _countLabel(
+                                              _formatCount(reactionCount)),
                                           const Padding(
                                             padding: EdgeInsets.only(top: 2),
                                             child: Icon(
@@ -2235,8 +2288,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                                       ),
                                     ),
                                   )
-                                : _countLabel(
-                                    _formatCount(liveReactions.length)),
+                                : _countLabel(_formatCount(reactionCount)),
                           ],
                         ),
                       ),
@@ -2374,7 +2426,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                   child: Row(
                     children: [
                       GestureDetector(
-                        onTap: () => _quickToggleLike(liveReactions),
+                        onTap: _quickToggleLike,
                         onLongPress: () =>
                             setState(() => _showReactionPicker = true),
                         child: Row(
@@ -2394,7 +2446,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              _formatCount(liveReactions.length),
+                              _formatCount(reactionCount),
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -3031,10 +3083,10 @@ class _FeedDelayedSpinnerState extends State<_FeedDelayedSpinner> {
 }
 
 // 19 Nov 2026 - "Who reacted" sheet, shown only to the video's owner.
-// Reactions live in the post doc as {'reactions': {uid: type}}; this sheet
-// listens to that doc, so new reactions show up while it is open. Names
-// and photos come from users/{uid} (displayName, photoUrl), read once per
-// person and kept for the life of the sheet.
+// Reads posts/{postId}/reactions ({type, createdAt}, newest first) - only
+// the owner may list it (firestore.rules) - live, so new reactions show up
+// while it is open. Names and photos come from users/{uid} (displayName,
+// photoUrl), read once per person and kept for the life of the sheet.
 class _PostReactorsSheet extends StatefulWidget {
   final String postId;
   const _PostReactorsSheet({required this.postId});
@@ -3044,10 +3096,13 @@ class _PostReactorsSheet extends StatefulWidget {
 }
 
 class _PostReactorsSheetState extends State<_PostReactorsSheet> {
-  late final Stream<DocumentSnapshot> _post = FirebaseFirestore.instance
-      .collection('posts')
-      .doc(widget.postId)
-      .snapshots();
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _reactions =
+      FirebaseFirestore.instance
+          .collection('posts')
+          .doc(widget.postId)
+          .collection('reactions')
+          .orderBy('createdAt', descending: true)
+          .snapshots();
   final Map<String, Future<DocumentSnapshot>> _users = {};
   String? _filter; // null = All
 
@@ -3091,13 +3146,14 @@ class _PostReactorsSheetState extends State<_PostReactorsSheet> {
       top: false,
       child: SizedBox(
         height: MediaQuery.of(context).size.height * 0.6,
-        child: StreamBuilder<DocumentSnapshot>(
-          stream: _post,
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _reactions,
           builder: (context, snap) {
-            final Map<String, dynamic> data =
-                (snap.data?.data() as Map<String, dynamic>?) ?? const {};
-            final Map<String, dynamic> reactions =
-                (data['reactions'] as Map<String, dynamic>?) ?? const {};
+            // uid -> reaction type, newest first.
+            final Map<String, dynamic> reactions = {
+              for (final d in snap.data?.docs ?? const [])
+                d.id: d.data()['type'],
+            };
             // How many of each type, in the usual reaction order.
             final Map<String, int> counts = {};
             for (final Object? t in reactions.values) {

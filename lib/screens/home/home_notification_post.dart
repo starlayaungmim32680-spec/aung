@@ -334,8 +334,7 @@ class _PostFromNotificationScreenState
                 videoUrl: videoUrl,
                 caption: post['caption'] ?? '',
                 userEmail: post['userEmail'] ?? 'Unknown user',
-                reactions:
-                    (post['reactions'] as Map<String, dynamic>?) ?? const {},
+                reactionCount: (post['reactionCount'] as num?)?.toInt() ?? 0,
                 videoType: (post['videoType'] as String?) ?? 'short',
                 videoSpeed: ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
                 filterType: (post['filterType'] as String?) ?? 'none',

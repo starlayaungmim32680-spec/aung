@@ -18,8 +18,9 @@
 > Lab** app first (repo `fly-lab`, LAB_NOTES.md) - see the 15-16 Nov
 > entry._
 > _19 Nov 2026: Fly Lab paused (Fly app first); new **"Fly Dock"** bottom
-> bar + owner-only **"who reacted"** sheet on DEV (prod later, in one
-> release) - see the 19 Nov entries._
+> bar + owner-only **"who reacted"** sheet + **private reactions** (rules
+> + Worker live on both; migration run on DEV only) on DEV - prod later in
+> one release, see the 19 Nov "PROD RELEASE CHECKLIST"._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2147,6 +2148,55 @@ OK). Play Console: Terms URL =
 > privacy would need reactions moved to an owner-readable subcollection
 > + rules (not done). Prod: together with the Fly Dock in one later
 > release (Ko: "prod later, all at once")._
+> _(Privacy note above is FIXED by the next entry - private reactions.)_
+>
+> _19 Nov 2026 - **Private reactions** (Ko chose the robust way; confirmed
+> by Ko on DEV `FlyDev-bn263232052.apk`, 363 s; 5c pair from the last text
+> change: `Only you can see who reacted` True / `Camera could not start: `
+> False - this change adds no text, the phone test is the proof). Who
+> reacted is no longer inside the post doc:
+> **`posts/{postId}/reactions/{uid}` = {type, createdAt}** + the post keeps
+> only **`reactionCount`** (int). Three parts:
+> 1) **`firestore.rules`** (published to BOTH projects 19 Nov, repo copy
+> checked equal to live first): new helpers `reactionCountStep(postId)`
+> (post update may change ONLY reactionCount, by exactly +1 with my
+> reaction doc created in the same batch (`!exists` / `existsAfter`) or -1
+> with it deleted), `validReaction()` (keys type+createdAt, type in the 6
+> kReactions keys, createdAt == request.time), `countBefore/countAfter`;
+> `match /reactions/{reactorId}`: get = me or the post owner, **list = post
+> owner only**, create/delete = me + count moves by 1 in the same batch,
+> update = me, only `type`. The old `onlyMyReaction()` map write on posts
+> is KEPT for now, marked "TRANSITION ONLY" (prod phones still run the old
+> app) - remove it at the prod release.
+> 2) **Worker `GET /migrate-reactions?token=<SEARCH_ADMIN_TOKEN>`**
+> (`handleMigrateReactions`, deployed to BOTH Workers 19 Nov, repo copy
+> checked equal first): 15 posts per page, "Next page" link; per post ONE
+> commit: a reactions/{uid} doc for every map entry without a doc
+> (createdAt = time of the move), reactionCount = map + existing docs,
+> `reactions` map deleted. Idempotent (posts without a map are skipped).
+> **Run on DEV only so far** (fly-dev-58b29: 22 posts checked, 7 moved, 12
+> reactions moved). **NOT run on prod yet.**
+> 3) **App** (`home_video_post.dart`, `home_feeds.dart`,
+> `home_notification_post.dart`, `home_screen.dart`): `_VideoPostItem`
+> takes `reactionCount` (int, default 0) instead of the `reactions` map
+> (`_FeedItem.reactionCount`, all list call sites). The item listens to
+> its own `reactions/{me}` doc (`_myReactionSub` -> `_myReaction`);
+> `_setReaction(type)` writes ONE batch (new: set doc + increment(1); same
+> again: delete + increment(-1); other emoji: update type only) and sets
+> `_myReaction` at once, so the UI is instant, offline-safe and quick taps
+> toggle correctly (a refused commit reverts). Count shown =
+> `post.reactionCount` (Orbit Ring too). `_PostReactorsSheet` now streams
+> `posts/{id}/reactions` ordered by createdAt desc. Comments / replies /
+> stories / live keep their own reactions as before.
+> **PROD RELEASE CHECKLIST (do in this order, same day):** (a) build the
+> prod APK (5a-5e) with Fly Dock + who-reacted + private reactions; (b) run
+> `https://livekit-token-worker.chakaboycom.workers.dev/migrate-reactions?token=...`
+> until "All done"; (c) install on A and B and test likes; (d) raise the
+> force-update minimum (`/app-version`) to this build so old apps update;
+> (e) then remove the "TRANSITION ONLY" `onlyMyReaction()` line from the
+> posts update rule and publish rules to both projects. Old app versions
+> write likes into the map (lost after migration) - that is why (d) and
+> (e) matter._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -3816,7 +3866,9 @@ screen needs to be created from scratch — it may already exist there.)_
   videoFailed (Sep 2026, see §3 "Video ready"), soundId ('' when the audio
   wasn't shared), soundTitle, soundOwnerName, hashtags, replyToPostId/
   replyToOwnerId/replyToOwnerName (video replies), caption,
-  reactions:{uid→type}, videoType('short'|'long'), createdAt, videoSpeed,
+  reactionCount (19 Nov 2026; WHO reacted = `posts/{id}/reactions/{uid}`
+  {type, createdAt}, owner-only list - the old `reactions:{uid→type}` map
+  is removed by /migrate-reactions), videoType('short'|'long'), createdAt, videoSpeed,
   filterType, blurBackground, textOverlays, effectsBaked (checked by
   `home_screen.dart`'s playback code, but no current upload path actually
   writes it true - effects are always applied live, never pre-baked; this

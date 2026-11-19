@@ -340,6 +340,10 @@ export default {
     if (request.method === 'GET' && url.pathname === '/posts-audience-backfill') {
       return handlePostsAudienceBackfill(env, url);
     }
+    // One-time: post reactions map -> private reactions docs (19 Nov 2026).
+    if (request.method === 'GET' && url.pathname === '/migrate-reactions') {
+      return handleMigrateReactions(env, url);
+    }
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
     }
@@ -2931,6 +2935,132 @@ async function handlePostsAudienceBackfill(env, url) {
       return html(
         `<h2>⏳ Working...</h2>${summary}` +
           `<p><a style="font-size:20px" href="/posts-audience-backfill?${next}">` +
+          `Next page →</a></p>`,
+      );
+    }
+    return html(`<h2>🎉 All done</h2>${summary}`);
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${String(err.message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Private reactions migration (19 Nov 2026): GET /migrate-reactions
+// ---------------------------------------------------------------------
+// Until 19 Nov 2026 a post kept every reaction inside the post doc:
+// reactions: {uid: 'like' | 'love' | ...} - so anyone who could read the
+// post could read WHO reacted. Now each reaction is its own doc,
+// posts/{postId}/reactions/{uid} = {type, createdAt} (only the video owner
+// may list them, firestore.rules), and the post keeps only a number,
+// reactionCount. This page moves the old map over, one post at a time,
+// each post in ONE atomic commit:
+//   - a reactions/{uid} doc for every map entry that has no doc yet
+//     (a doc that already exists is kept as it is),
+//   - reactionCount = everyone in the map + everyone who already had a doc,
+//   - the old `reactions` map is deleted.
+// A post without a map is skipped, so running it twice is harmless.
+// Same style as /posts-audience-backfill: SEARCH_ADMIN_TOKEN, a "Next
+// page" link until done. 15 posts per page: 1 Google token + 1 list +
+// up to 15 x (1 list + 1 commit) = 32 subrequests (free plan max 50).
+// createdAt of a moved reaction = the time of the move (the map had none).
+async function handleMigrateReactions(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:640px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  const pageToken = url.searchParams.get('page') || '';
+  const seenSoFar = Number(url.searchParams.get('seen') || '0') || 0;
+  const postsSoFar = Number(url.searchParams.get('posts') || '0') || 0;
+  const movedSoFar = Number(url.searchParams.get('moved') || '0') || 0;
+  const TYPES = new Set(['like', 'love', 'haha', 'wow', 'sad', 'angry']);
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const params = new URLSearchParams({ pageSize: '15' });
+    params.append('mask.fieldPaths', 'reactions');
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`${firestoreBase(env)}/posts?${params}`, {
+      headers: { Authorization: `Bearer ${dbToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore list failed: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const docs = data.documents || [];
+
+    let posts = 0;
+    let moved = 0;
+    for (const d of docs) {
+      const map = d.fields && d.fields.reactions && d.fields.reactions.mapValue;
+      if (!map) continue; // nothing to move (new post or already moved)
+      const postId = d.name.split('/').pop();
+      const entries = Object.entries(map.fields || {})
+        .map(([uid, v]) => [uid, v && v.stringValue])
+        .filter(([uid, type]) => uid && TYPES.has(type));
+
+      // Who already has a private reaction doc on this post.
+      const have = new Set();
+      let sub = '';
+      do {
+        const q = new URLSearchParams({ pageSize: '300' });
+        q.append('mask.fieldPaths', 'type');
+        if (sub) q.set('pageToken', sub);
+        const r = await fetch(
+          `${firestoreBase(env)}/posts/${postId}/reactions?${q}`,
+          { headers: { Authorization: `Bearer ${dbToken}` } },
+        );
+        if (!r.ok) {
+          throw new Error(`Reactions list failed: ${await r.text()}`);
+        }
+        const page = await r.json();
+        for (const x of page.documents || []) have.add(x.name.split('/').pop());
+        sub = page.nextPageToken || '';
+      } while (sub);
+
+      const now = new Date();
+      const writes = [];
+      for (const [uid, type] of entries) {
+        if (have.has(uid)) continue;
+        writes.push(fsUpdateWrite(env, `posts/${postId}/reactions/${uid}`,
+          { type, createdAt: now }));
+        have.add(uid);
+        moved++;
+      }
+      writes.push({
+        ...fsUpdateWrite(env, `posts/${postId}`,
+          { reactionCount: have.size }, ['reactions']),
+        currentDocument: { exists: true },
+      });
+      await firestoreCommit(env, dbToken, writes);
+      posts++;
+    }
+
+    const seen = seenSoFar + docs.length;
+    const postsDone = postsSoFar + posts;
+    const movedDone = movedSoFar + moved;
+    const summary =
+      `<p>Project: <b>${env.FIREBASE_PROJECT_ID}</b></p>` +
+      `<p>Posts checked: <b>${seen}</b> · posts moved: <b>${postsDone}</b>` +
+      ` · reactions moved: <b>${movedDone}</b></p>`;
+    if (data.nextPageToken) {
+      const next = new URLSearchParams({
+        token,
+        page: data.nextPageToken,
+        seen: String(seen),
+        posts: String(postsDone),
+        moved: String(movedDone),
+      });
+      return html(
+        `<h2>⏳ Working...</h2>${summary}` +
+          `<p><a style="font-size:20px" href="/migrate-reactions?${next}">` +
           `Next page →</a></p>`,
       );
     }

@@ -138,6 +138,36 @@ service cloud.firestore {
       return canSeePost(get(/databases/$(database)/documents/posts/$(postId)).data);
     }
 
+    // 19 Nov 2026 (private reactions): a post's reactionCount may only
+    // move by exactly 1, in the same batch that creates / deletes MY
+    // posts/{postId}/reactions/{me} doc - so nobody can fake the count.
+    function reactionCountStep(postId) {
+      let before = resource.data.get('reactionCount', 0);
+      let after = request.resource.data.get('reactionCount', 0);
+      let mine = /databases/$(database)/documents/posts/$(postId)/reactions/$(request.auth.uid);
+      return changedKeys().hasOnly(['reactionCount'])
+        && ((after == before + 1 && !exists(mine) && existsAfter(mine))
+          || (after == before - 1 && exists(mine) && !existsAfter(mine)));
+    }
+
+    // posts/{postId}/reactions/{uid} = { type, createdAt }.
+    function validReaction() {
+      return request.resource.data.keys().hasOnly(['type', 'createdAt'])
+        && request.resource.data.type in
+             ['like', 'love', 'haha', 'wow', 'sad', 'angry']
+        && request.resource.data.createdAt == request.time;
+    }
+
+    // reactionCount of a post before / after this write.
+    function countBefore(postId) {
+      return get(/databases/$(database)/documents/posts/$(postId))
+        .data.get('reactionCount', 0);
+    }
+    function countAfter(postId) {
+      return getAfter(/databases/$(database)/documents/posts/$(postId))
+        .data.get('reactionCount', 0);
+    }
+
     function isPostOwner(postId) {
       return signedIn()
         && get(/databases/$(database)/documents/posts/$(postId))
@@ -280,9 +310,33 @@ service cloud.firestore {
           && ((resource.data.get('hiddenByReports', false) != true
               && resource.data.get('limitedByReports', false) != true)
             || !changedKeys().hasAny(['audience'])))
+        // Old app versions: my entry in the post's `reactions` map.
+        // TRANSITION ONLY - remove this line when every phone runs the
+        // private-reactions version (prod release + force update).
         || (canSeePost(resource.data) && onlyMyReaction())
+        // 19 Nov 2026: private reactions - only the count, by exactly 1.
+        || (canSeePost(resource.data) && reactionCountStep(postId))
       );
       allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+
+      // 19 Nov 2026 - private reactions: one doc per person, doc id = that
+      // person's uid. Only the VIDEO OWNER can list who reacted; everyone
+      // else can read only their own reaction. Creating / removing one
+      // must move the post's reactionCount by exactly 1 in the same batch.
+      match /reactions/{reactorId} {
+        allow get: if isMe(reactorId) || isPostOwner(postId);
+        allow list: if isPostOwner(postId);
+        allow create: if isMe(reactorId)
+          && canSeePostId(postId)
+          && validReaction()
+          && countAfter(postId) == countBefore(postId) + 1;
+        allow update: if isMe(reactorId)
+          && changedKeys().hasOnly(['type'])
+          && request.resource.data.type in
+               ['like', 'love', 'haha', 'wow', 'sad', 'angry'];
+        allow delete: if isMe(reactorId)
+          && countAfter(postId) == countBefore(postId) - 1;
+      }
 
       // views / saves / shares: one doc per user, doc id = that user's uid
       match /views/{viewerId} {

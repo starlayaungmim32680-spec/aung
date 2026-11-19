@@ -107,7 +107,7 @@ class _FullScreenVideoScreenState extends State<FullScreenVideoScreen> {
                   videoUrl: item.videoUrl,
                   caption: item.caption,
                   userEmail: item.userEmail,
-                  reactions: item.reactions,
+                  reactionCount: item.reactionCount,
                   videoType: item.videoType,
                   onVideoEnd: _goToNextVideo,
                   repostNote: item.isRepost ? item.note : null,
@@ -344,7 +344,7 @@ class _ShortsScreenState extends State<ShortsScreen> {
                           videoUrl: item.videoUrl,
                           caption: item.caption,
                           userEmail: item.userEmail,
-                          reactions: item.reactions,
+                          reactionCount: item.reactionCount,
                           videoType: item.videoType,
                           onVideoEnd: () => _goToNextVideo(visibleItems.length),
                           repostNote: item.isRepost ? item.note : null,
@@ -600,7 +600,8 @@ class _FeedItem {
   final String userEmail;
   final String videoType;
   final String originalUserId;
-  final Map<String, dynamic> reactions;
+  // 19 Nov 2026: only the number - who reacted is private.
+  final int reactionCount;
   final bool isRepost;
   final DateTime createdAt;
   final String? note;
@@ -635,9 +636,10 @@ class _FeedItem {
         videoType =
             (doc.data() as Map<String, dynamic>)['videoType'] ?? 'short',
         originalUserId = (doc.data() as Map<String, dynamic>)['userId'] ?? '',
-        reactions = ((doc.data() as Map<String, dynamic>)['reactions']
-                as Map<String, dynamic>?) ??
-            {},
+        reactionCount =
+            ((doc.data() as Map<String, dynamic>)['reactionCount'] as num?)
+                    ?.toInt() ??
+                0,
         isRepost = false,
         createdAt =
             ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)
@@ -676,7 +678,7 @@ class _FeedItem {
             (doc.data() as Map<String, dynamic>)['videoType'] ?? 'short',
         originalUserId =
             (doc.data() as Map<String, dynamic>)['originalUserId'] ?? '',
-        reactions = const {},
+        reactionCount = 0,
         isRepost = true,
         createdAt =
             ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)
@@ -830,8 +832,8 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                 itemBuilder: (context, index) {
                   final postDoc = posts[index];
                   final post = postDoc.data() as Map<String, dynamic>;
-                  final Map<String, dynamic> reactions =
-                      (post['reactions'] as Map<String, dynamic>?) ?? {};
+                  final int reactionCount =
+                      (post['reactionCount'] as num?)?.toInt() ?? 0;
 
                   return _VideoPostItem(
                     key: ValueKey(postDoc.id),
@@ -840,7 +842,7 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                     videoUrl: post['videoUrl'] ?? '',
                     caption: post['caption'] ?? '',
                     userEmail: post['userEmail'] ?? 'Unknown user',
-                    reactions: reactions,
+                    reactionCount: reactionCount,
                     videoType: (post['videoType'] as String?) ?? 'short',
                     videoSpeed:
                         ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
@@ -958,8 +960,8 @@ class _SavedVideosFeedScreenState extends State<SavedVideosFeedScreen> {
             itemBuilder: (context, index) {
               final postDoc = widget.posts[index];
               final post = (postDoc.data() as Map<String, dynamic>?) ?? {};
-              final Map<String, dynamic> reactions =
-                  (post['reactions'] as Map<String, dynamic>?) ?? {};
+              final int reactionCount =
+                  (post['reactionCount'] as num?)?.toInt() ?? 0;
 
               return _VideoPostItem(
                 key: ValueKey(postDoc.id),
@@ -968,7 +970,7 @@ class _SavedVideosFeedScreenState extends State<SavedVideosFeedScreen> {
                 videoUrl: post['videoUrl'] ?? '',
                 caption: post['caption'] ?? '',
                 userEmail: post['userEmail'] ?? 'Unknown user',
-                reactions: reactions,
+                reactionCount: reactionCount,
                 videoType: (post['videoType'] as String?) ?? 'short',
                 videoSpeed: ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
                 filterType: (post['filterType'] as String?) ?? 'none',
@@ -1128,7 +1130,6 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                     videoUrl: widget.videoUrl,
                     caption: widget.caption,
                     userEmail: widget.userEmail,
-                    reactions: const {},
                     videoType: widget.videoType,
                     repostNote: widget.repostNote,
                     repostByName: widget.repostByName,
@@ -1205,8 +1206,8 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                   itemBuilder: (context, index) {
                     final postDoc = docs[index];
                     final post = postDoc.data() as Map<String, dynamic>;
-                    final Map<String, dynamic> reactions =
-                        (post['reactions'] as Map<String, dynamic>?) ?? {};
+                    final int reactionCount =
+                        (post['reactionCount'] as num?)?.toInt() ?? 0;
                     // Only the video actually tapped into keeps its
                     // "shared by" context — videos you swipe to next show
                     // as plain posts, same as the main feed.
@@ -1219,7 +1220,7 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                       videoUrl: post['videoUrl'] ?? '',
                       caption: post['caption'] ?? '',
                       userEmail: post['userEmail'] ?? 'Unknown user',
-                      reactions: reactions,
+                      reactionCount: reactionCount,
                       videoType: (post['videoType'] as String?) ?? 'short',
                       repostNote: isInitial ? widget.repostNote : null,
                       repostByName: isInitial ? widget.repostByName : null,

@@ -529,7 +529,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   videoUrl: item.videoUrl,
                                   caption: item.caption,
                                   userEmail: item.userEmail,
-                                  reactions: item.reactions,
+                                  reactionCount: item.reactionCount,
                                   videoType: item.videoType,
                                   onVideoEnd: () =>
                                       _goToNextVideo(slots.length),
