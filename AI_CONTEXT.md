@@ -17,6 +17,8 @@
 > _Since 15-16 Nov 2026: camera effects are built in the separate **Fly
 > Lab** app first (repo `fly-lab`, LAB_NOTES.md) - see the 15-16 Nov
 > entry._
+> _19 Nov 2026: Fly Lab paused (Fly app first); new **"Fly Dock"** bottom
+> bar on DEV - see the 19 Nov entries._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -1660,6 +1662,7 @@ OK). Play Console: Terms URL =
 > (the dex files were still locked right after the daemon stop). Not on
 > prod yet (Flight Path + mood go together)._
 >
+> _(Replaced on 19 Nov 2026 by the "Fly Dock" bar - see the 19 Nov entry.)_
 > _8 Nov 2026 - **Bottom bar = "Sky Horizon" + "Neon Hologram" icons**
 > (Ko picked idea C of 6 bar mockups, then icon set F1 "the future look"
 > for every tab; confirmed by Ko on DEV, `FlyDev-bn263122011.apk`, 307 s;
@@ -2090,6 +2093,39 @@ OK). Play Console: Terms URL =
 > tokens). analyze clean, build OK, Ko OK on phone. Backup tag
 > `p0.1-before`. Open: an editor hint has Burmese text (English-only
 > rule) - fix in a later step. Next: P0.2 (timeline) only after Ko's OK._
+>
+> _19 Nov 2026 (evening) - **Fly Lab PAUSED**: Ko decided to make the Fly
+> app itself the best first and come back to the editor later. P0.2
+> ("River" timeline: one shared `TrackBar`, labelled gutter Story /
+> Layers / Magic / Sound, 34 lanes, 44 dp trim handles, "+N" fold) was
+> built (analyze clean, build OK) but NOT phone-tested - it is saved on
+> fly-lab branch **`p0.2-river`** (commit `6f5d631`); fly-lab `main` stays
+> on P0.1 (`dfdcf34`, clean). To resume: `git switch p0.2-river`, finish
+> the phone test, then merge._
+>
+> _19 Nov 2026 - **Bottom bar = "Fly Dock"** (Ko's own mockup; confirmed
+> by Ko on DEV `FlyDev-bn263231820.apk`, 216.8 s, 204.5 MB; 5c NEW `Start a
+> live stream for your followers` True / OLD `Camera could not start: `
+> False). Only `main_navigation_screen.dart` changed: the "Sky Horizon"
+> curve + neon glow + always-turning `FlyNavIcon` motion are gone
+> (`_navFx` controller and `_HorizonPainter` removed; `nav_icons.dart` is
+> now used only by `upload_orbit.dart`). New `_buildDock`: a floating dark
+> glass capsule (12 dp side margin, 48 high, 4 above the safe area) joined
+> with a round collar in the middle (`_DockPainter`: `Path.combine` union
+> of the capsule and the circle, dark gradient fill, thin white rim,
+> shadow, thin dividers that keep clear of the collar). Tabs: **Home ·
+> Chat · [fly] · Profile · More** - every tab shows icon + name; active =
+> filled icon, white bold text and a white pill under it that glides
+> between tabs (`AnimatedPositioned`). The middle button is Upload, drawn
+> as a dark circle with a `_FlyWordmark` ("fly" italic + `_WingPainter`
+> three feathers; replace with a PNG if Ko sends the real logo). **More**
+> opens a sheet: Go Live (`_startLiveFlow`, unchanged) / Saved /
+> Wallet / Settings - Live is no longer a tab. Total bar height still 58
+> (collar top .. bottom) so the feed's views row and caption are not
+> covered. Chat unread badge, haptics, hide-on-scroll and Back behaviour
+> unchanged. Analyze: only the 3 old infos (2 `unnecessary_cast`, 1
+> `use_build_context_synchronously`). **Next:** prod APK (5a-5e,
+> `--flavor prod`) after Ko's OK._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -3982,7 +4018,8 @@ Step 6 (33 effects) and the project editor E1-E4 WORK (19 Nov 2026).
 Next: follow fly-lab `STUDIO_ROADMAP.md` (Phase 0 originality pass, then
 transitions / video overlay / captions, Fly UX, Fly Social, merge). Every
 editor task must follow the product direction there (own identity, no
-copying of other editors).
+copying of other editors). **Paused 19 Nov 2026** (Fly app first); P0.2
+is on fly-lab branch `p0.2-river`, not merged.
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->

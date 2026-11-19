@@ -28,7 +28,9 @@ import '../search_service.dart';
 import 'public_profile_screen.dart';
 import 'moderation_service.dart';
 import 'terms_consent.dart';
-import 'nav_icons.dart';
+import 'saved_videos_screen.dart';
+import 'wallet_screen.dart';
+import 'settings_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -51,12 +53,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   // Chat, since that gesture isn't discoverable on its own - shown once
   // ever per account, then never again.
   bool _showSwipeHint = false;
-
-  // Drives the selected bar icon's little motion (nav_icons.dart).
-  late final AnimationController _navFx = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 4),
-  )..repeat();
 
   StreamSubscription<QuerySnapshot>? _chatSubscription;
   bool _firstSnapshot = true;
@@ -100,32 +96,35 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     ProfileScreen(),
   ];
 
+  // 19 Nov 2026 - "Fly Dock" bottom bar (Ko's own mockup): Home, Chat,
+  // the round "fly" button (Upload) in the middle, Profile, and More.
+  // Live moved into the More sheet together with Saved, Wallet, Settings.
   final List<Map<String, dynamic>> _menuItems = const [
     {
-      'icon': Icons.home_rounded,
+      'icon': Icons.home_outlined,
+      'activeIcon': Icons.home_rounded,
       'label': 'Home',
-      'colors': [Color(0xFFFF4B6E), Color(0xFFD32F4F)],
     },
     {
-      'icon': Icons.chat_bubble_rounded,
+      'icon': Icons.chat_outlined,
+      'activeIcon': Icons.chat_rounded,
       'label': 'Chat',
-      'colors': [Color(0xFF3A8DFF), Color(0xFF1565C0)],
     },
     {
       'icon': Icons.add_rounded,
+      'activeIcon': Icons.add_rounded,
       'label': 'Upload',
-      'colors': [Color(0xFF24D17E), Color(0xFF0E9F5E)],
     },
     {
-      'icon': Icons.person_rounded,
+      'icon': Icons.person_outline_rounded,
+      'activeIcon': Icons.person_rounded,
       'label': 'Profile',
-      'colors': [Color(0xFF9C4DFF), Color(0xFF6A1B9A)],
     },
     {
-      'icon': Icons.podcasts_rounded,
-      'label': 'Live',
-      'colors': [Color(0xFFFF3B30), Color(0xFFB71C1C)],
-      'action': 'live',
+      'icon': Icons.menu_rounded,
+      'activeIcon': Icons.menu_rounded,
+      'label': 'More',
+      'action': 'more',
     },
   ];
 
@@ -531,7 +530,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     WidgetsBinding.instance.removeObserver(this);
     _presenceHeartbeatTimer?.cancel();
     kBackgroundChannel.invokeMethod('stopPresenceService').catchError((_) {});
-    _navFx.dispose();
     _swipePageController.dispose();
     _chatSubscription?.cancel();
     BlockService.instance.hidden.removeListener(_recomputeUnread);
@@ -829,61 +827,124 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
     return (width / 390).clamp(0.85, 1.2);
   }
 
-  // 8 Nov 2026 - "Sky Horizon" bottom bar (Ko picked idea C, exactly as
-  // the mockup): the bar's top edge is a curved horizon (low at both
-  // ends, high in the middle) drawn as a thin Fly-gradient line. The
-  // active tab sits ON the horizon like a rising sun - a soft glow behind
-  // it, its name underneath - and glides there when you switch; the other
-  // tabs rest just below the line. Upload is a gradient ✈ circle sitting
-  // on top of the curve in the middle. Same tabs and actions as before
-  // (Live opens the Go Live dialog), same unread badge on Chat.
+  // 19 Nov 2026 - "Fly Dock" bottom bar (Ko's mockup): a floating dark
+  // glass capsule with a round collar in the middle holding the "fly"
+  // button (Upload). Every tab shows its icon AND its name; the active
+  // one gets the filled icon, white text and a white pill under it that
+  // glides between tabs. Thin dividers separate the tabs. Calm on
+  // purpose: no neon glow, so the video stays the star.
   // Same total height as the old bar (58), so the feed's "views" row
-  // and captions above it are not covered (8 Nov 2026 fix).
-  static const double _kHorizonEdge = 28; // curve y at both ends
-  static const double _kHorizonPeak = -8; // control point (middle ~10)
-
-  /// y of the horizon at [t] (0 = left edge, 1 = right edge), unscaled.
-  static double _horizonY(double t) =>
-      (1 - t) * (1 - t) * _kHorizonEdge +
-      2 * (1 - t) * t * _kHorizonPeak +
-      t * t * _kHorizonEdge;
+  // and captions above it are not covered.
+  static const double _kDockH = 48; // the capsule
+  static const double _kDockGap = 4; // space under the capsule
+  static const double _kCollarR = 29; // the round collar in the middle
+  static const double _kBarH = 58; // whole bar (collar top .. bottom)
 
   void _onMenuTap(int i) {
     HapticFeedback.selectionClick();
-    if (_menuItems[i]['action'] == 'live') {
-      _startLiveFlow();
+    final Object? action = _menuItems[i]['action'];
+    if (action == 'more') {
+      _openMoreSheet();
     } else {
       _selectTab(i);
     }
   }
 
-  // The icon of tab [i] (with the Chat unread badge).
-  static const Map<String, FlyNavKind> _kNavKinds = {
-    'Home': FlyNavKind.home,
-    'Chat': FlyNavKind.chat,
-    'Upload': FlyNavKind.upload,
-    'Profile': FlyNavKind.profile,
-    'Live': FlyNavKind.live,
-  };
+  // The "More" sheet: Go Live and the places that used to need a few taps.
+  void _openMoreSheet() {
+    Widget row(
+        IconData icon, String title, String subtitle, VoidCallback onTap) {
+      return ListTile(
+        leading: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E24),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          ),
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
+        title: Text(title,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w700)),
+        subtitle: Text(subtitle,
+            style: const TextStyle(color: Color(0xFF9A9AA6), fontSize: 12)),
+        onTap: onTap,
+      );
+    }
 
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF121216),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheet) {
+        void go(Widget screen) {
+          Navigator.pop(sheet);
+          Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
+        }
+
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(8, 10, 8, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                row(Icons.podcasts_rounded, 'Go Live',
+                    'Start a live stream for your followers', () {
+                  Navigator.pop(sheet);
+                  _startLiveFlow();
+                }),
+                row(Icons.bookmark_outline_rounded, 'Saved', 'Videos you saved',
+                    () => go(const SavedVideosScreen())),
+                row(Icons.account_balance_wallet_outlined, 'Wallet',
+                    'Your coins and gifts', () => go(const WalletScreen())),
+                row(
+                    Icons.settings_outlined,
+                    'Settings',
+                    'Account, privacy and more',
+                    () => go(const SettingsScreen())),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // The icon of tab [i] (with the Chat unread badge).
   Widget _menuIcon(int i, bool isActive, double scale) {
     final item = _menuItems[i];
     return SizedBox(
       width: 26 * scale,
-      height: 26 * scale,
+      height: 24 * scale,
       child: Stack(
         clipBehavior: Clip.none,
         alignment: Alignment.center,
         children: [
-          // F1 "Neon Hologram" icons (nav_icons.dart, 8 Nov 2026).
-          OverflowBox(
-            maxWidth: 32 * scale,
-            maxHeight: 32 * scale,
-            child: FlyNavIcon(
-              kind: _kNavKinds[item['label']] ?? FlyNavKind.home,
-              active: isActive,
-              size: 32 * scale,
-              motion: _navFx,
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            transitionBuilder: (child, anim) =>
+                ScaleTransition(scale: anim, child: child),
+            child: Icon(
+              (isActive ? item['activeIcon'] : item['icon']) as IconData,
+              key: ValueKey<bool>(isActive),
+              size: 24 * scale,
+              color: isActive ? Colors.white : const Color(0xFFB4B4BE),
             ),
           ),
           // Unread messages badge on the Chat tab (Fly gradient, pops
@@ -892,7 +953,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
           if (item['label'] == 'Chat')
             Positioned(
               right: -10 * scale,
-              top: -8 * scale,
+              top: -7 * scale,
               child: ValueListenableBuilder<int>(
                 valueListenable: _unreadTotal,
                 builder: (context, unread, _) => AnimatedScale(
@@ -931,139 +992,133 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 
   /// The whole bar (without the bottom safe-area padding).
-  Widget _buildHorizonBar(double scale) {
-    const Duration move = Duration(milliseconds: 420);
-    const Curve curve = Curves.easeOutCubic;
+  Widget _buildDock(double scale) {
     final int n = _menuItems.length;
-    final double barH = 58 * scale;
+    final double barH = _kBarH * scale;
+    final double dockH = _kDockH * scale;
+    final double dockTop = barH - _kDockGap * scale - dockH;
+    final double side = 12 * scale;
+    final int active = _currentIndex.clamp(0, n - 1);
 
     return LayoutBuilder(builder: (context, box) {
-      final double w = box.maxWidth;
+      final double w = box.maxWidth - side * 2;
       final double slot = w / n;
-      double cx(int i) => slot * (i + 0.5);
-      double lineY(int i) => _horizonY((i + 0.5) / n) * scale;
-
-      final int active = _currentIndex.clamp(0, n - 1);
-      final bool activeIsUpload = _menuItems[active]['label'] == 'Upload';
-      final Color sunColor =
-          ((_menuItems[active]['colors'] as List).cast<Color>()).first;
-      final double sun = 56 * scale;
+      double cx(int i) => side + slot * (i + 0.5);
+      final double pillW = 26 * scale;
 
       return SizedBox(
         height: barH,
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            // Sky + horizon line.
-            Positioned.fill(
-              child: CustomPaint(painter: _HorizonPainter(scale: scale)),
+            // The capsule with its round collar.
+            Positioned(
+              left: side,
+              right: side,
+              top: 0,
+              height: barH - _kDockGap * scale,
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _DockPainter(
+                    dockTop: dockTop,
+                    collarR: _kCollarR * scale,
+                    slots: n,
+                  ),
+                ),
+              ),
             ),
-            // The rising "sun" behind the active tab - glides between tabs.
+            // The tabs (all but the middle one).
+            for (int i = 0; i < n; i++)
+              if (_menuItems[i]['label'] != 'Upload')
+                Positioned(
+                  left: cx(i) - slot / 2,
+                  width: slot,
+                  top: dockTop,
+                  height: dockH,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _onMenuTap(i),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _menuIcon(i, active == i, scale),
+                        SizedBox(height: 3 * scale),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 200),
+                          style: TextStyle(
+                            color: active == i
+                                ? Colors.white
+                                : const Color(0xFFB4B4BE),
+                            fontSize: 11 * scale,
+                            fontWeight:
+                                active == i ? FontWeight.w800 : FontWeight.w600,
+                          ),
+                          child: Text(_menuItems[i]['label'] as String,
+                              maxLines: 1),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            // The white pill under the active tab - glides between tabs.
             AnimatedPositioned(
-              duration: move,
-              curve: curve,
-              left: cx(active) - sun / 2,
-              top: lineY(active) - sun / 2,
-              width: sun,
-              height: sun,
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              left: cx(active) - pillW / 2,
+              top: dockTop + dockH - 4 * scale,
+              width: pillW,
+              height: 4 * scale,
               child: IgnorePointer(
                 child: AnimatedOpacity(
-                  opacity: activeIsUpload ? 0 : 1,
+                  opacity: _menuItems[active]['label'] == 'Upload' ? 0 : 1,
                   duration: const Duration(milliseconds: 200),
-                  child: TweenAnimationBuilder<Color?>(
-                    tween: ColorTween(end: sunColor),
-                    duration: move,
-                    builder: (context, c, _) => DecoratedBox(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(colors: [
-                          (c ?? sunColor).withValues(alpha: 0.75),
-                          (c ?? sunColor).withValues(alpha: 0.0),
-                        ]),
-                      ),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(2 * scale),
                     ),
                   ),
                 ),
               ),
             ),
-            // The tabs.
+            // The round "fly" button (Upload) inside the collar.
             for (int i = 0; i < n; i++)
               if (_menuItems[i]['label'] == 'Upload')
                 Positioned(
-                  left: cx(i) - 25 * scale,
-                  top: lineY(i) - 25 * scale,
-                  width: 50 * scale,
-                  height: 50 * scale,
-                  child: GestureDetector(
-                    onTap: () => _onMenuTap(i),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 280),
-                      // F1: a dark glass circle with a neon rim and the
-                      // Star Jet inside (its orbit ring always turns).
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: const Color(0xFF0B0B10),
-                        border: Border.all(
-                          color: active == i
-                              ? Colors.white
-                              : const Color(0xFF9C4DFF),
-                          width: 2 * scale,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color:
-                                const Color(0xFF9C4DFF).withValues(alpha: 0.75),
-                            blurRadius: 20 * scale,
+                  left: cx(i) - 24 * scale,
+                  top: dockTop + dockH / 2 - 24 * scale,
+                  width: 48 * scale,
+                  height: 48 * scale,
+                  child: Semantics(
+                    button: true,
+                    label: 'Upload',
+                    child: GestureDetector(
+                      onTap: () => _onMenuTap(i),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 220),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFF2A2A31), Color(0xFF0E0E12)],
                           ),
-                        ],
-                      ),
-                      child: Center(
-                        child: FlyNavIcon(
-                          kind: FlyNavKind.upload,
-                          active: true,
-                          size: 36 * scale,
-                          motion: _navFx,
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-              else
-                AnimatedPositioned(
-                  duration: move,
-                  curve: Curves.easeOutBack,
-                  left: cx(i) - slot / 2,
-                  width: slot,
-                  // Active: the icon sits ON the horizon; others just below.
-                  top: (active == i ? lineY(i) : lineY(i) + 18 * scale) -
-                      13 * scale,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => _onMenuTap(i),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _menuIcon(i, active == i, scale),
-                        SizedBox(height: 4 * scale),
-                        AnimatedOpacity(
-                          opacity: active == i ? 1 : 0,
-                          duration: const Duration(milliseconds: 240),
-                          child: Text(
-                            _menuItems[i]['label'] as String,
-                            style: TextStyle(
-                              color: Color.lerp(
-                                  ((_menuItems[i]['colors'] as List)
-                                          .cast<Color>())
-                                      .first,
-                                  Colors.white,
-                                  0.3),
-                              fontSize: 11 * scale,
-                              fontWeight: FontWeight.w800,
+                          border: Border.all(
+                            color: active == i
+                                ? Colors.white
+                                : Colors.white.withValues(alpha: 0.38),
+                            width: 1.5 * scale,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              blurRadius: 10 * scale,
+                              offset: Offset(0, 3 * scale),
                             ),
-                          ),
+                          ],
                         ),
-                        SizedBox(height: 8 * scale),
-                      ],
+                        child: Center(child: _FlyWordmark(scale: scale)),
+                      ),
                     ),
                   ),
                 ),
@@ -1242,24 +1297,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
                   ),
                 );
               },
-              // 8 Nov 2026: Sky Horizon (see _buildHorizonBar).
-              child: Container(
-                color: Colors.transparent,
+              // 19 Nov 2026: Fly Dock (see _buildDock) - it floats, so
+              // nothing is painted around or under the capsule.
+              child: Padding(
                 padding: EdgeInsets.only(bottom: bottomSafe),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    // The dark sky under the curve also fills the safe area.
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: -bottomSafe,
-                      height: bottomSafe + 1,
-                      child: const ColoredBox(color: Color(0xFF09080D)),
-                    ),
-                    _buildHorizonBar(scale),
-                  ],
-                ),
+                child: _buildDock(scale),
               ),
             ),
 
@@ -1274,60 +1316,138 @@ class _MainNavigationScreenState extends State<MainNavigationScreen>
   }
 }
 
-// The bar's background: the dark sky under a curved horizon (low at the
-// ends, high in the middle) with a thin Fly-gradient line along it
-// (Sky Horizon, 8 Nov 2026). Same curve as _horizonY.
-class _HorizonPainter extends CustomPainter {
-  final double scale;
-  const _HorizonPainter({required this.scale});
+// The Fly Dock's shape: a rounded capsule joined with a round collar in
+// the middle (one outline around both), dark glass fill, a thin light
+// rim, a soft shadow, and thin dividers between the tabs.
+class _DockPainter extends CustomPainter {
+  final double dockTop;
+  final double collarR;
+  final int slots;
+  const _DockPainter({
+    required this.dockTop,
+    required this.collarR,
+    required this.slots,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final double w = size.width;
-    final double edge = 28 * scale;
-    final double peak = -8 * scale;
-    final Path top = Path()
-      ..moveTo(0, edge)
-      ..quadraticBezierTo(w / 2, peak, w, edge);
-    final Path fill = Path.from(top)
-      ..lineTo(w, size.height)
-      ..lineTo(0, size.height)
-      ..close();
+    final double h = size.height - dockTop;
+    final RRect capsule = RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, dockTop, w, h), Radius.circular(h / 2));
+    final Offset c = Offset(w / 2, dockTop + h / 2);
+    final Path shape = Path.combine(
+      PathOperation.union,
+      Path()..addRRect(capsule),
+      Path()..addOval(Rect.fromCircle(center: c, radius: collarR)),
+    );
+
+    canvas.drawShadow(shape, Colors.black, 8, false);
     canvas.drawPath(
-      fill,
+      shape,
       Paint()
         ..shader = const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFF15121F), Color(0xFF09080D)],
+          colors: [Color(0xF2222228), Color(0xF20C0C10)],
         ).createShader(Offset.zero & size),
     );
-    // F1 neon horizon: cyan -> violet with a soft glow under it.
-    final Shader neon = const LinearGradient(colors: [
-      Color(0xFF35E1F2),
-      Color(0xFF3A8DFF),
-      Color(0xFF9C4DFF),
-    ]).createShader(Rect.fromLTWH(0, 0, w, edge));
     canvas.drawPath(
-      top,
+      shape,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 4
-        ..shader = neon
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        ..strokeWidth = 1.2
+        ..color = Colors.white.withValues(alpha: 0.22),
     );
-    canvas.drawPath(
-      top,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..shader = neon,
-    );
+
+    // Dividers between the tabs; the ones next to the middle button sit
+    // just outside its collar.
+    final Paint line = Paint()
+      ..color = Colors.white.withValues(alpha: 0.14)
+      ..strokeWidth = 1;
+    final double slot = w / slots;
+    final double mid = (slots - 1) / 2;
+    for (int i = 1; i < slots; i++) {
+      double x = slot * i;
+      if ((i - 1 - mid).abs() < 0.6 || (i - mid).abs() < 0.6) {
+        // Border of the middle slot: keep clear of the collar.
+        x = i <= mid ? c.dx - collarR - 8 : c.dx + collarR + 8;
+      }
+      canvas.drawLine(
+          Offset(x, dockTop + h * 0.28), Offset(x, dockTop + h * 0.72), line);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _HorizonPainter oldDelegate) =>
-      oldDelegate.scale != scale;
+  bool shouldRepaint(covariant _DockPainter old) =>
+      old.dockTop != dockTop || old.collarR != collarR || old.slots != slots;
+}
+
+// The little "fly" wordmark with a wing on the y, for the middle button.
+class _FlyWordmark extends StatelessWidget {
+  final double scale;
+  const _FlyWordmark({required this.scale});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 36 * scale,
+      height: 24 * scale,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            left: 0,
+            bottom: 0,
+            child: Text(
+              'fly',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 19 * scale,
+                height: 1,
+                fontWeight: FontWeight.w900,
+                fontStyle: FontStyle.italic,
+                letterSpacing: -0.8 * scale,
+              ),
+            ),
+          ),
+          Positioned(
+            right: -1 * scale,
+            top: 0,
+            width: 15 * scale,
+            height: 13 * scale,
+            child: const CustomPaint(painter: _WingPainter()),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Three swept feathers, rising to the top right.
+class _WingPainter extends CustomPainter {
+  const _WingPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double w = size.width;
+    final double h = size.height;
+    final Paint p = Paint()..color = Colors.white;
+    for (int k = 0; k < 3; k++) {
+      final double tipX = w * (1.0 - k * 0.14);
+      final double tipY = h * (k * 0.24);
+      final double thick = h * (0.22 - k * 0.04);
+      final Path f = Path()
+        ..moveTo(0, h)
+        ..quadraticBezierTo(w * 0.45, h * (0.62 - k * 0.12), tipX, tipY)
+        ..quadraticBezierTo(w * 0.5, h * (0.62 - k * 0.12) + thick * 2.2, 0, h)
+        ..close();
+      canvas.drawPath(f, p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WingPainter old) => false;
 }
 
 // Stacks the network-status banner above the minimized-call bar at the
