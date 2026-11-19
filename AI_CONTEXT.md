@@ -2053,6 +2053,34 @@ OK). Play Console: Terms URL =
 > Aurora, Kaleido, Art = Comic / Pop Art / Sketch / Duotone). Idea for
 > later: auto-balance brightness when several bright effects are stacked._
 >
+> _17 Nov 2026 - **Fly Lab editor step 6 WORKS** (`FlyLab-bn263210141.apk`):
+> 33 stackable effects in their own tabs - Sky (Big Moon, Sunrise, Shooting
+> Stars, Night Sky, Birds, Clouds, Rainbow), Nature (Falling Leaves, Sakura,
+> Butterflies, Fireflies, Dandelion, Bubbles), Weather, Light, Party (Sky
+> Lanterns ...), Retro. 75 GPU shaders in all. Ko next (17 Nov evening):
+> wants a CapCut-style EDITOR toolbar (Edit, Audio, Text, Effects, Overlay,
+> Captions, Filters, Adjust, Stickers, Aspect ratio, Background,
+> Templates) - plan proposed in fly-lab `LAB_NOTES.md`._
+>
+> _17-19 Nov 2026 - **Fly Lab project editor WORKS** (Fly NOT changed;
+> fly-lab commits 8759f69 .. 0d23f29): E1 timeline (split, trim,
+> duplicate, speed, reorder), 25 new effects x styles + an effects track
+> (time + place on the video), E2 Audio (music from the phone, clip
+> sound, volume, fades, AAC in export), E3 Text (11 OFL fonts, 5 Myanmar,
+> styles, animations, presets), E4 stickers + photo overlay, Window Card.
+> All on the phone, no paid cloud. Details: fly-lab `LAB_NOTES.md`._
+>
+> _19 Nov 2026 - 🧭 **PRODUCT DIRECTION for the editor (Ko):** Fly
+> Creative Studio must have its OWN identity. Do not copy CapCut's (or any
+> editor's) UI, branding, icons, layouts, templates, animations or
+> proprietary designs; other editors are functional references only.
+> Goals: easier for beginners, powerful for advanced creators, visually
+> unique, fast and reliable, integrated with Fly Social. Roadmap,
+> originality checklist and original UX ideas (Feeling Start, Quick /
+> Studio, Fly Dock, Beat Magnet, Look recipes + "Use this look" remix,
+> Fly safe zones, Myanmar first): fly-lab `STUDIO_ROADMAP.md`. Nothing
+> new is built until Ko says go._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3940,8 +3968,11 @@ delegate noted for any later merge). Editor: step 1 (engine) and step 3
 (13 feeling templates + filters / adjust / length), step 4 (template
 library, photo preview cards) and step 5 (42 templates + 12 stackable
 effects, combine up to 3) WORK; cut-out templates dropped (17 Nov 2026).
-Next (plan): many photos -> slideshow + music, effects on videos, lite
-editor, write-text recipe, merge into Fly.
+Step 6 (33 effects) and the project editor E1-E4 WORK (19 Nov 2026).
+Next: follow fly-lab `STUDIO_ROADMAP.md` (Phase 0 originality pass, then
+transitions / video overlay / captions, Fly UX, Fly Social, merge). Every
+editor task must follow the product direction there (own identity, no
+copying of other editors).
 
 **GPUPixel camera on prod (14 Nov 2026, code ready in both flavors):**
   a. ~~Open-source licences page~~ - DONE 15 Nov 2026 (Settings ->
