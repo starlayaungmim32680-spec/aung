@@ -2081,6 +2081,16 @@ OK). Play Console: Terms URL =
 > Fly safe zones, Myanmar first): fly-lab `STUDIO_ROADMAP.md`. Nothing
 > new is built until Ko says go._
 >
+> _19 Nov 2026 - **Fly Lab Phase 0 design APPROVED + P0.1 WORKS**: "Fly
+> Studio Night" premium dark design system (fly-lab `PHASE0_DESIGN.md`,
+> refinements R1-R9: gradient only for primary action / playhead /
+> selected; labelled dock tools; labelled + coloured tracks; small-screen
+> checks). P0.1 = colours + typography only (new `lib/studio/
+> studio_tokens.dart`, `studio_theme.dart`; `project_editor.dart` uses the
+> tokens). analyze clean, build OK, Ko OK on phone. Backup tag
+> `p0.1-before`. Open: an editor hint has Burmese text (English-only
+> rule) - fix in a later step. Next: P0.2 (timeline) only after Ko's OK._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
