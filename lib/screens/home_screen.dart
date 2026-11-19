@@ -38,6 +38,7 @@ import 'report_sheet.dart';
 import 'report_review.dart';
 import 'circle_posts.dart';
 import 'local_video_cache.dart';
+import 'view_history.dart' show showPostViewersSheet;
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
 

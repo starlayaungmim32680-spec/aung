@@ -601,26 +601,43 @@ class _OwnerInfo extends StatelessWidget {
               if (postId.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 // 19 Nov 2026: post.viewCount (passed in) - no longer a
-                // stream of the whole viewers list.
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.remove_red_eye,
-                      color: Colors.white,
-                      size: 16,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      viewCount == 1 ? '1 view' : '$viewCount views',
-                      style: const TextStyle(
+                // stream of the whole viewers list. 20 Nov 2026: on MY
+                // video it opens "Viewers" (opt-in view history).
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: (viewCount > 0 &&
+                          userId == FirebaseAuth.instance.currentUser?.uid)
+                      ? () => showPostViewersSheet(context, postId)
+                      : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.remove_red_eye,
                         color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                        size: 16,
                         shadows: [Shadow(color: Colors.black, blurRadius: 6)],
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Text(
+                        viewCount == 1 ? '1 view' : '$viewCount views',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                      if (viewCount > 0 &&
+                          userId == FirebaseAuth.instance.currentUser?.uid)
+                        const Icon(
+                          Icons.chevron_right_rounded,
+                          color: Colors.white,
+                          size: 16,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                    ],
+                  ),
                 ),
               ],
             ], // end if (!compact)

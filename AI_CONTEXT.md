@@ -21,8 +21,8 @@
 > bar + owner-only **"who reacted"** sheet + **private reactions** (rules
 > + Worker live on both; migration run on DEV only) on DEV - prod later in
 > one release, see the 19 Nov "PROD RELEASE CHECKLIST"._
-> _20 Nov 2026: view numbers come from `post.viewCount` (DEV); next is the
-> opt-in "who viewed" list (3b)._
+> _20 Nov 2026: view numbers come from `post.viewCount` and the opt-in
+> **View history** ("who viewed my video") works on DEV._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2199,9 +2199,11 @@ OK). Play Console: Terms URL =
 > (`/app-version`) to this build so old apps update; (e) then, in
 > `firestore.rules`, remove the "TRANSITION ONLY" `onlyMyReaction()` line
 > from the posts update rule AND change `views` read (also "TRANSITION
-> ONLY") to `allow get: if isMe(viewerId) || isPostOwner(postId); allow
-> list: if isPostOwner(postId);` and make views create require the count
-> step (`countAfter`-style, like reactions), then publish rules to both
+> ONLY") to `allow get: if isMe(viewerId); allow list: if false;` (since
+> 20 Nov 2026 only the Worker's /post-viewers lists views - not even the
+> owner may list them directly, so view history privacy is enforced on
+> the server) and make views create require the count step
+> (`countAfter`-style, like reactions), then publish rules to both
 > projects. Old app versions write likes into the map (lost after
 > migration) and count views by listing them - that is why (d) and (e)
 > matter._
@@ -2246,6 +2248,36 @@ OK). Play Console: Terms URL =
 > Policy. Ko asked about cost + law first: cost small (reads only when
 > the owner opens the list); law: personal data -> transparency + opt-out
 > (TikTok: off by default, 16+, both sides; LinkedIn: per-user opt-out)._
+>
+> _20 Nov 2026 (01:00) - **View history = "who viewed my video" (3b)**
+> (confirmed by Ko on DEV `FlyDev-bn263240046.apk`, 248 s; 5c NEW `I'm 16
+> or older - turn on` True / OLD `Camera could not start: ` False; two
+> phones: A turns it on -> "No one to show yet"; B turns it on + watches
+> A's video -> B listed on A; B turns it off -> B gone from A's list).
+> Opt-in, OFF by default: `users/{uid}.viewHistory` (bool) +
+> `viewHistoryChangedAt`, set from **Settings -> View history** (switch,
+> `ViewHistorySettingTile`) after a dialog (last 30 days / works both
+> ways / turn off any time / 16+ only, button "I'm 16 or older - turn
+> on"). Fly does NOT store the date of birth (Privacy Policy), so 16+ is a
+> confirmation, not a DOB check. New **`lib/screens/view_history.dart`**:
+> `ViewHistory` (myStream / turnOn / turnOff), `ViewHistorySettingTile`,
+> `showPostViewersSheet(context, postId)` -> "Viewers" sheet (avatar,
+> name, "2h ago", tap -> PublicProfileScreen; blocked people hidden via
+> BlockService; needSetting -> "Turn on view history" button; error ->
+> "Couldn't load viewers" + Try again). `home_post_info.dart`: on MY
+> video the "N views" line gets a `>` and opens the sheet;
+> `home_screen.dart` imports it; `settings_screen.dart` shows the switch.
+> **Worker `POST /post-viewers {postId}`** (`handlePostViewers`, Firebase
+> ID token): caller must own the post AND have viewHistory on (else
+> `{needSetting: true}`); runQuery `posts/{id}/views` createdAt >= now-30d
+> desc limit 300; batchGet the viewers' users docs and keep only those
+> with viewHistory on NOW (turning it off hides you from every list at
+> once); never the owner; max 100 -> `{viewers: [{uid, name, photo,
+> at}]}`. The app never lists views itself. Privacy Policy (`/privacy`,
+> Worker HTML) got a "View history (optional, off by default)" item. No
+> rules change now (views read is still the TRANSITION rule; at the prod
+> release it becomes get = me, list = false - see the checklist). Worker
+> must be deployed to BOTH Workers._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

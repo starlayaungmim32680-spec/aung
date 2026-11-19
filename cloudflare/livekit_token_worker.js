@@ -446,6 +446,10 @@ export default {
     if (path === '/report') {
       return handleReport(body, env, caller);
     }
+    // 20 Nov 2026: "who viewed my video" (opt-in view history).
+    if (path === '/post-viewers') {
+      return handlePostViewers(body, env, caller);
+    }
     if (path === '/appeal') {
       return handleAppeal(body, env, caller);
     }
@@ -3076,6 +3080,104 @@ async function handleMigrateReactions(env, url) {
 }
 
 // ---------------------------------------------------------------------
+// Who viewed my video (20 Nov 2026): POST /post-viewers {postId}
+// ---------------------------------------------------------------------
+// Opt-in "view history" (users/{uid}.viewHistory == true, turned on in
+// Settings after confirming the person is 16 or older; OFF by default).
+// The app never lists posts/{postId}/views itself - only this Worker
+// does (admin access), so every privacy rule is checked here, with the
+// settings as they are NOW:
+//   - the caller must own the post,
+//   - the caller must have view history ON (it works both ways - like
+//     TikTok, you see others only if they can see you),
+//   - only viewers from the last 30 days,
+//   - only viewers who ALSO have view history on right now (someone who
+//     turns it off disappears from every list at once),
+//   - never the owner themself.
+// Answer: {needSetting: true} when the caller's view history is off,
+// else {viewers: [{uid, name, photo, at}]}, newest first, at most 100.
+async function handlePostViewers(body, env, caller) {
+  const uid = caller && caller.uid;
+  if (!isSafeUid(uid)) return jsonResponse({ error: 'not allowed' }, 403);
+  const postId = String(body.postId || '');
+  if (!REPORT_ID_RE.test(postId)) {
+    return jsonResponse({ error: 'bad post' }, 400);
+  }
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const [post, me] = await Promise.all([
+      firestoreGetFields(env, dbToken, `posts/${postId}`),
+      firestoreGetFields(env, dbToken, `users/${uid}`),
+    ]);
+    if (post === null) return jsonResponse({ viewers: [] });
+    if (stringField(post, 'userId') !== uid) {
+      return jsonResponse({ error: 'not your video' }, 403);
+    }
+    const on = (fields) =>
+      !!(fields && fields.viewHistory && fields.viewHistory.booleanValue === true);
+    if (!on(me)) return jsonResponse({ needSetting: true, viewers: [] });
+
+    // Views of the last 30 days, newest first (single-field index).
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    const response = await fetch(
+      `${firestoreBase(env)}/posts/${postId}:runQuery`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${dbToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: 'views' }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'createdAt' },
+                op: 'GREATER_THAN_OR_EQUAL',
+                value: { timestampValue: since },
+              },
+            },
+            orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }],
+            limit: 300,
+          },
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Views query failed: ${await response.text()}`);
+    }
+    const rows = [];
+    for (const row of await response.json()) {
+      if (!row.document) continue;
+      const viewerId = row.document.name.split('/').pop();
+      if (viewerId === uid || !isSafeUid(viewerId)) continue;
+      const at = row.document.fields && row.document.fields.createdAt &&
+        row.document.fields.createdAt.timestampValue;
+      rows.push({ viewerId, at: at ? Date.parse(at) : 0 });
+    }
+
+    // Their profiles, now - keep only people with view history ON.
+    const users = await firestoreBatchGet(
+      env, dbToken, rows.map((r) => `users/${r.viewerId}`));
+    const viewers = [];
+    for (const r of rows) {
+      const u = users[`users/${r.viewerId}`];
+      if (!on(u)) continue;
+      viewers.push({
+        uid: r.viewerId,
+        name: stringField(u, 'displayName'),
+        photo: stringField(u, 'photoUrl'),
+        at: r.at,
+      });
+      if (viewers.length >= 100) break;
+    }
+    return jsonResponse({ viewers });
+  } catch (err) {
+    return jsonResponse({ error: 'failed' }, 500);
+  }
+}
+
+// ---------------------------------------------------------------------
 // View count migration (19 Nov 2026): GET /migrate-views
 // ---------------------------------------------------------------------
 // Until 19 Nov 2026 the app showed a video's views by downloading the
@@ -5504,6 +5606,7 @@ const PRIVACY_PAGE_HTML = String.raw`<!doctype html>
       <li><b>Content you create:</b> videos, stories, captions, hashtags, comments, reactions, sounds you share, and your "Sky Note".</li>
       <li><b>Messages and calls:</b> text messages, photos and voice notes you send in chats, and the audio and video of calls and live streams while they happen.</li>
       <li><b>Activity in the app:</b> who you follow, friends, blocked accounts, saved videos, views, coins and gifts, what you search for (your recent searches are kept privately on your account), and reports you send us.</li>
+      <li><b>View history (optional, off by default):</b> only if you turn it on in Settings (for people aged 16 and over), you can see who viewed your videos in the last 30 days, and the owner of a video you watch can see that you viewed it. Only people who have also turned it on are shown, on both sides. You can turn it off at any time, and then your views are no longer shown to anyone.</li>
     </ul>
     <h3>Information from your phone</h3>
     <ul>

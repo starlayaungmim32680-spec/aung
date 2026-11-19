@@ -6,6 +6,7 @@ import 'sound_moderation.dart';
 import 'account_status_screen.dart';
 import 'terms_consent.dart' show kChildSafetyUrl, openFlyWebPage;
 import 'open_source_licenses.dart';
+import 'view_history.dart';
 
 // Fly's settings hub - starts with just Blocked accounts, but gives
 // future settings (notifications, privacy, etc.) a proper home instead
@@ -76,6 +77,8 @@ class SettingsScreen extends StatelessWidget {
               );
             },
           ),
+          // 20 Nov 2026: opt-in "who viewed your videos" (view_history.dart).
+          const ViewHistorySettingTile(),
           ListTile(
             leading: const Icon(Icons.block, color: Colors.white),
             title: const Text('Blocked accounts',
@@ -117,8 +120,8 @@ class SettingsScreen extends StatelessWidget {
           // (all Dart packages + the native GPUPixel camera libraries) -
           // Apache-2.0 asks apps to show them (open_source_licenses.dart).
           ListTile(
-            leading: const Icon(Icons.description_outlined,
-                color: Colors.white),
+            leading:
+                const Icon(Icons.description_outlined, color: Colors.white),
             title: const Text('Open-source licenses',
                 style: TextStyle(color: Colors.white)),
             subtitle: const Text('Software Fly is built with',
