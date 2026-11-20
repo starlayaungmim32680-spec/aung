@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'home_screen.dart';
 import 'public_profile_screen.dart';
 import '../block_service.dart';
@@ -745,11 +744,4 @@ class _SearchVideoThumbnail extends StatelessWidget {
       showWatched: true,
     );
   }
-}
-
-// Formats view counts like 1200 -> "1.2K"
-String _fmtViews(int n) {
-  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-  if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
-  return '$n';
 }
