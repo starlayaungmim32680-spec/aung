@@ -19,6 +19,7 @@ import 'password_reset.dart';
 import 'sky_pass.dart';
 import 'pass_scanner_screen.dart' show openPassScanner;
 import '../app_config.dart';
+import 'window_tile.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -891,14 +892,14 @@ class ProfileScreen extends StatelessWidget {
                         )
                       else
                         SliverPadding(
-                          padding: const EdgeInsets.all(2),
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
                           sliver: SliverGrid(
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                               crossAxisCount: 3,
-                              crossAxisSpacing: 2,
-                              mainAxisSpacing: 2,
-                              childAspectRatio: 0.7,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              childAspectRatio: 0.66,
                             ),
                             delegate: SliverChildBuilderDelegate(
                               (context, index) {
@@ -1541,7 +1542,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 }
 
 // A single video thumbnail tile that shows the first frame of the video
-class _VideoThumbnail extends StatefulWidget {
+// 20 Nov 2026: drawn as an airplane window ("Window seats",
+// window_tile.dart) instead of a TikTok-style square tile.
+class _VideoThumbnail extends StatelessWidget {
   final String videoUrl;
   final String caption;
   final String postId;
@@ -1555,110 +1558,13 @@ class _VideoThumbnail extends StatefulWidget {
   });
 
   @override
-  State<_VideoThumbnail> createState() => _VideoThumbnailState();
-}
-
-class _VideoThumbnailState extends State<_VideoThumbnail> {
-  @override
   Widget build(BuildContext context) {
-    final String thumbUrl = cloudinaryThumbUrl(widget.videoUrl);
-
-    return Container(
-      color: Colors.grey[900],
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (thumbUrl.isNotEmpty)
-            CachedNetworkImage(
-              imageUrl: thumbUrl,
-              fit: BoxFit.cover,
-              placeholder: (context, url) => const Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white24),
-                ),
-              ),
-              errorWidget: (context, url, error) => const Center(
-                child: Icon(Icons.play_circle_outline,
-                    color: Colors.white30, size: 30),
-              ),
-            )
-          else
-            const Center(
-              child: Icon(Icons.play_circle_outline,
-                  color: Colors.white30, size: 30),
-            ),
-          // TikTok-style view count (bottom-left)
-          Positioned(
-            left: 6,
-            bottom: 6,
-            // 19 Nov 2026: read the post's viewCount (one doc) instead of
-            // downloading the whole viewers list for every tile.
-            child: StreamBuilder<DocumentSnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('posts')
-                  .doc(widget.postId)
-                  .snapshots(),
-              builder: (context, snap) {
-                final Object? data = snap.data?.data();
-                final int views = data is Map<String, dynamic>
-                    ? ((data['viewCount'] as num?)?.toInt() ?? 0)
-                    : 0;
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.play_arrow,
-                      color: Colors.white,
-                      size: 16,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                    ),
-                    const SizedBox(width: 2),
-                    Text(
-                      _fmtCount(views),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-          // Small badge marking this as a shared video (repost)
-          if (widget.isRepost)
-            Positioned(
-              top: 6,
-              right: 6,
-              child: Container(
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.55),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.repeat_rounded,
-                  color: Colors.white,
-                  size: 14,
-                ),
-              ),
-            ),
-        ],
-      ),
+    return FlyWindowTile(
+      videoUrl: videoUrl,
+      postId: postId,
+      isRepost: isRepost,
     );
   }
-}
-
-// Formats view counts like 1200 -> "1.2K"
-String _fmtCount(int n) {
-  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-  if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}K';
-  return '$n';
 }
 
 // Account deletion, part 2 (4 Oct 2026): removes what the Firestore rules

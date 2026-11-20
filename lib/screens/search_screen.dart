@@ -2,14 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'home_screen.dart';
-import 'media_utils.dart';
 import 'public_profile_screen.dart';
 import '../block_service.dart';
 import '../search_service.dart';
 import '../search_history.dart';
 import 'presence_badge.dart';
+import 'window_tile.dart';
 
 // Search screen. Before typing: my RECENT searches (accounts I opened +
 // words I searched, TikTok/Facebook style - search_history.dart; no video
@@ -575,12 +574,12 @@ class _SearchResultsState extends State<_SearchResults> {
               GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(2),
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 3,
-                  crossAxisSpacing: 2,
-                  mainAxisSpacing: 2,
-                  childAspectRatio: 0.7,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 0.66,
                 ),
                 itemCount: results.posts.length,
                 itemBuilder: (context, index) {
@@ -727,7 +726,9 @@ class _SearchMessage extends StatelessWidget {
 }
 
 // Thumbnail tile showing the first frame of a video + its view count
-class _SearchVideoThumbnail extends StatefulWidget {
+// 20 Nov 2026: drawn as an airplane window ("Window seats",
+// window_tile.dart) instead of a TikTok-style square tile.
+class _SearchVideoThumbnail extends StatelessWidget {
   final String videoUrl;
   final String postId;
 
@@ -737,82 +738,11 @@ class _SearchVideoThumbnail extends StatefulWidget {
   });
 
   @override
-  State<_SearchVideoThumbnail> createState() => _SearchVideoThumbnailState();
-}
-
-class _SearchVideoThumbnailState extends State<_SearchVideoThumbnail> {
-  @override
   Widget build(BuildContext context) {
-    final String thumbUrl = cloudinaryThumbUrl(widget.videoUrl);
-
-    return Container(
-      color: Colors.grey[900],
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          if (thumbUrl.isNotEmpty)
-            CachedNetworkImage(
-              imageUrl: thumbUrl,
-              fit: BoxFit.cover,
-              placeholder: (context, url) => const Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white24),
-                ),
-              ),
-              errorWidget: (context, url, error) => const Center(
-                child: Icon(Icons.play_circle_outline,
-                    color: Colors.white30, size: 30),
-              ),
-            )
-          else
-            const Center(
-              child: Icon(Icons.play_circle_outline,
-                  color: Colors.white30, size: 30),
-            ),
-          Positioned(
-            left: 6,
-            bottom: 6,
-            // 19 Nov 2026: read the post's viewCount (one doc) instead of
-            // downloading the whole viewers list for every tile.
-            child: StreamBuilder<DocumentSnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('posts')
-                  .doc(widget.postId)
-                  .snapshots(),
-              builder: (context, snap) {
-                final Object? data = snap.data?.data();
-                final int views = data is Map<String, dynamic>
-                    ? ((data['viewCount'] as num?)?.toInt() ?? 0)
-                    : 0;
-                return Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.play_arrow,
-                      color: Colors.white,
-                      size: 16,
-                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                    ),
-                    const SizedBox(width: 2),
-                    Text(
-                      _fmtViews(views),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        ],
-      ),
+    return FlyWindowTile(
+      videoUrl: videoUrl,
+      postId: postId,
+      showWatched: true,
     );
   }
 }

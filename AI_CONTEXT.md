@@ -22,7 +22,9 @@
 > + Worker live on both; migration run on DEV only) on DEV - prod later in
 > one release, see the 19 Nov "PROD RELEASE CHECKLIST"._
 > _20 Nov 2026: view numbers come from `post.viewCount` and the opt-in
-> **View history** ("who viewed my video") works on DEV._
+> **View history** ("who viewed my video") works on DEV. 21 Nov: profile
+> grids are airplane windows with a gold "passport stamp" on watched
+> videos (DEV)._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2305,6 +2307,32 @@ OK). Play Console: Terms URL =
 > if the page was disposed meanwhile the controller is handed back with
 > `adopt`. Instant only when the first video is still the same as last
 > time; a newer post at the top loads as before._
+>>
+> _21 Nov 2026 (00:30) - **Profile grid = "Window seats" + "Passport
+> stamp"** (confirmed by Ko on DEV `FlyDev-bn263250010.apk`, 215 s; 5c NEW
+> `Video, watched` True / OLD `Camera could not start: ` False). Ko: the
+> profile video grid looked exactly like TikTok's. Three ideas on the
+> design canvas "Fly profile video grid - ideas" (A Window seats, B
+> Boarding stubs, C Flight log); Ko picked **A** and asked for an original
+> "already watched" mark. New **`lib/screens/window_tile.dart`**:
+> `FlyWindowTile` (airplane window: navy gradient frame 4 dp, corners =
+> 34% of the width, glare on the top of the glass, view count pill at the
+> BOTTOM CENTRE from `post.viewCount`, repost badge top centre) and
+> `WatchedVideos` (ValueNotifier set of watched post ids for this app run;
+> `check(postId)` = one get of my own `posts/{id}/views/{me}` doc, once per
+> post per run; `mark(postId)` is called by the feed's `_recordView`, so a
+> profile shows it at once after watching; cleared when another account
+> signs in). Watched (other people's videos only) = **gold frame + a
+> round tilted "passport stamp" with a plane** at the top-right corner.
+> The tile classes `_VideoThumbnail` (profile_screen, public_profile_screen)
+> and `_SearchVideoThumbnail` (search_screen) now just return
+> `FlyWindowTile` (own profile: showWatched false; public profile: false
+> on my own videos; search: true). Grids: spacing 12, padding 12, aspect
+> 0.66 (was 2 / 2 / 0.7). Unused `_fmtCount` / `_fmtViews`, the old
+> cached_network_image / media_utils / cloud_firestore imports removed
+> where they became unused. `home_screen.dart` imports `WatchedVideos`
+> for the feed part file. No rules change (my own view doc is readable:
+> TRANSITION rule now, `get: isMe` after the prod release)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

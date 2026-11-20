@@ -336,6 +336,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
     final postRef =
         FirebaseFirestore.instance.collection('posts').doc(widget.postId);
     final viewRef = postRef.collection('views').doc(user.uid);
+    // 20 Nov 2026: the profile "Window seats" tiles show a passport stamp
+    // on videos I watched (window_tile.dart).
+    WatchedVideos.mark(widget.postId);
     try {
       final snap = await viewRef.get();
       if (!snap.exists) {
