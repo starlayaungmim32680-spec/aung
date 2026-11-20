@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'media_utils.dart';
 
@@ -11,24 +14,40 @@ import 'media_utils.dart';
 //     cache small (video controllers are relatively expensive resources).
 //
 // Usage from _VideoPostItemState._initializeVideo():
-//   - call VideoPreloadCache.claim(widget.videoUrl) first; if it returns a
-//     controller, it's already initialized and ready to play immediately.
-//     Otherwise fall back to creating+initializing a fresh controller as
-//     before.
+//   - call `await VideoPreloadCache.claimWhenReady(widget.videoUrl)` first;
+//     if it returns a controller, it's already initialized and ready to
+//     play immediately. Otherwise fall back to creating+initializing a
+//     fresh controller as before.
+//
+// 20 Nov 2026 ("Instant Start"): a preload that is still IN FLIGHT can now
+// be waited for (claimWhenReady) - before, a video whose preload had not
+// finished yet started a second, separate download from zero. Also, a
+// preload dropped by evictExcept while still loading is disposed as soon
+// as it finishes instead of lingering, and a failed preload's controller
+// is disposed (it used to leak).
 class VideoPreloadCache {
   static final Map<String, VideoPlayerController> _ready = {};
-  static final Set<String> _pending = {};
+  static final Map<String, Future<VideoPlayerController?>> _pending = {};
+  // In-flight preloads nobody wants any more (see evictExcept).
+  static final Set<String> _dropped = {};
 
   /// Starts initializing [url] in the background if it isn't already
   /// cached or in progress. Safe to call repeatedly - it's a no-op once
   /// a preload for this url is already underway or done.
   static Future<void> preload(String url) async {
-    if (url.isEmpty || _ready.containsKey(url) || _pending.contains(url)) {
+    if (url.isEmpty || _ready.containsKey(url)) return;
+    if (_pending.containsKey(url)) {
+      // Wanted again while loading: keep it.
+      _dropped.remove(url);
       return;
     }
-    _pending.add(url);
+    _dropped.remove(url);
+    final Completer<VideoPlayerController?> done =
+        Completer<VideoPlayerController?>();
+    _pending[url] = done.future;
+    VideoPlayerController? controller;
     try {
-      final controller =
+      controller =
           VideoPlayerController.networkUrl(Uri.parse(playableVideoUrl(url)));
       // Without a timeout, a lost connection would leave this url stuck in
       // _pending forever - the preload guard at the top of this function
@@ -38,10 +57,19 @@ class VideoPreloadCache {
       // Mute and pause the preloaded controller - the screen that later
       // claims it decides playback/volume/speed once it's actually shown.
       await controller.setVolume(0);
-      _ready[url] = controller;
+      if (_dropped.remove(url)) {
+        controller.dispose();
+        done.complete(null);
+      } else {
+        _ready[url] = controller;
+        done.complete(controller);
+      }
     } catch (_) {
       // Ignore preload failures; the real _initializeVideo() call will
       // just create its own controller normally when the page is reached.
+      controller?.dispose();
+      _dropped.remove(url);
+      if (!done.isCompleted) done.complete(null);
     } finally {
       _pending.remove(url);
     }
@@ -65,14 +93,82 @@ class VideoPreloadCache {
     return _ready.remove(url);
   }
 
+  /// Like [claim], but if a preload of [url] is still loading, waits for
+  /// it (instead of starting a second download from zero) and takes it.
+  /// Returns null when there is no preload or it failed.
+  static Future<VideoPlayerController?> claimWhenReady(String url) async {
+    final VideoPlayerController? ready = _ready.remove(url);
+    if (ready != null) return ready;
+    final Future<VideoPlayerController?>? loading = _pending[url];
+    if (loading == null) return null;
+    _dropped.remove(url);
+    final VideoPlayerController? c = await loading;
+    if (c == null) return null;
+    return _ready.remove(url);
+  }
+
+  /// Throws away the preload of [url] (now, or when it finishes loading).
+  static void drop(String url) {
+    _ready.remove(url)?.dispose();
+    if (_pending.containsKey(url)) _dropped.add(url);
+  }
+
   /// Disposes any preloaded-but-unclaimed controllers whose url isn't in
   /// [keepUrls] - called after each page change so the cache never grows
-  /// beyond what's actually near the user's current position.
+  /// beyond what's actually near the user's current position. Preloads
+  /// still loading are marked and disposed when they finish.
   static void evictExcept(Set<String> keepUrls) {
     final List<String> staleUrls =
         _ready.keys.where((u) => !keepUrls.contains(u)).toList();
     for (final url in staleUrls) {
       _ready.remove(url)?.dispose();
     }
+    for (final url in _pending.keys) {
+      if (!keepUrls.contains(url)) _dropped.add(url);
+    }
+  }
+}
+
+// 20 Nov 2026 - "Instant Start": the video at the top of Home when the app
+// was last used is remembered, and on the next launch main() starts
+// loading it at once - in parallel with Firebase, sign-in and reading the
+// feed - instead of only after all of that. When it is still the first
+// video (no newer post), it is ready the moment Home appears.
+class LaunchVideo {
+  LaunchVideo._();
+
+  static const String _key = 'launchVideoUrl';
+  static String? _saved;
+  static String? _warmed; // the url warmUp() started loading
+  static bool _settled = false;
+
+  /// Called first thing in main(); never waits, never throws.
+  static void warmUp() {
+    SharedPreferences.getInstance().then((p) {
+      final String? url = p.getString(_key);
+      _saved = url;
+      if (url != null && url.isNotEmpty) {
+        _warmed = url;
+        VideoPreloadCache.preload(url);
+      }
+    }).catchError((Object _) {});
+  }
+
+  /// Once Home knows its first videos: if the warmed-up video is not among
+  /// them (newer posts came in), free it instead of keeping it loaded.
+  static void settle(Set<String> topUrls) {
+    if (_settled) return;
+    _settled = true;
+    final String? url = _warmed;
+    if (url != null && !topUrls.contains(url)) VideoPreloadCache.drop(url);
+  }
+
+  /// Home's first video right now - remembered for the next launch.
+  static void remember(String url) {
+    if (url.isEmpty || url == _saved) return;
+    _saved = url;
+    SharedPreferences.getInstance()
+        .then((p) => p.setString(_key, url))
+        .catchError((Object _) => false);
   }
 }

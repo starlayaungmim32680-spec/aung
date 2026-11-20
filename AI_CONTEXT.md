@@ -2279,6 +2279,33 @@ OK). Play Console: Terms URL =
 > release it becomes get = me, list = false - see the checklist). Worker
 > must be deployed to BOTH Workers._
 >
+> _20 Nov 2026 (23:40) - **Instant Start** (confirmed by Ko on DEV
+> `FlyDev-bn263242313.apk`, 317 s; no new UI text, 5c pair from the last
+> text change `I'm 16 or older - turn on` True / `Camera could not start: `
+> False; phone: open -> close from Recents -> open again = the first video
+> plays at once, several times; swiping normal). Ko: opening the app
+> showed the first video ~1 s late. Cause: everything ran one after the
+> other (Firebase init -> auth -> Home -> feed query -> ONLY THEN the
+> first video's HLS load). Also a bug: `claim()` only worked for a
+> FINISHED preload - a video shown while its preload was still loading
+> started a second download from zero. Fix (4 files): 1)
+> `video_preload_cache.dart`: `_pending` is now a Map of futures;
+> **`claimWhenReady(url)`** waits for an in-flight preload and takes it;
+> `drop(url)`; `evictExcept` also marks in-flight preloads (`_dropped`,
+> disposed when they finish); a failed preload's controller is disposed
+> (was a leak). New **`LaunchVideo`** class: `remember(url)` saves Home's
+> first video (For You tab) in SharedPreferences `launchVideoUrl`;
+> `warmUp()` (first line of `main()`, before `Firebase.initializeApp`,
+> never awaited) preloads it in parallel with startup; `settle(topUrls)`
+> drops it once if newer posts pushed it out of Home's first 3. 2)
+> `main.dart`: `LaunchVideo.warmUp()`. 3) `home_screen.dart`: remember +
+> settle in the feed build (NOT a preload of item 0 there - that would
+> re-download the playing video on every rebuild). 4)
+> `home_video_post.dart` `_initializeVideo`: `await claimWhenReady(...)`;
+> if the page was disposed meanwhile the controller is handed back with
+> `adopt`. Instant only when the first video is still the same as last
+> time; a newer post at the top loads as before._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky

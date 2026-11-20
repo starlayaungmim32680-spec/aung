@@ -358,6 +358,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 // fast swipes in a row (before onPageChanged has caught up)
                 // stay smooth, matching TikTok/Facebook's feel, instead of
                 // just the very first swipe.
+                // 20 Nov 2026 (Instant Start): remember the first video -
+                // the next launch starts loading it at once (LaunchVideo).
+                // (Not preloaded here: the first page loads it itself, and
+                // a preload on every rebuild would download the video that
+                // is already playing a second time.)
+                if (visibleItems.isNotEmpty && !_followingOnly) {
+                  LaunchVideo.remember(visibleItems[0].videoUrl);
+                  LaunchVideo.settle({
+                    for (final _FeedItem i in visibleItems.take(3)) i.videoUrl,
+                  });
+                }
                 if (visibleItems.length > 1) {
                   VideoPreloadCache.preload(visibleItems[1].videoUrl);
                 }

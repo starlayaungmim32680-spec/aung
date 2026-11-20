@@ -12,6 +12,7 @@ import 'screens/login_screen.dart';
 import 'screens/main_navigation_screen.dart';
 import 'screens/account_closed.dart';
 import 'screens/app_update.dart';
+import 'screens/video_preload_cache.dart' show LaunchVideo;
 import 'screens/new_password_screen.dart' show AuthLinks;
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
@@ -154,6 +155,10 @@ final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 20 Nov 2026 (Instant Start): start loading the video that was at the
+  // top of Home last time NOW, in parallel with Firebase, sign-in and the
+  // feed, so it can play the moment Home appears (video_preload_cache.dart).
+  LaunchVideo.warmUp();
   // prod = aung-1756e, dev = fly-dev (app_config.dart).
   await Firebase.initializeApp(options: AppConfig.firebaseOptions);
   // Firestore already caches reads and queues writes locally on

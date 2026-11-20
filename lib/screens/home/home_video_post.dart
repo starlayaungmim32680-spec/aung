@@ -453,8 +453,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
     // If this video was already preloaded while the previous one was
     // playing, reuse that controller instead of starting a fresh network
     // fetch — this is what makes swiping to the next video feel instant.
+    // 20 Nov 2026 (Instant Start): if that preload is still loading (e.g.
+    // the launch video main() started), wait for it instead of starting
+    // a second download from zero.
     VideoPlayerController? controller =
-        VideoPreloadCache.claim(widget.videoUrl);
+        await VideoPreloadCache.claimWhenReady(widget.videoUrl);
+    if (!mounted) {
+      // Scrolled away while waiting - give it back for whoever shows it.
+      if (controller != null) {
+        VideoPreloadCache.adopt(widget.videoUrl, controller);
+      }
+      return;
+    }
 
     try {
       // True once playback is actually coming off a local file already on
