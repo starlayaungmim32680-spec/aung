@@ -1047,30 +1047,80 @@ class SingleVideoScreen extends StatefulWidget {
 }
 
 class _SingleVideoScreenState extends State<SingleVideoScreen> {
-  late final Stream<QuerySnapshot> _postsStream;
   final PageController _pageController = PageController();
-  bool _jumpedToInitial = false;
+
+  // 21 Nov 2026 (S1, feed_pager.dart): the tapped video is ALWAYS page 0,
+  // and swiping goes on to the older Everyone posts after it, loaded in
+  // pages with one .get() each. Before, this screen listened live to the
+  // newest 100 posts (100 reads per open + one read per like / view on
+  // any of them) and showed the tapped video alone when it was older than
+  // those 100.
+  DocumentSnapshot<Map<String, dynamic>>? _tappedDoc;
+  FeedPager? _pager;
 
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
-    // 25 Oct 2026 (step B2): Everyone posts only (same query + index as
-    // Home's For You). A tapped friends-only video isn't in this list, so
-    // it falls back to the single-video view below.
-    _postsStream = FirebaseFirestore.instance
-        .collection('posts')
-        .where('audience', isEqualTo: 'everyone')
-        .orderBy('createdAt', descending: true)
-        .limit(kHomeFeedLimit)
-        .snapshots();
+    _start();
+  }
+
+  Future<void> _start() async {
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> doc = await FirebaseFirestore
+          .instance
+          .collection('posts')
+          .doc(widget.postId)
+          .get();
+      if (!mounted) return;
+      if (!doc.exists || doc.data()?['createdAt'] is! Timestamp) {
+        // Gone, or no date to continue from - just the tapped video.
+        setState(() => _tappedDoc = doc.exists ? doc : null);
+        return;
+      }
+      final FeedPager pager = FeedPager(
+        FirebaseFirestore.instance
+            .collection('posts')
+            .where('audience', isEqualTo: 'everyone')
+            .orderBy('createdAt', descending: true),
+        pageSize: kFeedPostsPage,
+        startAfter: doc,
+      );
+      pager.docs.addListener(_onPage);
+      setState(() {
+        _tappedDoc = doc;
+        _pager = pager;
+      });
+      pager.refresh();
+    } catch (e) {
+      debugPrint('SingleVideoScreen: could not load the feed ($e)');
+    }
+  }
+
+  void _onPage() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     WakelockPlus.disable();
+    _pager?.docs.removeListener(_onPage);
+    _pager?.dispose();
     _pageController.dispose();
     super.dispose();
+  }
+
+  // The videos after the tapped one that I may see (audience / failed
+  // encoding / deleted in this run).
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _nextDocs() {
+    final String? myId = FirebaseAuth.instance.currentUser?.uid;
+    final Set<String> deleted = homeDeletedPosts.value;
+    return (_pager?.docs.value ?? const [])
+        .where((d) =>
+            d.id != widget.postId &&
+            !deleted.contains(d.id) &&
+            isVideoVisibleTo(d.data(), myId))
+        .toList();
   }
 
   void _goToNextVideo(int totalCount) {
@@ -1105,151 +1155,112 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
     );
   }
 
+  // Page 0: the tapped video. Built from the screen's own values at once
+  // (so it starts playing without waiting), with the post's effects once
+  // its doc has arrived. The key never changes, so the player is kept.
+  Widget _tappedItem() {
+    final Map<String, dynamic>? post = _tappedDoc?.data();
+    return _VideoPostItem(
+      key: ValueKey(widget.postId),
+      postId: widget.postId,
+      userId: widget.userId,
+      videoUrl: widget.videoUrl,
+      caption: widget.caption,
+      userEmail: widget.userEmail,
+      reactionCount: (post?['reactionCount'] as num?)?.toInt() ?? 0,
+      videoType: widget.videoType,
+      repostNote: widget.repostNote,
+      repostByName: widget.repostByName,
+      repostByUserId: widget.repostByUserId,
+      repostByPhoto: widget.repostByPhoto,
+      videoSpeed: ((post?['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+      filterType: (post?['filterType'] as String?) ?? 'none',
+      textOverlays: ((post?['textOverlays'] as List<dynamic>?)
+              ?.map((m) => TextOverlayData.fromMap(m as Map<String, dynamic>))
+              .toList()) ??
+          const [],
+      effectsBaked: post == null || (post['effectsBaked'] as bool? ?? false),
+      onVideoEnd: () => _goToNextVideo(1 + _nextDocs().length),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _nextDocs();
+    final int total = 1 + docs.length;
+    String urlOf(int i) => i == 0
+        ? widget.videoUrl
+        : (docs[i - 1].data()['videoUrl'] as String?) ?? '';
+
+    if (docs.isNotEmpty) VideoPreloadCache.preload(urlOf(1));
+    if (docs.length > 1) VideoPreloadCache.preload(urlOf(2));
+
     return Scaffold(
       backgroundColor: Colors.black,
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _postsStream,
-        builder: (context, snapshot) {
-          // Only videos I may see (audience / failed encoding).
-          final String? myId = FirebaseAuth.instance.currentUser?.uid;
-          final List<QueryDocumentSnapshot> docs = (snapshot.data?.docs ?? [])
-              .where((d) =>
-                  isVideoVisibleTo(d.data() as Map<String, dynamic>, myId))
-              .toList();
-          final int initialIndex =
-              docs.indexWhere((d) => d.id == widget.postId);
-
-          // Feed hasn't loaded yet, or this post isn't in it for some
-          // reason - fall back to just showing the single tapped video so
-          // the screen never looks broken.
-          if (initialIndex == -1) {
-            return Stack(
-              children: [
-                SafeArea(
-                  top: false,
-                  child: _VideoPostItem(
-                    key: ValueKey(widget.postId),
-                    postId: widget.postId,
-                    userId: widget.userId,
-                    videoUrl: widget.videoUrl,
-                    caption: widget.caption,
-                    userEmail: widget.userEmail,
-                    videoType: widget.videoType,
-                    repostNote: widget.repostNote,
-                    repostByName: widget.repostByName,
-                    repostByUserId: widget.repostByUserId,
-                    repostByPhoto: widget.repostByPhoto,
-                    videoSpeed: 1.0,
-                    filterType: 'none',
-                    textOverlays: const [],
-                    effectsBaked: true,
-                    onVideoEnd: () {},
-                  ),
-                ),
-                _backButton(context),
-              ],
-            );
-          }
-
-          if (!_jumpedToInitial) {
-            _jumpedToInitial = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (_pageController.hasClients) {
-                _pageController.jumpToPage(initialIndex);
-              }
-            });
-          }
-
-          if (initialIndex + 1 < docs.length) {
-            final String nextUrl = (docs[initialIndex + 1].data()
-                    as Map<String, dynamic>)['videoUrl'] ??
-                '';
-            VideoPreloadCache.preload(nextUrl);
-          }
-          if (initialIndex + 2 < docs.length) {
-            final String nextNextUrl = (docs[initialIndex + 2].data()
-                    as Map<String, dynamic>)['videoUrl'] ??
-                '';
-            VideoPreloadCache.preload(nextNextUrl);
-          }
-
-          return Stack(
-            children: [
-              SafeArea(
-                top: false,
-                child: PageView.builder(
-                  controller: _pageController,
-                  scrollDirection: Axis.vertical,
-                  itemCount: docs.length,
-                  onPageChanged: (index) {
-                    String urlOf(int i) =>
-                        (docs[i].data() as Map<String, dynamic>)['videoUrl'] ??
-                        '';
-                    final String currentUrl = urlOf(index);
-                    final Set<String> keep = {currentUrl};
-                    if (index + 1 < docs.length) {
-                      final String nextUrl = urlOf(index + 1);
-                      keep.add(nextUrl);
-                      VideoPreloadCache.preload(nextUrl);
-                    }
-                    // Also start the one after that - keeps fast, repeated
-                    // swipes from ever catching up to an unstarted
-                    // download.
-                    if (index + 2 < docs.length) {
-                      final String nextNextUrl = urlOf(index + 2);
-                      keep.add(nextNextUrl);
-                      VideoPreloadCache.preload(nextNextUrl);
-                    }
-                    if (index - 1 >= 0) {
-                      final String prevUrl = urlOf(index - 1);
-                      keep.add(prevUrl);
-                      VideoPreloadCache.preload(prevUrl);
-                    }
-                    VideoPreloadCache.evictExcept(keep);
-                  },
-                  itemBuilder: (context, index) {
-                    final postDoc = docs[index];
-                    final post = postDoc.data() as Map<String, dynamic>;
-                    final int reactionCount =
-                        (post['reactionCount'] as num?)?.toInt() ?? 0;
-                    // Only the video actually tapped into keeps its
-                    // "shared by" context — videos you swipe to next show
-                    // as plain posts, same as the main feed.
-                    final bool isInitial = postDoc.id == widget.postId;
-
-                    return _VideoPostItem(
-                      key: ValueKey(postDoc.id),
-                      postId: postDoc.id,
-                      userId: post['userId'] ?? '',
-                      videoUrl: post['videoUrl'] ?? '',
-                      caption: post['caption'] ?? '',
-                      userEmail: post['userEmail'] ?? 'Unknown user',
-                      reactionCount: reactionCount,
-                      videoType: (post['videoType'] as String?) ?? 'short',
-                      repostNote: isInitial ? widget.repostNote : null,
-                      repostByName: isInitial ? widget.repostByName : null,
-                      repostByUserId: isInitial ? widget.repostByUserId : null,
-                      repostByPhoto: isInitial ? widget.repostByPhoto : null,
-                      videoSpeed:
-                          ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
-                      filterType: (post['filterType'] as String?) ?? 'none',
-                      textOverlays: ((post['textOverlays'] as List<dynamic>?)
-                              ?.map((m) => TextOverlayData.fromMap(
-                                  m as Map<String, dynamic>))
-                              .toList()) ??
-                          const [],
-                      effectsBaked: post['effectsBaked'] as bool? ?? false,
-                      onVideoEnd: () => _goToNextVideo(docs.length),
-                    );
-                  },
-                ),
-              ),
-              _backButton(context),
-            ],
-          );
-        },
+      body: Stack(
+        children: [
+          SafeArea(
+            top: false,
+            child: PageView.builder(
+              controller: _pageController,
+              scrollDirection: Axis.vertical,
+              itemCount: total,
+              onPageChanged: (index) {
+                // S1: near the end -> next page.
+                if (index >= total - kFeedLoadMoreAhead) _pager?.loadMore();
+                final Set<String> keep = {urlOf(index)};
+                if (index + 1 < total) {
+                  final String nextUrl = urlOf(index + 1);
+                  keep.add(nextUrl);
+                  VideoPreloadCache.preload(nextUrl);
+                }
+                // Also start the one after that - keeps fast, repeated
+                // swipes from ever catching up to an unstarted download.
+                if (index + 2 < total) {
+                  final String nextNextUrl = urlOf(index + 2);
+                  keep.add(nextNextUrl);
+                  VideoPreloadCache.preload(nextNextUrl);
+                }
+                if (index - 1 >= 0) {
+                  final String prevUrl = urlOf(index - 1);
+                  keep.add(prevUrl);
+                  VideoPreloadCache.preload(prevUrl);
+                }
+                VideoPreloadCache.evictExcept(keep);
+              },
+              itemBuilder: (context, index) {
+                if (index == 0) return _tappedItem();
+                final QueryDocumentSnapshot<Map<String, dynamic>> postDoc =
+                    docs[index - 1];
+                final Map<String, dynamic> post = postDoc.data();
+                final int reactionCount =
+                    (post['reactionCount'] as num?)?.toInt() ?? 0;
+                // Videos you swipe to next show as plain posts (no
+                // "shared by"), same as the main feed.
+                return _VideoPostItem(
+                  key: ValueKey(postDoc.id),
+                  postId: postDoc.id,
+                  userId: post['userId'] ?? '',
+                  videoUrl: post['videoUrl'] ?? '',
+                  caption: post['caption'] ?? '',
+                  userEmail: post['userEmail'] ?? 'Unknown user',
+                  reactionCount: reactionCount,
+                  videoType: (post['videoType'] as String?) ?? 'short',
+                  videoSpeed: ((post['videoSpeed']) as num?)?.toDouble() ?? 1.0,
+                  filterType: (post['filterType'] as String?) ?? 'none',
+                  textOverlays: ((post['textOverlays'] as List<dynamic>?)
+                          ?.map((m) => TextOverlayData.fromMap(
+                              m as Map<String, dynamic>))
+                          .toList()) ??
+                      const [],
+                  effectsBaked: post['effectsBaked'] as bool? ?? false,
+                  onVideoEnd: () => _goToNextVideo(total),
+                );
+              },
+            ),
+          ),
+          _backButton(context),
+        ],
       ),
     );
   }

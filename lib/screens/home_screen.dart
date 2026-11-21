@@ -41,6 +41,7 @@ import 'local_video_cache.dart';
 import 'view_history.dart' show showPostViewersSheet;
 import 'window_tile.dart' show WatchedVideos;
 import 'feed_mix.dart';
+import 'feed_pager.dart';
 import 'live_sky.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
@@ -91,10 +92,24 @@ final ValueNotifier<bool> homeFeedScrollingDown = ValueNotifier<bool>(false);
 // screen to find it themselves.
 final ValueNotifier<int> navigateToHomeSignal = ValueNotifier<int>(0);
 
-// How many Everyone posts / reposts the Home feed loads (25 Oct 2026,
-// "Who can watch" step B2). Before, Home downloaded every post. Paging
-// ("load more" near the end) is a later step.
+// How many Everyone posts / reposts a LIVE list may hold (25 Oct 2026,
+// "Who can watch" step B2). Still used by the screens that listen live
+// (Shorts, comments' "more videos"). Home and SingleVideoScreen load in
+// pages instead (21 Nov 2026, S1, feed_pager.dart).
 const int kHomeFeedLimit = 100;
+
+// 21 Nov 2026 (S1): page sizes (30 so Fly Mix still has enough to mix) -
+// one .get() each, the next page when the
+// person is [kFeedLoadMoreAhead] videos from the end.
+const int kFeedPostsPage = 30;
+const int kFeedRepostsPage = 10;
+const int kFeedLoadMoreAhead = 5;
+
+// 21 Nov 2026 (S1): posts I deleted in this run. The paged lists are not
+// live any more, so a deleted post would stay in them until a refresh -
+// feeds leave these out at once (_VideoPostItem adds the id).
+final ValueNotifier<Set<String>> homeDeletedPosts =
+    ValueNotifier<Set<String>>(<String>{});
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -111,13 +126,17 @@ class _HomeScreenState extends State<HomeScreen> {
   // MainNavigationScreen (homeFeedScrollingDown).
   int _lastPageIndex = 0;
 
-  // Created ONCE here, not inside build(). Building a new
-  // .snapshots() stream on every rebuild makes StreamBuilder drop its
-  // subscription and start over in the "waiting" state, which tore the
-  // video player down and flashed a black screen every time something
-  // rebuilt this widget (e.g. tapping like).
-  late final Stream<QuerySnapshot> _postsStream;
-  late final Stream<QuerySnapshot> _repostsStream;
+  // 21 Nov 2026 (S1, feed_pager.dart): Everyone posts and reposts load
+  // in pages with one .get() each - no live listening to the whole list
+  // (that cost one read on every open phone for every like / view).
+  // Created ONCE here, not inside build().
+  late final FeedPager _posts;
+  late final FeedPager _reposts;
+  // Pages loaded on their own because too few videos were left to show
+  // (Following tab, many blocked) - capped so it never walks the whole
+  // database. Reset on refresh / tab change.
+  int _autoPages = 0;
+  static const int _maxAutoPages = 4;
   // Posts only my circle may see (my own + friends' / followed accounts'
   // non-public ones) - see circle_posts.dart (25 Oct 2026, step B2).
   final CirclePostsFeed _circle = CirclePostsFeed();
@@ -130,6 +149,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // watching (likes / views changing re-run build()). New videos from
   // others go to the end; my own fresh upload goes first.
   final List<String> _mixOrder = [];
+  // The Instant Start video is pinned first only on the very first mix of
+  // this run - a pull-to-refresh should start with a different one.
+  bool _firstMix = true;
 
   List<_FeedItem> _mixed(List<_FeedItem> items) {
     final String? me = FirebaseAuth.instance.currentUser?.uid;
@@ -150,7 +172,8 @@ class _HomeScreenState extends State<HomeScreen> {
           views: i.viewCount,
           watched: watched.contains(i.postId),
           pinned: ownFresh(i) ||
-              (_mixOrder.isEmpty &&
+              (_firstMix &&
+                  _mixOrder.isEmpty &&
                   launchUrl != null &&
                   i.videoUrl == launchUrl),
         );
@@ -164,6 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (_mixOrder.isEmpty) {
       _mixOrder.addAll(ranked(items).map((i) => i.feedKey));
+      if (_mixOrder.isNotEmpty) _firstMix = false;
     } else {
       _mixOrder.removeWhere((k) => !byKey.containsKey(k));
       final Set<String> known = _mixOrder.toSet();
@@ -216,17 +240,20 @@ class _HomeScreenState extends State<HomeScreen> {
     // on every phone. Needs the composite index posts: audience Asc +
     // createdAt Desc (AI_CONTEXT). Private posts of my circle come from
     // _circle instead.
-    _postsStream = FirebaseFirestore.instance
-        .collection('posts')
-        .where('audience', isEqualTo: 'everyone')
-        .orderBy('createdAt', descending: true)
-        .limit(kHomeFeedLimit)
-        .snapshots();
-    _repostsStream = FirebaseFirestore.instance
-        .collection('reposts')
-        .orderBy('createdAt', descending: true)
-        .limit(kHomeFeedLimit)
-        .snapshots();
+    // 21 Nov 2026 (S1): same queries, now in pages (feed_pager.dart).
+    _posts = FeedPager(
+      FirebaseFirestore.instance
+          .collection('posts')
+          .where('audience', isEqualTo: 'everyone')
+          .orderBy('createdAt', descending: true),
+      pageSize: kFeedPostsPage,
+    )..refresh();
+    _reposts = FeedPager(
+      FirebaseFirestore.instance
+          .collection('reposts')
+          .orderBy('createdAt', descending: true),
+      pageSize: kFeedRepostsPage,
+    )..refresh();
     _circle.start();
 
     // Keep the set of followed accounts up to date so the Following
@@ -256,6 +283,8 @@ class _HomeScreenState extends State<HomeScreen> {
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
     ReportedPosts.instance.loaded.removeListener(_refreshHiddenReported);
     _circle.dispose();
+    _posts.dispose();
+    _reposts.dispose();
     _pageController.dispose();
     super.dispose();
   }
@@ -276,6 +305,39 @@ class _HomeScreenState extends State<HomeScreen> {
         .then((_) => _refreshHiddenReported());
   }
 
+  // Next page of both lists (S1) - called near the end of the feed.
+  void _loadMore() {
+    _posts.loadMore();
+    _reposts.loadMore();
+  }
+
+  // Pull-to-refresh at the first video (S1): newest posts again and a NEW
+  // Fly Mix order; what I reported since is left out.
+  Future<void> _refresh() async {
+    await Future.wait([_posts.refresh(), _reposts.refresh()]);
+    if (!mounted) return;
+    setState(() {
+      _mixOrder.clear();
+      _autoPages = 0;
+      _hiddenReported = Set.of(ReportedPosts.instance.ids.value);
+    });
+    if (_pageController.hasClients) _pageController.jumpToPage(0);
+  }
+
+  // Too few videos to swipe through (Following tab, blocked accounts):
+  // fetch another page on our own, at most [_maxAutoPages] times.
+  void _maybeAutoLoad(int visibleCount) {
+    if (visibleCount >= 2 * kFeedLoadMoreAhead) return;
+    if (_autoPages >= _maxAutoPages) return;
+    if (_posts.isLoading || _reposts.isLoading) return;
+    if (!_posts.hasMore && !_reposts.hasMore) return;
+    if (!_posts.loaded.value || !_reposts.loaded.value) return;
+    _autoPages++;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _loadMore();
+    });
+  }
+
   void _goToNextVideo(int totalCount) {
     final int? currentPage = _pageController.page?.round();
     if (currentPage != null && currentPage < totalCount - 1) {
@@ -294,6 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_followingOnly == followingTab) return;
         setState(() {
           _followingOnly = followingTab;
+          _autoPages = 0;
           // The other tab starts from the top - leave out what I reported.
           _hiddenReported = Set.of(ReportedPosts.instance.ids.value);
         });
@@ -329,336 +392,370 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: ValueListenableBuilder<List<QueryDocumentSnapshot>>(
-        valueListenable: _circle.docs,
-        builder: (context, circleDocs, _) => StreamBuilder<QuerySnapshot>(
-          stream: _postsStream,
-          builder: (context, snapshot) {
-            return StreamBuilder<QuerySnapshot>(
-              stream: _repostsStream,
-              builder: (context, repostSnapshot) {
-                // Only show the loader when we genuinely have nothing yet.
-                // Checking connectionState alone would also fire on a
-                // transient re-subscribe and destroy the playing video.
-                if (!snapshot.hasData && !repostSnapshot.hasData) {
-                  return const Center(
-                    child: CircularProgressIndicator(color: Colors.redAccent),
-                  );
-                }
+      // 21 Nov 2026 (S1): rebuilt when a page arrives, my circle changes
+      // or I delete a post - not on every like / view somewhere.
+      body: AnimatedBuilder(
+        animation: Listenable.merge([
+          _circle.docs,
+          _posts.docs,
+          _reposts.docs,
+          _posts.loaded,
+          _reposts.loaded,
+          homeDeletedPosts,
+        ]),
+        builder: (context, _) {
+          final List<QueryDocumentSnapshot> circleDocs = _circle.docs.value;
+          // Wait for BOTH first pages (S1), so the first Fly Mix ranks
+          // posts and reposts together. A failed page counts as loaded.
+          if (!_posts.loaded.value || !_reposts.loaded.value) {
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.redAccent),
+            );
+          }
+          final Set<String> deleted = homeDeletedPosts.value;
 
-                // Everyone posts + my circle's private ones, no duplicates.
-                final Map<String, QueryDocumentSnapshot> postsById = {
-                  for (final d in snapshot.data?.docs ?? []) d.id: d,
-                  for (final d in circleDocs) d.id: d,
-                };
-                final ownDocs = postsById.values.toList();
-                final repostDocs = repostSnapshot.data?.docs ?? [];
+          // Everyone posts + my circle's private ones, no duplicates.
+          final Map<String, QueryDocumentSnapshot> postsById = {
+            for (final d in _posts.docs.value) d.id: d,
+            for (final d in circleDocs) d.id: d,
+          }..removeWhere((id, _) => deleted.contains(id));
+          final ownDocs = postsById.values.toList();
+          final repostDocs = _reposts.docs.value
+              .where((d) => !deleted
+                  .contains((d.data()['originalPostId'] as String?) ?? ''))
+              .toList();
 
-                // Combine original posts with shared videos (reposts) into
-                // one newest-first feed, so a video someone shares shows up
-                // at home for their followers/friends to see too.
-                final List<_FeedItem> feedItems = [
-                  // Posts still being encoded by Bunny are only shown to
-                  // their uploader (who plays them from the local file).
-                  ...ownDocs
-                      .where((d) => isVideoVisibleTo(
-                          d.data() as Map<String, dynamic>,
-                          FirebaseAuth.instance.currentUser?.uid))
-                      .map((d) => _FeedItem.post(d)),
-                  ...repostDocs.map((d) => _FeedItem.repost(d)),
-                ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+          // Combine original posts with shared videos (reposts) into
+          // one newest-first feed, so a video someone shares shows up
+          // at home for their followers/friends to see too.
+          final List<_FeedItem> feedItems = [
+            // Posts still being encoded by Bunny are only shown to
+            // their uploader (who plays them from the local file).
+            ...ownDocs
+                .where((d) => isVideoVisibleTo(d.data() as Map<String, dynamic>,
+                    FirebaseAuth.instance.currentUser?.uid))
+                .map((d) => _FeedItem.post(d)),
+            ...repostDocs.map((d) => _FeedItem.repost(d)),
+          ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
-                // Never show posts/reposts from accounts you've blocked,
-                // regardless of which tab is active.
-                final List<_FeedItem> unblockedItems = _blockedIds.isEmpty
-                    ? feedItems
-                    : feedItems.where((item) {
-                        final String posterId = (item.isRepost
-                                ? item.sharedByUserId
-                                : item.originalUserId) ??
-                            '';
-                        if (_blockedIds.contains(posterId)) return false;
-                        // A repost of a blocked user's original video should
-                        // also be hidden.
-                        if (item.isRepost &&
-                            _blockedIds.contains(item.originalUserId)) {
-                          return false;
-                        }
-                        return true;
-                      }).toList();
+          // Never show posts/reposts from accounts you've blocked,
+          // regardless of which tab is active.
+          final List<_FeedItem> unblockedItems = _blockedIds.isEmpty
+              ? feedItems
+              : feedItems.where((item) {
+                  final String posterId = (item.isRepost
+                          ? item.sharedByUserId
+                          : item.originalUserId) ??
+                      '';
+                  if (_blockedIds.contains(posterId)) return false;
+                  // A repost of a blocked user's original video should
+                  // also be hidden.
+                  if (item.isRepost &&
+                      _blockedIds.contains(item.originalUserId)) {
+                    return false;
+                  }
+                  return true;
+                }).toList();
 
-                // Videos I reported leave the feed the next time it starts
-                // over (see _hiddenReported) - reposts of them too.
-                final List<_FeedItem> unreportedItems = _hiddenReported.isEmpty
-                    ? unblockedItems
-                    : unblockedItems
-                        .where((item) => !_hiddenReported.contains(item.postId))
-                        .toList();
+          // Videos I reported leave the feed the next time it starts
+          // over (see _hiddenReported) - reposts of them too.
+          final List<_FeedItem> unreportedItems = _hiddenReported.isEmpty
+              ? unblockedItems
+              : unblockedItems
+                  .where((item) => !_hiddenReported.contains(item.postId))
+                  .toList();
 
-                // On the Following tab, keep only videos from accounts you
-                // follow - either the original poster, or whoever shared it.
-                final List<_FeedItem> visibleItems = _followingOnly
-                    ? unreportedItems.where((item) {
-                        if (item.isRepost) {
-                          return _followingIds.contains(item.sharedByUserId);
-                        }
-                        return _followingIds.contains(item.originalUserId);
-                      }).toList()
-                    // 21 Nov 2026: For You = Fly Mix (unseen first,
-                    // fresh + liked a bit higher, a different mix every
-                    // app start); Following stays newest first.
-                    : _mixed(unreportedItems);
+          // On the Following tab, keep only videos from accounts you
+          // follow - either the original poster, or whoever shared it.
+          final List<_FeedItem> visibleItems = _followingOnly
+              ? unreportedItems.where((item) {
+                  if (item.isRepost) {
+                    return _followingIds.contains(item.sharedByUserId);
+                  }
+                  return _followingIds.contains(item.originalUserId);
+                }).toList()
+              // 21 Nov 2026: For You = Fly Mix (unseen first,
+              // fresh + liked a bit higher, a different mix every
+              // app start); Following stays newest first.
+              : _mixed(unreportedItems);
 
-                // Every 5 real videos swiped, insert a YouTube-style "Shorts
-                // shelf" page: a horizontal strip previewing a few of the
-                // upcoming shorts, so the user can jump straight to one
-                // instead of swiping through everything in between.
-                final _FeedSlots slots = _FeedSlots(visibleItems);
+          // Every 5 real videos swiped, insert a YouTube-style "Shorts
+          // shelf" page: a horizontal strip previewing a few of the
+          // upcoming shorts, so the user can jump straight to one
+          // instead of swiping through everything in between.
+          final _FeedSlots slots = _FeedSlots(visibleItems);
 
-                // Get a head start on the next two videos so even several
-                // fast swipes in a row (before onPageChanged has caught up)
-                // stay smooth, matching TikTok/Facebook's feel, instead of
-                // just the very first swipe.
-                // 20 Nov 2026 (Instant Start): remember the first video -
-                // the next launch starts loading it at once (LaunchVideo).
-                // (Not preloaded here: the first page loads it itself, and
-                // a preload on every rebuild would download the video that
-                // is already playing a second time.)
-                if (visibleItems.isNotEmpty && !_followingOnly) {
-                  // Fly Mix: next time start with a video I have NOT
-                  // watched yet (not today's first one) - it is put first
-                  // and loaded at once on the next launch.
-                  final Set<String> seenIds = WatchedVideos.watched.value;
-                  final _FeedItem nextFirst = visibleItems.skip(1).firstWhere(
-                      (i) => !seenIds.contains(i.postId),
-                      orElse: () => visibleItems[0]);
-                  LaunchVideo.remember(nextFirst.videoUrl);
-                  LaunchVideo.settle({
-                    for (final _FeedItem i in visibleItems.take(3)) i.videoUrl,
-                  });
-                }
-                if (visibleItems.length > 1) {
-                  VideoPreloadCache.preload(visibleItems[1].videoUrl);
-                }
-                if (visibleItems.length > 2) {
-                  VideoPreloadCache.preload(visibleItems[2].videoUrl);
-                }
+          // Get a head start on the next two videos so even several
+          // fast swipes in a row (before onPageChanged has caught up)
+          // stay smooth, matching TikTok/Facebook's feel, instead of
+          // just the very first swipe.
+          // 20 Nov 2026 (Instant Start): remember the first video -
+          // the next launch starts loading it at once (LaunchVideo).
+          // (Not preloaded here: the first page loads it itself, and
+          // a preload on every rebuild would download the video that
+          // is already playing a second time.)
+          if (visibleItems.isNotEmpty && !_followingOnly) {
+            // Fly Mix: next time start with a video I have NOT
+            // watched yet (not today's first one) - it is put first
+            // and loaded at once on the next launch.
+            final Set<String> seenIds = WatchedVideos.watched.value;
+            final _FeedItem nextFirst = visibleItems.skip(1).firstWhere(
+                (i) => !seenIds.contains(i.postId),
+                orElse: () => visibleItems[0]);
+            LaunchVideo.remember(nextFirst.videoUrl);
+            LaunchVideo.settle({
+              for (final _FeedItem i in visibleItems.take(3)) i.videoUrl,
+            });
+          }
+          if (visibleItems.length > 1) {
+            VideoPreloadCache.preload(visibleItems[1].videoUrl);
+          }
+          if (visibleItems.length > 2) {
+            VideoPreloadCache.preload(visibleItems[2].videoUrl);
+          }
 
-                if (feedItems.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      'No posts yet. Be the first to upload!',
+          if (feedItems.isEmpty) {
+            // S1: the first page failed (no internet) - say so and
+            // let the person try again.
+            if (_posts.error != null && _reposts.docs.value.isEmpty) {
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Could not load videos.\nCheck your connection.',
+                      textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
-                  );
-                }
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: _refresh,
+                      child: const Text('Try again',
+                          style: TextStyle(color: Colors.redAccent)),
+                    ),
+                  ],
+                ),
+              );
+            }
+            return const Center(
+              child: Text(
+                'No posts yet. Be the first to upload!',
+                style: TextStyle(color: Colors.grey),
+              ),
+            );
+          }
 
-                // Header (search bar/tabs/bell/stories/live) gets its own
-                // fixed area at the top, and the video feed gets the rest -
-                // Column, not a Stack overlay, so the two never overlap:
-                // Stories/search always have their own space, and the video
-                // never renders underneath them.
-                return Column(
-                  children: [
-                    // 21 Nov 2026: the header (tabs + stories) sits on the
-                    // live sky of the phone's local time (live_sky.dart) -
-                    // from the very top of the screen, fading into the
-                    // video below.
-                    Stack(
+          // S1: too few videos left to swipe -> next page on our own.
+          _maybeAutoLoad(visibleItems.length);
+
+          // Header (search bar/tabs/bell/stories/live) gets its own
+          // fixed area at the top, and the video feed gets the rest -
+          // Column, not a Stack overlay, so the two never overlap:
+          // Stories/search always have their own space, and the video
+          // never renders underneath them.
+          return Column(
+            children: [
+              // 21 Nov 2026: the header (tabs + stories) sits on the
+              // live sky of the phone's local time (live_sky.dart) -
+              // from the very top of the screen, fading into the
+              // video below.
+              Stack(
+                children: [
+                  const Positioned.fill(child: LiveSkyGlow()),
+                  SafeArea(
+                    bottom: false,
+                    child: Column(
                       children: [
-                        const Positioned.fill(child: LiveSkyGlow()),
-                        SafeArea(
-                          bottom: false,
-                          child: Column(
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Stack(
+                            alignment: Alignment.center,
                             children: [
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: Stack(
-                                  alignment: Alignment.center,
+                              Center(
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Center(
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          _feedTab('Following', true),
-                                          const SizedBox(width: 10),
-                                          Container(
-                                            width: 1,
-                                            height: 14,
-                                            color: Colors.white24,
-                                          ),
-                                          const SizedBox(width: 10),
-                                          _feedTab('For You', false),
-                                        ],
-                                      ),
+                                    _feedTab('Following', true),
+                                    const SizedBox(width: 10),
+                                    Container(
+                                      width: 1,
+                                      height: 14,
+                                      color: Colors.white24,
                                     ),
-                                    Positioned(
-                                      left: 12,
-                                      top: 0,
-                                      child: GestureDetector(
-                                        onTap: () => Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                                const SearchScreen(),
-                                          ),
-                                        ),
-                                        child: const Icon(Icons.search,
-                                            color: Colors.white, size: 26),
-                                      ),
-                                    ),
-                                    Positioned(
-                                      right: 12,
-                                      top: 0,
-                                      child: _NotificationBell(),
-                                    ),
+                                    const SizedBox(width: 10),
+                                    _feedTab('For You', false),
                                   ],
                                 ),
                               ),
-                              const StoriesBar(),
-                              const LiveBadgeBar(),
-                              const SizedBox(height: 6),
+                              Positioned(
+                                left: 12,
+                                top: 0,
+                                child: GestureDetector(
+                                  onTap: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const SearchScreen(),
+                                    ),
+                                  ),
+                                  child: const Icon(Icons.search,
+                                      color: Colors.white, size: 26),
+                                ),
+                              ),
+                              Positioned(
+                                right: 12,
+                                top: 0,
+                                child: _NotificationBell(),
+                              ),
                             ],
                           ),
                         ),
+                        const StoriesBar(),
+                        const LiveBadgeBar(),
+                        const SizedBox(height: 6),
                       ],
                     ),
-                    Expanded(
-                      child: visibleItems.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(32),
-                                child: Text(
-                                  'Nothing here yet.\n'
-                                  'Follow some accounts and their videos '
-                                  'will show up here.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: visibleItems.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Text(
+                            'Nothing here yet.\n'
+                            'Follow some accounts and their videos '
+                            'will show up here.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                      )
+                    // S1: pull down on the first video = newest
+                    // videos + a new mix.
+                    : RefreshIndicator(
+                        color: Colors.redAccent,
+                        backgroundColor: Colors.black87,
+                        notificationPredicate: (n) => n.depth == 0,
+                        onRefresh: _refresh,
+                        child: PageView.builder(
+                          controller: _pageController,
+                          scrollDirection: Axis.vertical,
+                          itemCount: slots.length,
+                          onPageChanged: (index) {
+                            // Track whether the feed is scrolled to its
+                            // very first video, for the Back-button
+                            // scroll-to-top behavior in
+                            // MainNavigationScreen.
+                            homeFeedAtTop.value = index == 0;
+                            // Hide MainNavigationScreen's bottom bar
+                            // while swiping down to later videos, bring
+                            // it back the moment the swipe direction
+                            // reverses - Facebook-style.
+                            if (index > _lastPageIndex) {
+                              homeFeedScrollingDown.value = true;
+                            } else if (index < _lastPageIndex) {
+                              homeFeedScrollingDown.value = false;
+                            }
+                            _lastPageIndex = index;
+                            // S1: near the end -> load the next page.
+                            if (index >= slots.length - kFeedLoadMoreAhead) {
+                              _loadMore();
+                            }
+                            // Preloading only makes sense for actual
+                            // videos - a shelf slot has no single video
+                            // of its own.
+                            final _FeedItem? current = slots.itemAt(index);
+                            if (current == null) return;
+                            final Set<String> keep = {current.videoUrl};
+                            final _FeedItem? next = slots.itemAt(index + 1);
+                            if (next != null) {
+                              keep.add(next.videoUrl);
+                              VideoPreloadCache.preload(next.videoUrl);
+                            }
+                            // Also start the one after that - by the time
+                            // the person lands on `next`, this one is
+                            // already partway loaded too, so back-to-back
+                            // fast swipes don't hit a spinner.
+                            final _FeedItem? nextNext = slots.itemAt(index + 2);
+                            if (nextNext != null) {
+                              keep.add(nextNext.videoUrl);
+                              VideoPreloadCache.preload(nextNext.videoUrl);
+                            }
+                            final _FeedItem? prev = slots.itemAt(index - 1);
+                            if (prev != null) {
+                              keep.add(prev.videoUrl);
+                              VideoPreloadCache.preload(prev.videoUrl);
+                            }
+                            VideoPreloadCache.evictExcept(keep);
+                          },
+                          itemBuilder: (context, index) {
+                            final List<int>? shelfRealIndices =
+                                slots.shelfAt(index);
+                            if (shelfRealIndices != null) {
+                              return _ShortsShelfPage(
+                                entries: shelfRealIndices
+                                    .map((i) => MapEntry(i, visibleItems[i]))
+                                    .toList(),
+                                onTapItem: (realIndex) {
+                                  _pageController.animateToPage(
+                                    slots.displayIndexForReal(realIndex),
+                                    duration: const Duration(milliseconds: 300),
+                                    curve: Curves.easeInOut,
+                                  );
+                                },
+                              );
+                            }
+
+                            final item = slots.itemAt(index)!;
+
+                            // key includes the doc id (post id for own
+                            // posts, repost id for reposts) so Flutter
+                            // doesn't reuse a _VideoPostItem's State for
+                            // a different feed entry, even when the same
+                            // video appears twice (once as someone's
+                            // original post, once as a repost).
+                            return _VideoPostItem(
+                              key: ValueKey(item.feedKey),
+                              postId: item.postId,
+                              userId: item.originalUserId,
+                              videoUrl: item.videoUrl,
+                              caption: item.caption,
+                              userEmail: item.userEmail,
+                              reactionCount: item.reactionCount,
+                              videoType: item.videoType,
+                              onVideoEnd: () => _goToNextVideo(slots.length),
+                              repostNote: item.isRepost ? item.note : null,
+                              repostByName:
+                                  item.isRepost ? item.sharedByName : null,
+                              repostByUserId:
+                                  item.isRepost ? item.sharedByUserId : null,
+                              repostByPhoto:
+                                  item.isRepost ? item.sharedByPhoto : null,
+                              videoSpeed: item.videoSpeed,
+                              filterType: item.filterType,
+                              blurBackground: item.blurBackground,
+                              textOverlays: item.textOverlays,
+                              effectsBaked: item.effectsBaked,
+                              // Tapping opens the same video full-screen,
+                              // starting right on this item.
+                              onTapToExpand: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => FullScreenVideoScreen(
+                                    items: visibleItems,
+                                    initialIndex: slots.realIndexAt(index) ?? 0,
+                                  ),
                                 ),
                               ),
-                            )
-                          : PageView.builder(
-                              controller: _pageController,
-                              scrollDirection: Axis.vertical,
-                              itemCount: slots.length,
-                              onPageChanged: (index) {
-                                // Track whether the feed is scrolled to its
-                                // very first video, for the Back-button
-                                // scroll-to-top behavior in
-                                // MainNavigationScreen.
-                                homeFeedAtTop.value = index == 0;
-                                // Hide MainNavigationScreen's bottom bar
-                                // while swiping down to later videos, bring
-                                // it back the moment the swipe direction
-                                // reverses - Facebook-style.
-                                if (index > _lastPageIndex) {
-                                  homeFeedScrollingDown.value = true;
-                                } else if (index < _lastPageIndex) {
-                                  homeFeedScrollingDown.value = false;
-                                }
-                                _lastPageIndex = index;
-                                // Preloading only makes sense for actual
-                                // videos - a shelf slot has no single video
-                                // of its own.
-                                final _FeedItem? current = slots.itemAt(index);
-                                if (current == null) return;
-                                final Set<String> keep = {current.videoUrl};
-                                final _FeedItem? next = slots.itemAt(index + 1);
-                                if (next != null) {
-                                  keep.add(next.videoUrl);
-                                  VideoPreloadCache.preload(next.videoUrl);
-                                }
-                                // Also start the one after that - by the time
-                                // the person lands on `next`, this one is
-                                // already partway loaded too, so back-to-back
-                                // fast swipes don't hit a spinner.
-                                final _FeedItem? nextNext =
-                                    slots.itemAt(index + 2);
-                                if (nextNext != null) {
-                                  keep.add(nextNext.videoUrl);
-                                  VideoPreloadCache.preload(nextNext.videoUrl);
-                                }
-                                final _FeedItem? prev = slots.itemAt(index - 1);
-                                if (prev != null) {
-                                  keep.add(prev.videoUrl);
-                                  VideoPreloadCache.preload(prev.videoUrl);
-                                }
-                                VideoPreloadCache.evictExcept(keep);
-                              },
-                              itemBuilder: (context, index) {
-                                final List<int>? shelfRealIndices =
-                                    slots.shelfAt(index);
-                                if (shelfRealIndices != null) {
-                                  return _ShortsShelfPage(
-                                    entries: shelfRealIndices
-                                        .map(
-                                            (i) => MapEntry(i, visibleItems[i]))
-                                        .toList(),
-                                    onTapItem: (realIndex) {
-                                      _pageController.animateToPage(
-                                        slots.displayIndexForReal(realIndex),
-                                        duration:
-                                            const Duration(milliseconds: 300),
-                                        curve: Curves.easeInOut,
-                                      );
-                                    },
-                                  );
-                                }
-
-                                final item = slots.itemAt(index)!;
-
-                                // key includes the doc id (post id for own
-                                // posts, repost id for reposts) so Flutter
-                                // doesn't reuse a _VideoPostItem's State for
-                                // a different feed entry, even when the same
-                                // video appears twice (once as someone's
-                                // original post, once as a repost).
-                                return _VideoPostItem(
-                                  key: ValueKey(item.feedKey),
-                                  postId: item.postId,
-                                  userId: item.originalUserId,
-                                  videoUrl: item.videoUrl,
-                                  caption: item.caption,
-                                  userEmail: item.userEmail,
-                                  reactionCount: item.reactionCount,
-                                  videoType: item.videoType,
-                                  onVideoEnd: () =>
-                                      _goToNextVideo(slots.length),
-                                  repostNote: item.isRepost ? item.note : null,
-                                  repostByName:
-                                      item.isRepost ? item.sharedByName : null,
-                                  repostByUserId: item.isRepost
-                                      ? item.sharedByUserId
-                                      : null,
-                                  repostByPhoto:
-                                      item.isRepost ? item.sharedByPhoto : null,
-                                  videoSpeed: item.videoSpeed,
-                                  filterType: item.filterType,
-                                  blurBackground: item.blurBackground,
-                                  textOverlays: item.textOverlays,
-                                  effectsBaked: item.effectsBaked,
-                                  // Tapping opens the same video full-screen,
-                                  // starting right on this item.
-                                  onTapToExpand: () => Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => FullScreenVideoScreen(
-                                        items: visibleItems,
-                                        initialIndex:
-                                            slots.realIndexAt(index) ?? 0,
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                );
-              },
-            );
-          },
-        ),
+                            );
+                          },
+                        ),
+                      ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

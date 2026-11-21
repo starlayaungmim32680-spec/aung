@@ -27,7 +27,9 @@
 > videos, and Home's header sits on the live "Your sky" (DEV). Late 21
 > Nov: **"Fly Mix"** - For You is no longer newest-first; it is mixed
 > once per app start (unwatched first, fresh + popular + random), DEV.
-> Ko asked about millions of users + cost -> To-do "Scale plan 2"._
+> Ko asked about millions of users + cost -> To-do "Scale plan 2". 22 Nov:
+> **S1 done on DEV** - Home / For You / Following and SingleVideoScreen load
+> in PAGES with .get() (`feed_pager.dart`), no live list any more._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2391,6 +2393,55 @@ OK). Play Console: Terms URL =
 > No rules / Worker change. Cost + "millions of users": see To-do "Scale
 > plan 2"._
 >
+> _22 Nov 2026 (00:20) - **Scale plan 2 step S1: feeds load in pages, not
+> live** (confirmed by Ko on DEV `FlyDev-bn263252342.apk`, 232 s; 5c NEW
+> `Could not load videos.` True / OLD `Camera could not start: ` False; all
+> 9 phone tests OK: fast start + Fly Mix, paging past 30, pull-to-refresh,
+> live like count, Following, profile/search -> video, delete, new upload
+> first, airplane mode). Why: Home listened with `.snapshots()` to the
+> newest 100 posts + 100 reposts, so EVERY like / view / comment-count change
+> on any of them cost one read on EVERY open phone. New
+> **`lib/screens/feed_pager.dart`** `FeedPager(query, pageSize, startAfter)`:
+> `refresh()` (first page again), `loadMore()` (startAfterDocument of the
+> last doc), `docs` / `loaded` ValueNotifiers, `error`, `hasMore`,
+> `isLoading`; a generation counter drops answers of an older refresh.
+> **`home_screen.dart`**: consts `kFeedPostsPage = 30` (enough for Fly
+> Mix), `kFeedRepostsPage = 10`, `kFeedLoadMoreAhead = 5`;
+> `kHomeFeedLimit` (100) is still used by the screens that still listen
+> live. `_posts` / `_reposts` FeedPagers (same queries + index as before);
+> the build is an `AnimatedBuilder` on `Listenable.merge([_circle.docs,
+> _posts.docs, _reposts.docs, _posts.loaded, _reposts.loaded,
+> homeDeletedPosts])` and waits for BOTH first pages (so the first mix
+> ranks posts and reposts together). `onPageChanged`: index >= slots.length
+> - 5 -> `_loadMore()`. `_maybeAutoLoad`: fewer than 10 visible (Following,
+> blocked) -> another page on its own, max 4 (`_autoPages`, reset on
+> refresh / tab change). **Pull-to-refresh** = `RefreshIndicator`
+> (notificationPredicate depth 0) around the PageView -> `_refresh()`:
+> both pagers refresh, `_mixOrder` cleared (new Fly Mix), reported list
+> re-read, jump to 0; `_firstMix` makes the Instant Start video pinned
+> only on the FIRST mix of the run. First page failed + nothing to show ->
+> "Could not load videos.\nCheck your connection." + "Try again". My circle
+> (`circle_posts.dart`: my own posts + friends' private ones) is still
+> live, so my new upload still appears at once (Fly Mix puts my <15 min
+> post first). New top-level **`homeDeletedPosts`** (ValueNotifier<Set>):
+> `_VideoPostItem._confirmDeleteMyPost` adds the id; Home filters posts and
+> reposts (`originalPostId`) by it. **`home_video_post.dart`**: when the
+> post doc stream says the doc is gone FROM THE SERVER (`!exists &&
+> !metadata.isFromCache`) -> pause + "This video is no longer available".
+> Live numbers still come from the one video on screen (its own post doc
+> stream). **`home_feeds.dart` SingleVideoScreen** (profile / search /
+> sounds / notifications -> a video): reads the tapped post once, page 0 =
+> the tapped video (built from the screen's values at once, effects from
+> the doc when it arrives, same key = player kept), then a FeedPager of
+> Everyone posts `startAfter` the tapped doc (older ones), more near the
+> end; swiping UP to newer posts is gone (it used to be the newest 100,
+> and a video older than those showed alone). Not changed (still live,
+> small or unused): `ShortsScreen` (not opened anywhere), the profile /
+> user video lists, comments' video list (`home_post_info.dart`). Still
+> live per video and worth a later step (S1b): `_postSubStream`
+> ('comments' / 'shares' / 'saves') downloads the WHOLE subcollection to
+> count it - needs count fields like viewCount. No rules / Worker change._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -4280,13 +4331,19 @@ per month after these fixes = ~$0.05-0.25, almost all of it video
 bandwidth (Bunny CDN: Asia standard ~$0.03/GB, volume network ~$0.005/GB;
 estimate ~7.5 GB per DAU per month = 20 min/day at 720p). Firestore,
 Workers, D1, storage are small IF the reads are fixed. Steps:
-  S1. **(do before the prod release, most urgent)** Home / For You / the
+  S1. **DONE on DEV 22 Nov 2026** (see the 22 Nov entry). Was: Home / For You / the
       full-screen feeds use `.snapshots()` on the newest 100 posts; every
       like / view / comment count change on ANY of those posts = 1 read on
       EVERY open phone (viewCount made this worse). Change the lists to a
       one-time `.get()` + paging (20 at a time, "load more" near the end,
       pull-to-refresh) and let only the VISIBLE post listen to its own doc
       for live numbers.
+  S1b. (before the prod release if possible) each video on screen lists
+      its WHOLE comments / shares / saves subcollections to count them
+      (`_postSubStream` in home_video_post.dart) - a video with 10,000
+      comments = 10,000 reads per view. Add commentCount / shareCount /
+      saveCount on the post (rules step like viewCount + a one-time Worker
+      migration), show the numbers, list comments only when the sheet opens.
   S2. Server-made For You: a Worker builds the ranked candidate list
       (FeedMix-style score) every few minutes and caches it (KV / Cache
       API); the app pages through it -> Firestore reads ~0 for the feed,

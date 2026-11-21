@@ -1584,6 +1584,29 @@ class _VideoPostItemState extends State<_VideoPostItem>
       builder: (context, postSnap) {
         final Map<String, dynamic>? livePostData =
             (postSnap.data?.data()) as Map<String, dynamic>?;
+        // 21 Nov 2026 (S1): the feeds are loaded in pages (not live), so
+        // a video deleted after its page loaded can still be in the list.
+        // The SERVER says the doc is gone (not just "not in the phone's
+        // cache yet") -> stop it and show a quiet note instead.
+        if (widget.postId.isNotEmpty &&
+            postSnap.hasData &&
+            !postSnap.data!.exists &&
+            !postSnap.data!.metadata.isFromCache) {
+          if (_controller?.value.isPlaying ?? false) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _controller?.pause();
+            });
+          }
+          return const ColoredBox(
+            color: Colors.black,
+            child: Center(
+              child: Text(
+                'This video is no longer available',
+                style: TextStyle(color: Colors.white54, fontSize: 15),
+              ),
+            ),
+          );
+        }
         // 19 Nov 2026: the post keeps only the NUMBER of reactions; who
         // reacted is private (posts/{id}/reactions, owner only). Falls back
         // to the count from the list while the doc stream is loading.
@@ -2823,7 +2846,8 @@ class _VideoPostItemState extends State<_VideoPostItem>
   }
 
   // Same dialog and delete as Profile's _confirmDelete (profile_screen.dart).
-  // Every feed listens to its query, so the video simply leaves the list.
+  // The video leaves the feeds through homeDeletedPosts (21 Nov 2026, S1 -
+  // the paged lists are not live any more).
   Future<void> _confirmDeleteMyPost() async {
     if (!_isMyPost || widget.postId.isEmpty) return;
     final bool? confirm = await showDialog<bool>(
@@ -2856,6 +2880,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
           .collection('posts')
           .doc(widget.postId)
           .delete();
+      // 21 Nov 2026 (S1): the feeds load in pages now (not live), so tell
+      // them this video is gone - it leaves Home / SingleVideoScreen at
+      // once.
+      homeDeletedPosts.value = {...homeDeletedPosts.value, widget.postId};
       HapticFeedback.mediumImpact();
       messenger.showSnackBar(
         const SnackBar(content: Text('Video deleted')),
