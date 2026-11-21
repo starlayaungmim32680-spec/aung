@@ -348,6 +348,10 @@ export default {
     if (request.method === 'GET' && url.pathname === '/migrate-views') {
       return handleMigrateViews(env, url);
     }
+    // One-time: comments / shares / saves docs -> post counts (22 Nov 2026).
+    if (request.method === 'GET' && url.pathname === '/migrate-counts') {
+      return handleMigrateCounts(env, url);
+    }
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
     }
@@ -3277,6 +3281,128 @@ async function handleMigrateViews(env, url) {
 }
 
 // ---------------------------------------------------------------------
+// Comment / share / save counts migration (22 Nov 2026, Scale plan 2
+// step S1b): GET /migrate-counts
+// ---------------------------------------------------------------------
+// Until 22 Nov 2026 every video on screen downloaded its WHOLE comments,
+// shares and saves lists just to show three numbers. Now the post keeps
+// them: commentCount (top-level comments, hidden ones included),
+// shareCount, saveCount - each moved by exactly 1 together with the doc
+// (firestore.rules commentCountStep / shareCountStep / saveCountStep).
+// This page sets the three numbers from the docs, for every post.
+// Recounting is always correct, so running it twice is harmless.
+// Same style as /migrate-views: SEARCH_ADMIN_TOKEN, 10 posts per page,
+// a "Next page" link, ONE commit per page. Subrequests per page: 1 Google
+// token + 1 list + 3 counts per post (Firestore count() aggregation, no
+// docs downloaded) + 1 commit = 33, under the free plan's 50.
+async function handleMigrateCounts(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:640px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  const pageToken = url.searchParams.get('page') || '';
+  const seenSoFar = Number(url.searchParams.get('seen') || '0') || 0;
+  const totals = {
+    comments: Number(url.searchParams.get('c') || '0') || 0,
+    shares: Number(url.searchParams.get('s') || '0') || 0,
+    saves: Number(url.searchParams.get('v') || '0') || 0,
+  };
+
+  try {
+    const dbToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+    const params = new URLSearchParams({ pageSize: '10' });
+    params.append('mask.fieldPaths', 'commentCount');
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`${firestoreBase(env)}/posts?${params}`, {
+      headers: { Authorization: `Bearer ${dbToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`Firestore list failed: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const docs = data.documents || [];
+
+    // count() of posts/{postId}/{sub} - billed like 1 read per 1,000.
+    const countOf = async (postId, sub) => {
+      const r = await fetch(
+        `${firestoreBase(env)}/posts/${postId}:runAggregationQuery`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${dbToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            structuredAggregationQuery: {
+              structuredQuery: { from: [{ collectionId: sub }] },
+              aggregations: [{ alias: 'n', count: {} }],
+            },
+          }),
+        },
+      );
+      if (!r.ok) {
+        throw new Error(`Count of ${sub} failed: ${await r.text()}`);
+      }
+      const rows = await r.json();
+      const row = (Array.isArray(rows) ? rows : [rows])
+        .find((x) => x && x.result) || {};
+      const v = ((row.result || {}).aggregateFields || {}).n || {};
+      return Number(v.integerValue || '0') || 0;
+    };
+
+    const writes = [];
+    for (const d of docs) {
+      const postId = d.name.split('/').pop();
+      const commentCount = await countOf(postId, 'comments');
+      const shareCount = await countOf(postId, 'shares');
+      const saveCount = await countOf(postId, 'saves');
+      totals.comments += commentCount;
+      totals.shares += shareCount;
+      totals.saves += saveCount;
+      writes.push({
+        ...fsUpdateWrite(env, `posts/${postId}`,
+          { commentCount, shareCount, saveCount }),
+        currentDocument: { exists: true },
+      });
+    }
+    if (writes.length) await firestoreCommit(env, dbToken, writes);
+
+    const seen = seenSoFar + docs.length;
+    const summary =
+      `<p>Project: <b>${env.FIREBASE_PROJECT_ID}</b></p>` +
+      `<p>Posts counted: <b>${seen}</b> · comments: <b>${totals.comments}` +
+      `</b> · shares: <b>${totals.shares}</b> · saves: <b>${totals.saves}` +
+      `</b></p>`;
+    if (data.nextPageToken) {
+      const next = new URLSearchParams({
+        token,
+        page: data.nextPageToken,
+        seen: String(seen),
+        c: String(totals.comments),
+        s: String(totals.shares),
+        v: String(totals.saves),
+      });
+      return html(
+        `<h2>⏳ Working...</h2>${summary}` +
+          `<p><a style="font-size:20px" href="/migrate-counts?${next}">` +
+          `Next page →</a></p>`,
+      );
+    }
+    return html(`<h2>🎉 All done</h2>${summary}`);
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${String(err.message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------
 // Text moderation (21 Oct 2026): POST /moderate-text
 // ---------------------------------------------------------------------
 // The app asks here BEFORE it saves text that other people will see:
@@ -4972,6 +5098,26 @@ async function adminDecide(env, key, decision, opts = {}) {
     createdAt: now,
   }));
   await firestoreCommit(env, dbToken, writes);
+
+  // 22 Nov 2026 (S1b): a removed TOP-LEVEL comment leaves the post's
+  // commentCount too (replies are not counted). A separate, best-effort
+  // write AFTER the removal: if the post itself is gone, nothing happens
+  // (the precondition fails) and the removal above still stands.
+  const commentParts = targetPath.split('/');
+  if (type !== 'post' && commentParts.length === 4 &&
+      commentParts[0] === 'posts' && commentParts[2] === 'comments') {
+    try {
+      await firestoreCommit(env, dbToken, [{
+        transform: {
+          document: fsDocName(env, `posts/${commentParts[1]}`),
+          fieldTransforms: [
+            { fieldPath: 'commentCount', increment: { integerValue: '-1' } },
+          ],
+        },
+        currentDocument: { exists: true },
+      }]);
+    } catch (_) {}
+  }
 
   // 1 Nov 2026: child safety -> the account is closed for good.
   let closed = null;

@@ -29,7 +29,10 @@
 > once per app start (unwatched first, fresh + popular + random), DEV.
 > Ko asked about millions of users + cost -> To-do "Scale plan 2". 22 Nov:
 > **S1 done on DEV** - Home / For You / Following and SingleVideoScreen load
-> in PAGES with .get() (`feed_pager.dart`), no live list any more._
+> in PAGES with .get() (`feed_pager.dart`), no live list any more. **S1b
+> done on DEV** - comment / share / save numbers live on the post
+> (`commentCount` / `shareCount` / `saveCount`), lists no longer
+> downloaded; prod migration is in the PROD RELEASE CHECKLIST._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2201,7 +2204,8 @@ OK). Play Console: Terms URL =
 > prod APK (5a-5e) with Fly Dock + who-reacted + private reactions + view
 > count (20 Nov entry); (b) run
 > `https://livekit-token-worker.chakaboycom.workers.dev/migrate-reactions?token=...`
-> AND `.../migrate-views?token=...` until "All done"; (c) install on A and
+> AND `.../migrate-views?token=...` AND (22 Nov, S1b) `.../migrate-counts?token=...`
+> until "All done"; (c) install on A and
 > B and test likes + views; (d) raise the force-update minimum
 > (`/app-version`) to this build so old apps update; (e) then, in
 > `firestore.rules`, remove the "TRANSITION ONLY" `onlyMyReaction()` line
@@ -2211,7 +2215,11 @@ OK). Play Console: Terms URL =
 > owner may list them directly, so view history privacy is enforced on
 > the server) and make views create require the count step
 > (`countAfter`-style, like reactions), then publish rules to both
-> projects. Old app versions write likes into the map (lost after
+> projects. (22 Nov, S1b) Also in (e): `saves` read -> `allow get: if
+> isMe(saverId) || isPostOwner(postId); allow list: if false;`, `shares`
+> read the same with sharerId, and saves create / delete, shares create
+> and top-level comments create / delete must move the post's count in
+> the same batch (countAfter-style checks like reactions). Old app versions write likes into the map (lost after
 > migration) and count views by listing them - that is why (d) and (e)
 > matter._
 >>
@@ -2441,6 +2449,42 @@ OK). Play Console: Terms URL =
 > live per video and worth a later step (S1b): `_postSubStream`
 > ('comments' / 'shares' / 'saves') downloads the WHOLE subcollection to
 > count it - needs count fields like viewCount. No rules / Worker change._
+>
+> _22 Nov 2026 (01:45) - **Scale plan 2 step S1b: comment / share / save
+> COUNTS on the post** (confirmed by Ko on DEV `FlyDev-bn263260113.apk`,
+> 248 s; no new UI text, 5c `Could not load videos.` True / `Camera could
+> not start: ` False; DEV `/migrate-counts` "All done": 22 posts, 18
+> comments, 0 shares, 0 saves; phone: new comment +1, reply no change,
+> delete comment -1, save -> 1 + in Saved). Why: each video on screen
+> streamed its WHOLE comments, shares and saves subcollections only to show
+> 3 numbers (`_postSubStream`, removed). **`firestore.rules`**: new
+> `saveCountStep` (+-1 with MY saves/{me} created / deleted in the same
+> batch), `shareCountStep` (+1 with MY first shares/{me}), `commentCountStep`
+> (changedKeys only `commentCount` + `lastCommentId`; +1 when that comment
+> is created / -1 when deleted in the same batch); posts update allows them
+> for anyone who can see the post. The subcollection rules are NOT
+> tightened yet (old prod apps still write without counts) - see the PROD
+> RELEASE CHECKLIST (e). **Worker**: `GET /migrate-counts?token=
+> SEARCH_ADMIN_TOKEN` (10 posts per page, Firestore `count()` aggregation
+> per subcollection = no docs downloaded, one commit per page, Next page
+> links, safe to re-run); the admin "Remove" decision on a TOP-LEVEL
+> comment also does commentCount -1 in a separate best-effort commit
+> (precondition post exists). Report-HIDE does not change counts.
+> **App**: `home_video_post.dart` reads `commentCount` / `shareCount` /
+> `saveCount` from the post doc it already streams (`Builder` instead of
+> the 5 StreamBuilders); "did I save it" = listener on MY saves/{me} doc
+> only (`_mySaveSub`, `_mySaved`, set at once on tap, put back on error);
+> `_toggleSave` batch adds saveCount +-1; `_shareVideo` writes the shares
+> doc + shareCount +1 only the FIRST time (get first). `home_comments.dart`
+> `_sendComment`: batch = comment + (top-level only) post `commentCount`
+> +1 / `lastCommentId`; `_confirmDelete`: batch delete + (if
+> `ref.parent.id == 'comments'`) -1; `_visibleCommentCount` removed.
+> **Behaviour change (Ko told):** comments the owner HID are now counted
+> (simpler, never drifts); replies are still not counted. Comment
+> notifications / moderation unchanged. Rules + Worker deployed on DEV
+> (fly-dev rules 22 Nov 00:46, fly-dev-worker 22 Nov); prod rules + prod
+> Worker: publish / deploy the same files (safe for old prod apps - only
+> new allowances), prod migration only at the prod release._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -4338,7 +4382,7 @@ Workers, D1, storage are small IF the reads are fixed. Steps:
       one-time `.get()` + paging (20 at a time, "load more" near the end,
       pull-to-refresh) and let only the VISIBLE post listen to its own doc
       for live numbers.
-  S1b. (before the prod release if possible) each video on screen lists
+  S1b. **DONE on DEV 22 Nov 2026** (see the 22 Nov 01:45 entry). Was: each video on screen lists
       its WHOLE comments / shares / saves subcollections to count them
       (`_postSubStream` in home_video_post.dart) - a video with 10,000
       comments = 10,000 reads per view. Add commentCount / shareCount /

@@ -161,6 +161,41 @@ service cloud.firestore {
         && after == before + 1 && !exists(mine) && existsAfter(mine);
     }
 
+    // 22 Nov 2026 (S1b, counts on the post): saveCount moves by exactly 1
+    // in the same batch that creates / deletes MY posts/{postId}/saves/{me}.
+    function saveCountStep(postId) {
+      let before = resource.data.get('saveCount', 0);
+      let after = request.resource.data.get('saveCount', 0);
+      let mine = /databases/$(database)/documents/posts/$(postId)/saves/$(request.auth.uid);
+      return changedKeys().hasOnly(['saveCount'])
+        && ((after == before + 1 && !exists(mine) && existsAfter(mine))
+          || (after == before - 1 && exists(mine) && !existsAfter(mine)));
+    }
+
+    // 22 Nov 2026 (S1b): shareCount goes up by exactly 1 with MY first
+    // posts/{postId}/shares/{me} doc (one per person, never deleted).
+    function shareCountStep(postId) {
+      let before = resource.data.get('shareCount', 0);
+      let after = request.resource.data.get('shareCount', 0);
+      let mine = /databases/$(database)/documents/posts/$(postId)/shares/$(request.auth.uid);
+      return changedKeys().hasOnly(['shareCount'])
+        && after == before + 1 && !exists(mine) && existsAfter(mine);
+    }
+
+    // 22 Nov 2026 (S1b): commentCount (top-level comments, hidden ones
+    // included) moves by exactly 1 in the same batch that creates /
+    // deletes the comment named in lastCommentId.
+    function commentCountStep(postId) {
+      let before = resource.data.get('commentCount', 0);
+      let after = request.resource.data.get('commentCount', 0);
+      let id = request.resource.data.get('lastCommentId', '');
+      let c = /databases/$(database)/documents/posts/$(postId)/comments/$(id);
+      return changedKeys().hasOnly(['commentCount', 'lastCommentId'])
+        && id is string && id.size() > 0 && id.size() <= 128
+        && ((after == before + 1 && !exists(c) && existsAfter(c))
+          || (after == before - 1 && exists(c) && !existsAfter(c)));
+    }
+
     // posts/{postId}/reactions/{uid} = { type, createdAt }.
     function validReaction() {
       return request.resource.data.keys().hasOnly(['type', 'createdAt'])
@@ -329,6 +364,10 @@ service cloud.firestore {
         || (canSeePost(resource.data) && reactionCountStep(postId))
         // 19 Nov 2026: view count - +1 with my first view doc.
         || (canSeePost(resource.data) && viewCountStep(postId))
+        // 22 Nov 2026 (S1b): save / share / comment counts, by exactly 1.
+        || (canSeePost(resource.data) && saveCountStep(postId))
+        || (canSeePost(resource.data) && shareCountStep(postId))
+        || (canSeePost(resource.data) && commentCountStep(postId))
       );
       allow delete: if signedIn() && resource.data.userId == request.auth.uid;
 

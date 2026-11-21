@@ -62,15 +62,6 @@ bool _isCommentVisibleTo(
   return myId == postOwnerId || myId == data['userId'];
 }
 
-// How many comments/replies someone (not the video owner or author) can
-// actually see - used for the comment counts, so hidden ones don't count.
-int _visibleCommentCount(List<QueryDocumentSnapshot> docs) {
-  return docs.where((d) {
-    final data = d.data() as Map<String, dynamic>?;
-    return data?['hidden'] != true;
-  }).length;
-}
-
 // Bottom sheet that shows comments, replies, and emoji reactions
 class _CommentsSheet extends StatefulWidget {
   final String postId;
@@ -262,7 +253,12 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         ? _commentsRef.doc()
         : _commentsRef.doc(replyToId).collection('replies').doc();
 
-    ref.set({
+    // 22 Nov 2026 (S1b): a TOP-LEVEL comment raises the post's
+    // commentCount by 1 in the same batch (firestore.rules
+    // commentCountStep, lastCommentId = this comment). Replies are not
+    // counted.
+    final WriteBatch batch = FirebaseFirestore.instance.batch();
+    batch.set(ref, {
       'userId': user.uid,
       'displayName': displayName,
       'photoUrl': photoUrl,
@@ -274,7 +270,14 @@ class _CommentsSheetState extends State<_CommentsSheet> {
         'replyToName': replyToName,
       },
       'createdAt': FieldValue.serverTimestamp(),
-    }).catchError((_) {
+    });
+    if (replyToId == null) {
+      batch.update(
+        FirebaseFirestore.instance.collection('posts').doc(widget.postId),
+        {'commentCount': FieldValue.increment(1), 'lastCommentId': ref.id},
+      );
+    }
+    batch.commit().catchError((_) {
       messenger.showSnackBar(
         const SnackBar(
             content: Text("Couldn't send your comment. Please try again.")),
@@ -674,7 +677,17 @@ class _CommentsSheetState extends State<_CommentsSheet> {
     // become unreachable in the app (Firestore can't cascade-delete a
     // subcollection without a server).
     try {
-      await ref.delete();
+      // 22 Nov 2026 (S1b): a TOP-LEVEL comment (posts/{id}/comments/{c})
+      // also lowers the post's commentCount by 1, in the same batch.
+      final WriteBatch batch = FirebaseFirestore.instance.batch();
+      batch.delete(ref);
+      if (ref.parent.id == 'comments') {
+        batch.update(
+          FirebaseFirestore.instance.collection('posts').doc(widget.postId),
+          {'commentCount': FieldValue.increment(-1), 'lastCommentId': ref.id},
+        );
+      }
+      await batch.commit();
     } catch (_) {
       messenger.showSnackBar(
         const SnackBar(content: Text("Couldn't delete it. Please try again.")),

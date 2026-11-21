@@ -169,6 +169,11 @@ class _VideoPostItemState extends State<_VideoPostItem>
   StreamSubscription<DocumentSnapshot>? _myReactionSub;
   String? _myReaction;
 
+  // 22 Nov 2026 (S1b): did I save this video? Follows ONLY my own
+  // posts/{postId}/saves/{me} doc (before, the whole saves list).
+  StreamSubscription<DocumentSnapshot>? _mySaveSub;
+  bool _mySaved = false;
+
   @override
   void initState() {
     super.initState();
@@ -190,6 +195,17 @@ class _VideoPostItemState extends State<_VideoPostItem>
           final String? type = d.exists ? (d.data()?['type'] as String?) : null;
           if (mounted && type != _myReaction) {
             setState(() => _myReaction = type);
+          }
+        }, onError: (_) {});
+        _mySaveSub = FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.postId)
+            .collection('saves')
+            .doc(me)
+            .snapshots()
+            .listen((d) {
+          if (mounted && d.exists != _mySaved) {
+            setState(() => _mySaved = d.exists);
           }
         }, onError: (_) {});
       }
@@ -1002,12 +1018,19 @@ class _VideoPostItemState extends State<_VideoPostItem>
     final user = FirebaseAuth.instance.currentUser;
     if (user != null && widget.postId.isNotEmpty) {
       try {
-        await FirebaseFirestore.instance
-            .collection('posts')
-            .doc(widget.postId)
-            .collection('shares')
-            .doc(user.uid)
-            .set({'createdAt': FieldValue.serverTimestamp()});
+        // 22 Nov 2026 (S1b): my FIRST share doc + the post's shareCount +1
+        // in ONE batch (firestore.rules shareCountStep). Sharing again
+        // changes nothing (one share per person is counted).
+        final DocumentReference<Map<String, dynamic>> postRef =
+            FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+        final DocumentReference<Map<String, dynamic>> shareRef =
+            postRef.collection('shares').doc(user.uid);
+        if (!(await shareRef.get()).exists) {
+          final WriteBatch batch = FirebaseFirestore.instance.batch();
+          batch.set(shareRef, {'createdAt': FieldValue.serverTimestamp()});
+          batch.update(postRef, {'shareCount': FieldValue.increment(1)});
+          await batch.commit();
+        }
         CoinService.instance.awardShare();
       } catch (_) {
         // Ignore share-tracking errors
@@ -1440,15 +1463,6 @@ class _VideoPostItemState extends State<_VideoPostItem>
     );
   }
 
-  // Live count of a post subcollection (comments / shares / saves)
-  Stream<QuerySnapshot> _postSubStream(String sub) {
-    return FirebaseFirestore.instance
-        .collection('posts')
-        .doc(widget.postId)
-        .collection(sub)
-        .snapshots();
-  }
-
   // Saves or unsaves this post (stored per-post so the total can be counted)
   Future<void> _toggleSave(bool isSaved) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -1469,11 +1483,18 @@ class _VideoPostItemState extends State<_VideoPostItem>
         .doc(user.uid)
         .collection('saved')
         .doc(widget.postId);
+    final postRef =
+        FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+    // 22 Nov 2026 (S1b): the post's saveCount moves by 1 in the SAME batch
+    // (firestore.rules saveCountStep). Shown at once; the saves doc
+    // listener corrects it if the write fails.
+    if (mounted) setState(() => _mySaved = !isSaved);
     try {
       final batch = FirebaseFirestore.instance.batch();
       if (isSaved) {
         batch.delete(ref);
         batch.delete(myListRef);
+        batch.update(postRef, {'saveCount': FieldValue.increment(-1)});
       } else {
         batch.set(ref, {
           'uid': user.uid,
@@ -1489,10 +1510,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
           'videoUrl': widget.videoUrl,
           'savedAt': FieldValue.serverTimestamp(),
         });
+        batch.update(postRef, {'saveCount': FieldValue.increment(1)});
       }
       await batch.commit();
     } catch (_) {
-      // Ignore save errors so the UI is never blocked.
+      // Ignore save errors so the UI is never blocked - put the icon back.
+      if (mounted) setState(() => _mySaved = isSaved);
     }
   }
 
@@ -1559,6 +1582,7 @@ class _VideoPostItemState extends State<_VideoPostItem>
   void dispose() {
     ReportedPosts.instance.ids.removeListener(_onReportedChanged);
     _myReactionSub?.cancel();
+    _mySaveSub?.cancel();
     flyRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _processingRetryTimer?.cancel();
@@ -1618,6 +1642,14 @@ class _VideoPostItemState extends State<_VideoPostItem>
         // 19 Nov 2026: unique viewers, kept on the post as a number.
         final int viewCount =
             max(0, (livePostData?['viewCount'] as num?)?.toInt() ?? 0);
+        // 22 Nov 2026 (S1b): comments / shares / saves are numbers on the
+        // post too - the lists themselves are no longer downloaded.
+        final int commentCount =
+            max(0, (livePostData?['commentCount'] as num?)?.toInt() ?? 0);
+        final int shareCount =
+            max(0, (livePostData?['shareCount'] as num?)?.toInt() ?? 0);
+        final int saveCount =
+            max(0, (livePostData?['saveCount'] as num?)?.toInt() ?? 0);
 
         // Which sound this video uses, so it can be credited and opened.
         final String? soundId = livePostData?['soundId'] as String?;
@@ -2341,13 +2373,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                       ),
                       const SizedBox(height: 6),
                       // Comment
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _postSubStream('comments'),
-                        builder: (context, snap) {
-                          // Comments the video owner hid aren't counted.
-                          final int count = snap.hasData
-                              ? _visibleCommentCount(snap.data!.docs)
-                              : 0;
+                      Builder(
+                        builder: (context) {
+                          // 22 Nov 2026 (S1b): the number kept on the post.
+                          final int count = commentCount;
                           return GestureDetector(
                             onTap: _openComments,
                             child: Column(
@@ -2370,11 +2399,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                       ),
                       const SizedBox(height: 6),
                       // Share
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _postSubStream('shares'),
-                        builder: (context, snap) {
-                          final int count =
-                              snap.hasData ? snap.data!.docs.length : 0;
+                      Builder(
+                        builder: (context) {
+                          final int count = shareCount;
                           return GestureDetector(
                             onTap: _openShareSheet,
                             child: Column(
@@ -2397,15 +2424,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
                       ),
                       const SizedBox(height: 6),
                       // Save / bookmark
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _postSubStream('saves'),
-                        builder: (context, snap) {
-                          final myId = FirebaseAuth.instance.currentUser?.uid;
-                          final docs =
-                              snap.hasData ? snap.data!.docs : const [];
-                          final int count = docs.length;
-                          final bool isSaved =
-                              myId != null && docs.any((d) => d.id == myId);
+                      Builder(
+                        builder: (context) {
+                          // 22 Nov 2026 (S1b): the count kept on the post
+                          // + MY saves doc only (not the whole list).
+                          final int count = saveCount;
+                          final bool isSaved = _mySaved;
                           return GestureDetector(
                             onTap: () => _toggleSave(isSaved),
                             child: Column(
@@ -2507,13 +2531,10 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         ),
                       ),
                       const SizedBox(width: 18),
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _postSubStream('comments'),
-                        builder: (context, snap) {
-                          // Comments the video owner hid aren't counted.
-                          final int count = snap.hasData
-                              ? _visibleCommentCount(snap.data!.docs)
-                              : 0;
+                      Builder(
+                        builder: (context) {
+                          // 22 Nov 2026 (S1b): the number kept on the post.
+                          final int count = commentCount;
                           return GestureDetector(
                             onTap: _openComments,
                             child: Row(
@@ -2545,11 +2566,9 @@ class _VideoPostItemState extends State<_VideoPostItem>
                         },
                       ),
                       const SizedBox(width: 18),
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _postSubStream('shares'),
-                        builder: (context, snap) {
-                          final int count =
-                              snap.hasData ? snap.data!.docs.length : 0;
+                      Builder(
+                        builder: (context) {
+                          final int count = shareCount;
                           return GestureDetector(
                             onTap: _openShareSheet,
                             child: Row(
