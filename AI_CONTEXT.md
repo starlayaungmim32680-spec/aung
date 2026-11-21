@@ -24,7 +24,7 @@
 > _20 Nov 2026: view numbers come from `post.viewCount` and the opt-in
 > **View history** ("who viewed my video") works on DEV. 21 Nov: profile
 > grids are airplane windows with a gold "passport stamp" on watched
-> videos (DEV)._
+> videos, and Home's header sits on the live "Your sky" (DEV)._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2333,6 +2333,32 @@ OK). Play Console: Terms URL =
 > where they became unused. `home_screen.dart` imports `WatchedVideos`
 > for the feed part file. No rules change (my own view doc is readable:
 > TRANSITION rule now, `get: isMe` after the prod release)._
+>>
+> _21 Nov 2026 - **Home header = "Your sky" + calm stories row**
+> (confirmed by Ko on DEV `FlyDev-bn263250125.apk`, 220 s; 5c NEW `Your
+> story flies here` True / OLD `Camera could not start: ` False - the old
+> text had a plane emoji, so it was stored UTF-16 and never matched). Ko:
+> the drawn city / landscape behind the stories (DayScene) "looks like a
+> cartoon". Ideas on the design canvas "Fly Home stories bar - ideas"
+> (story layouts A glass strip / B previews / C floating; backgrounds A
+> "Your sky" sunrise/day/night, B aurora, C contrail); Ko picked **A
+> (Your sky)**. New **`lib/screens/live_sky.dart`** `LiveSkyGlow`: no
+> drawings - a 4-stop sky gradient + a RADIAL GLOW for the sun / moon
+> (light only, no disc) + faint fixed stars at night (`_StarDust`),
+> blended between key times by the phone's local clock (night 0-5.3,
+> sunrise ~6.6, day 8.5-16.3, sunset ~18.1, night from 19.6-21), checked
+> every 5 min; a ShaderMask fades the bottom 30% into black so it melts
+> into the video. `home_screen.dart`: the whole header (SafeArea: tabs,
+> search, bell, StoriesBar, LiveBadgeBar + 6 dp) is a Stack on
+> `LiveSkyGlow` from the very top of the screen. `story_screen.dart`
+> StoriesBar: `DayScene` removed (and the dev long-press "next day");
+> `_FlightPathPainter` (curved dashed route + plane) and its always-running
+> `_flow` controller removed; stops in ONE straight row
+> (`_stopCenter(i) = (48 + i * 80, 44)`); segmented rings, drift, moods,
+> seen order unchanged; empty text "Your story flies here\nfor 24 hours"
+> (no emoji); unused `dart:ui` import removed. `day_scene.dart` is no
+> longer used anywhere (kept in the repo for now). Profile Sky Pass is
+> unchanged._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed

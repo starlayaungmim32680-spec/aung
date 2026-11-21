@@ -40,6 +40,7 @@ import 'circle_posts.dart';
 import 'local_video_cache.dart';
 import 'view_history.dart' show showPostViewersSheet;
 import 'window_tile.dart' show WatchedVideos;
+import 'live_sky.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
 
@@ -393,57 +394,68 @@ class _HomeScreenState extends State<HomeScreen> {
                 // never renders underneath them.
                 return Column(
                   children: [
-                    SafeArea(
-                      bottom: false,
-                      child: Column(
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                Center(
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      _feedTab('Following', true),
-                                      const SizedBox(width: 10),
-                                      Container(
-                                        width: 1,
-                                        height: 14,
-                                        color: Colors.white24,
-                                      ),
-                                      const SizedBox(width: 10),
-                                      _feedTab('For You', false),
-                                    ],
-                                  ),
-                                ),
-                                Positioned(
-                                  left: 12,
-                                  top: 0,
-                                  child: GestureDetector(
-                                    onTap: () => Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => const SearchScreen(),
+                    // 21 Nov 2026: the header (tabs + stories) sits on the
+                    // live sky of the phone's local time (live_sky.dart) -
+                    // from the very top of the screen, fading into the
+                    // video below.
+                    Stack(
+                      children: [
+                        const Positioned.fill(child: LiveSkyGlow()),
+                        SafeArea(
+                          bottom: false,
+                          child: Column(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    Center(
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          _feedTab('Following', true),
+                                          const SizedBox(width: 10),
+                                          Container(
+                                            width: 1,
+                                            height: 14,
+                                            color: Colors.white24,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          _feedTab('For You', false),
+                                        ],
                                       ),
                                     ),
-                                    child: const Icon(Icons.search,
-                                        color: Colors.white, size: 26),
-                                  ),
+                                    Positioned(
+                                      left: 12,
+                                      top: 0,
+                                      child: GestureDetector(
+                                        onTap: () => Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) =>
+                                                const SearchScreen(),
+                                          ),
+                                        ),
+                                        child: const Icon(Icons.search,
+                                            color: Colors.white, size: 26),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      right: 12,
+                                      top: 0,
+                                      child: _NotificationBell(),
+                                    ),
+                                  ],
                                 ),
-                                Positioned(
-                                  right: 12,
-                                  top: 0,
-                                  child: _NotificationBell(),
-                                ),
-                              ],
-                            ),
+                              ),
+                              const StoriesBar(),
+                              const LiveBadgeBar(),
+                              const SizedBox(height: 6),
+                            ],
                           ),
-                          const StoriesBar(),
-                          const LiveBadgeBar(),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                     Expanded(
                       child: visibleItems.isEmpty

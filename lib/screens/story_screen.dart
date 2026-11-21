@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:convert';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -19,7 +18,6 @@ import 'video_filters.dart';
 import 'photo_effects_screen.dart';
 import 'story_music.dart';
 import 'story_mood.dart';
-import 'day_scene.dart';
 import 'sound_screen.dart';
 import 'sound_moderation.dart';
 import 'video_upload_service.dart';
@@ -443,7 +441,7 @@ const List<Color> _kFlyStoryGradient = [Color(0xFFFF4B6E), Color(0xFF9C4DFF)];
 const double _kBarHeight = 120;
 const double _kStopSize = 54; // avatar + ring
 const double _kStopGap = 80; // distance between stops
-const double _kRouteStartX = 64; // first stop's centre (after the plane)
+const double _kRouteStartX = 48; // first stop's centre
 
 /// Newest createdAt (ms) in one person's stories.
 int _newestMs(List<QueryDocumentSnapshot> stories) {
@@ -523,12 +521,6 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
       ? null
       : FirebaseFirestore.instance.collection('users').doc(_myId).snapshots();
 
-  // Drives the flowing dashes and the plane's gentle bob.
-  late final AnimationController _flow = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 3),
-  )..repeat();
-
   // Slow zoom / drift of the story pictures in unseen stops (Ko: the
   // story itself should move in the circle, 7 Nov 2026).
   late final AnimationController _drift = AnimationController(
@@ -554,7 +546,6 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
   void dispose() {
     BlockService.instance.hidden.removeListener(_onChanged);
     StorySeen.instance.seen.removeListener(_onChanged);
-    _flow.dispose();
     _drift.dispose();
     _moodT.dispose();
     StoryVideoPrefetch.clear();
@@ -570,32 +561,11 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
     final String? myId = _myId;
     final Set<String> hiddenIds = BlockService.instance.hidden.value;
 
+    // 21 Nov 2026: no drawn scene behind the stories any more - Home's
+    // header now sits on the live sky (live_sky.dart, set in home_screen).
     return SizedBox(
       height: _kBarHeight,
-      child: GestureDetector(
-        // Dev app only: long-press = the next day's scene (day_scene.dart).
-        behavior: HitTestBehavior.translucent,
-        onLongPress: AppConfig.isDev
-            ? () {
-                final String label = DayScene.debugNextDay();
-                ScaffoldMessenger.of(context)
-                  ..hideCurrentSnackBar()
-                  ..showSnackBar(SnackBar(
-                    content: Text('Day +${daySceneDebugShift.value}: $label'),
-                    duration: const Duration(seconds: 2),
-                  ));
-              }
-            : null,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Today's nature scene behind the route (stays put while the
-            // stops scroll).
-            const Positioned.fill(child: DayScene()),
-            Positioned.fill(child: _buildRoute(context, myId, hiddenIds)),
-          ],
-        ),
-      ),
+      child: _buildRoute(context, myId, hiddenIds),
     );
   }
 
@@ -743,18 +713,6 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                // The route + the plane.
-                Positioned.fill(
-                  child: RepaintBoundary(
-                    child: CustomPaint(
-                      painter: _FlightPathPainter(
-                        stops: stops.length,
-                        flow: _flow,
-                        trailOff: empty ? 200 : 40,
-                      ),
-                    ),
-                  ),
-                ),
                 // Feelings float behind the circles.
                 if (moodStops.isNotEmpty)
                   Positioned.fill(
@@ -779,9 +737,9 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
                     left: _kRouteStartX + 48,
                     top: _stopCenter(0).dy - 18,
                     child: const Text(
-                      'Your story flies here\nfor 24 hours ✈',
+                      'Your story flies here\nfor 24 hours',
                       style: TextStyle(
-                        color: Colors.white54,
+                        color: Colors.white70,
                         fontSize: 12.5,
                         height: 1.35,
                         fontWeight: FontWeight.w600,
@@ -797,101 +755,10 @@ class _StoriesBarState extends State<StoriesBar> with TickerProviderStateMixin {
   }
 }
 
-/// Centre of stop [i]: evenly spaced, gently up and down like a route.
-Offset _stopCenter(int i) =>
-    Offset(_kRouteStartX + i * _kStopGap, 44 + 13 * sin(i * 1.3 + 0.6));
-
-class _FlightPathPainter extends CustomPainter {
-  final int stops;
-  final Animation<double> flow;
-  final double trailOff; // how far the route runs on after the last stop
-  _FlightPathPainter({
-    required this.stops,
-    required this.flow,
-    required this.trailOff,
-  }) : super(repaint: flow);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final double t = flow.value;
-    // Points: the plane, every stop, then the route fading out.
-    final Offset plane = Offset(22, _stopCenter(0).dy + 22);
-    final List<Offset> pts = [
-      plane,
-      for (int i = 0; i < stops; i++) _stopCenter(i),
-    ];
-    final Offset last = pts.last;
-    pts.add(Offset(last.dx + trailOff, last.dy - 10));
-
-    // Smooth curve through the points (Catmull-Rom -> cubic Beziers).
-    final Path route = Path()..moveTo(pts[0].dx, pts[0].dy);
-    for (int i = 0; i < pts.length - 1; i++) {
-      final Offset p0 = i == 0 ? pts[0] : pts[i - 1];
-      final Offset p1 = pts[i];
-      final Offset p2 = pts[i + 1];
-      final Offset p3 = i + 2 < pts.length ? pts[i + 2] : p2;
-      final Offset c1 = p1 + (p2 - p0) / 6;
-      final Offset c2 = p2 - (p3 - p1) / 6;
-      route.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, p2.dx, p2.dy);
-    }
-
-    // Flowing dashes (white, fading out at the end of the route).
-    const double dash = 6, gap = 7;
-    final Paint paint = Paint()
-      ..strokeWidth = 1.8
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke;
-    for (final ui.PathMetric m in route.computeMetrics()) {
-      double d = -(dash + gap) + t * (dash + gap);
-      while (d < m.length) {
-        final double start = max(0, d);
-        final double end = min(m.length, d + dash);
-        if (end > start) {
-          final double fade = (1 - ((start - (m.length - trailOff)) / trailOff))
-              .clamp(0.0, 1.0);
-          paint.color = Colors.white.withValues(alpha: 0.38 * fade);
-          canvas.drawPath(m.extractPath(start, end), paint);
-        }
-        d += dash + gap;
-      }
-    }
-
-    // The plane: nose along the route, a soft contrail, gentle bob.
-    final double bob = 1.6 * sin(t * 2 * pi);
-    final Offset next = pts[1];
-    final double angle = atan2(next.dy - plane.dy, next.dx - plane.dx);
-    canvas.drawCircle(
-      plane,
-      16,
-      Paint()
-        ..shader = RadialGradient(colors: [
-          const Color(0xFF9C4DFF).withValues(alpha: 0.35),
-          const Color(0xFF9C4DFF).withValues(alpha: 0),
-        ]).createShader(Rect.fromCircle(center: plane, radius: 16)),
-    );
-    final TextPainter tp = TextPainter(
-      text: TextSpan(
-        text: String.fromCharCode(Icons.flight.codePoint),
-        style: TextStyle(
-          fontSize: 24,
-          fontFamily: Icons.flight.fontFamily,
-          package: Icons.flight.fontPackage,
-          color: Colors.white,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    canvas.save();
-    canvas.translate(plane.dx, plane.dy + bob);
-    canvas.rotate(angle + pi / 2); // the icon points up
-    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant _FlightPathPainter old) =>
-      old.stops != stops || old.trailOff != trailOff;
-}
+/// Centre of stop [i]: evenly spaced in one calm row (21 Nov 2026: the
+/// curved flight path, its dashes and the plane were removed with the
+/// drawn scene).
+Offset _stopCenter(int i) => Offset(_kRouteStartX + i * _kStopGap, 44);
 
 /// Stop 0: my photo with a gradient "+" - add a story.
 class _AddStoryStop extends StatelessWidget {
