@@ -13,6 +13,7 @@ import 'screens/main_navigation_screen.dart';
 import 'screens/account_closed.dart';
 import 'screens/app_update.dart';
 import 'screens/video_preload_cache.dart' show LaunchVideo;
+import 'screens/window_tile.dart' show WatchedVideos;
 import 'screens/new_password_screen.dart' show AuthLinks;
 import 'screens/home_screen.dart' show flyRouteObserver;
 import 'screens/content_filter.dart';
@@ -161,6 +162,9 @@ void main() async {
   LaunchVideo.warmUp();
   // prod = aung-1756e, dev = fly-dev (app_config.dart).
   await Firebase.initializeApp(options: AppConfig.firebaseOptions);
+  // 21 Nov 2026 (Fly Mix): load the videos I already watched (kept on
+  // the phone) so Home can put unseen videos first (window_tile.dart).
+  WatchedVideos.warmUp();
   // Firestore already caches reads and queues writes locally on
   // Android/iOS by default - this just makes that explicit and raises the
   // cache limit past its default 40MB, so a longer scroll through the

@@ -15,12 +15,14 @@
 // app run, and the feed marks a video the moment it is watched, so going
 // back to a profile shows the stamp at once.
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'media_utils.dart';
 
@@ -33,6 +35,12 @@ class WatchedVideos {
   static final Set<String> _checked = <String>{};
   static String? _uid;
 
+  // 21 Nov 2026 (Fly Mix): the watched ids are also kept ON THE PHONE
+  // (SharedPreferences, per account, newest 800), so after a restart the
+  // Home feed already knows what I have seen - no reads needed.
+  static const int _keep = 800;
+  static Timer? _saveTimer;
+
   static String? _me() {
     final String? uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != _uid) {
@@ -40,8 +48,37 @@ class WatchedVideos {
       _uid = uid;
       _checked.clear();
       watched.value = <String>{};
+      _load(uid);
     }
     return uid;
+  }
+
+  /// Called once at app start (main), never waits for anything.
+  static void warmUp() => _me();
+
+  static void _load(String? uid) {
+    if (uid == null) return;
+    SharedPreferences.getInstance().then((p) {
+      if (_uid != uid) return; // account changed meanwhile
+      final List<String> ids = p.getStringList('watched_$uid') ?? const [];
+      if (ids.isEmpty) return;
+      watched.value = <String>{...ids, ...watched.value};
+      _checked.addAll(ids);
+    }).catchError((Object _) {});
+  }
+
+  static void _save() {
+    final String? uid = _uid;
+    if (uid == null) return;
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(seconds: 2), () {
+      final List<String> all = watched.value.toList();
+      final List<String> keep =
+          all.length > _keep ? all.sublist(all.length - _keep) : all;
+      SharedPreferences.getInstance()
+          .then((p) => p.setStringList('watched_$uid', keep))
+          .catchError((Object _) => false);
+    });
   }
 
   /// The feed calls this when I watch a video.
@@ -50,6 +87,7 @@ class WatchedVideos {
     _checked.add(postId);
     if (watched.value.contains(postId)) return;
     watched.value = <String>{...watched.value, postId};
+    _save();
   }
 
   /// Looks it up once per app run (one small read: my own view doc).

@@ -24,7 +24,10 @@
 > _20 Nov 2026: view numbers come from `post.viewCount` and the opt-in
 > **View history** ("who viewed my video") works on DEV. 21 Nov: profile
 > grids are airplane windows with a gold "passport stamp" on watched
-> videos, and Home's header sits on the live "Your sky" (DEV)._
+> videos, and Home's header sits on the live "Your sky" (DEV). Late 21
+> Nov: **"Fly Mix"** - For You is no longer newest-first; it is mixed
+> once per app start (unwatched first, fresh + popular + random), DEV.
+> Ko asked about millions of users + cost -> To-do "Scale plan 2"._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2360,6 +2363,34 @@ OK). Play Console: Terms URL =
 > longer used anywhere (kept in the repo for now). Profile Sky Pass is
 > unchanged._
 >
+> _21 Nov 2026 (night) - **"Fly Mix": For You is mixed, not newest-first**
+> (confirmed by Ko on DEV `FlyDev-bn263252206.apk`, 310 s; no new UI text,
+> 5c NEW `Your story flies here` True / OLD `Camera could not start: `
+> False). Ko: the last uploaded video was ALWAYS first when the app opened
+> and "the videos don't go round". New **`lib/screens/feed_mix.dart`**
+> `FeedMix.score({key, ageHours, reactions, views, watched, pinned})` =
+> pinned 100 + unwatched 3 + freshness `2.2*exp(-age/36h)` + `0.6*ln(1+
+> reactions) + 0.3*ln(1+views)` + `1.4*jitter` (jitter seeded once per app
+> run, so each start gives a new order); `spreadCreators` keeps the same
+> creator from showing twice in a row (looks up to 6 ahead).
+> `home_screen.dart` `_mixed(items)` + `_mixOrder`: the order is decided
+> ONCE per run (likes / new view counts never re-sort = no jumping); posts
+> that arrive later are added at the END, except MY OWN post younger than
+> 15 min, which goes to the top (so I see my upload). On the first ranking
+> the video that Instant Start already warmed (`LaunchVideo.warmedUrl`,
+> new getter in `video_preload_cache.dart`) is pinned first so it still
+> plays at once; `LaunchVideo.remember()` now stores the first UNWATCHED
+> video after index 0 (so the next start opens on a different one).
+> **Following stays newest-first** (no mix). `home_feeds.dart`
+> `_FeedItem.viewCount` (post `viewCount`, reposts 0). `window_tile.dart`
+> `WatchedVideos` is now SAVED on the phone (SharedPreferences key
+> `watched_<uid>`, newest 800, saved 2 s after a change; `warmUp()` called
+> in `main.dart` right after `Firebase.initializeApp`). Still a phone-side
+> mix of the newest `kHomeFeedLimit` (100) Everyone posts - with few
+> videos the unwatched ones run out fast, then watched ones are mixed in.
+> No rules / Worker change. Cost + "millions of users": see To-do "Scale
+> plan 2"._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -4242,6 +4273,35 @@ unanswered):
      with at least 12 testers for 14 days in a row before production.)
   3. Can Ko find 12 closed-testing testers (friends / family with a
      Gmail account)?
+
+**Scale plan 2 - millions of users (Ko asked 21 Nov 2026; nothing built
+yet, one step at a time, DEV first):** rough cost per DAILY active user
+per month after these fixes = ~$0.05-0.25, almost all of it video
+bandwidth (Bunny CDN: Asia standard ~$0.03/GB, volume network ~$0.005/GB;
+estimate ~7.5 GB per DAU per month = 20 min/day at 720p). Firestore,
+Workers, D1, storage are small IF the reads are fixed. Steps:
+  S1. **(do before the prod release, most urgent)** Home / For You / the
+      full-screen feeds use `.snapshots()` on the newest 100 posts; every
+      like / view / comment count change on ANY of those posts = 1 read on
+      EVERY open phone (viewCount made this worse). Change the lists to a
+      one-time `.get()` + paging (20 at a time, "load more" near the end,
+      pull-to-refresh) and let only the VISIBLE post listen to its own doc
+      for live numbers.
+  S2. Server-made For You: a Worker builds the ranked candidate list
+      (FeedMix-style score) every few minutes and caches it (KV / Cache
+      API); the app pages through it -> Firestore reads ~0 for the feed,
+      and new videos reach everyone, not only the newest 100.
+  S3. Hot counters: one Firestore doc takes ~1 write/s sustained; a viral
+      post breaks that. Count views / likes in the Worker (D1 or Durable
+      Object) and write the totals to the post every ~minute.
+  S4. Video bandwidth: Bunny volume network for the Stream pull zone,
+      adaptive HLS (540p on mobile data), preload only the next 1-2 videos
+      (first seconds), a Bunny monthly bandwidth limit as a safety cap
+      (the Firebase budget alert is email only, it does NOT cap).
+  S5. Search D1 -> Meilisearch / Typesense (already "Stage 2").
+  S6. LiveKit live minutes + video moderation per upload: price them when
+      live / uploads grow.
+  Income needed before big scale (ads / creator gifts) - Ko decides.
 
 **Fly Lab (repo `fly-lab`, see its LAB_NOTES.md):** since 16 Nov 2026 the
 PHOTO / VIDEO EDITOR; live camera effects paused (R8 keep rules + CPU

@@ -154,6 +154,9 @@ class LaunchVideo {
     }).catchError((Object _) {});
   }
 
+  /// The video warmUp() started loading (Fly Mix puts it first).
+  static String? get warmedUrl => _warmed;
+
   /// Once Home knows its first videos: if the warmed-up video is not among
   /// them (newer posts came in), free it instead of keeping it loaded.
   static void settle(Set<String> topUrls) {

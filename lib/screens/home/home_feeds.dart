@@ -602,6 +602,8 @@ class _FeedItem {
   final String originalUserId;
   // 19 Nov 2026: only the number - who reacted is private.
   final int reactionCount;
+  // 21 Nov 2026: unique viewers (post.viewCount) - used by Fly Mix.
+  final int viewCount;
   final bool isRepost;
   final DateTime createdAt;
   final String? note;
@@ -640,6 +642,9 @@ class _FeedItem {
             ((doc.data() as Map<String, dynamic>)['reactionCount'] as num?)
                     ?.toInt() ??
                 0,
+        viewCount = ((doc.data() as Map<String, dynamic>)['viewCount'] as num?)
+                ?.toInt() ??
+            0,
         isRepost = false,
         createdAt =
             ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)
@@ -679,6 +684,7 @@ class _FeedItem {
         originalUserId =
             (doc.data() as Map<String, dynamic>)['originalUserId'] ?? '',
         reactionCount = 0,
+        viewCount = 0,
         isRepost = true,
         createdAt =
             ((doc.data() as Map<String, dynamic>)['createdAt'] as Timestamp?)

@@ -40,6 +40,7 @@ import 'circle_posts.dart';
 import 'local_video_cache.dart';
 import 'view_history.dart' show showPostViewersSheet;
 import 'window_tile.dart' show WatchedVideos;
+import 'feed_mix.dart';
 import 'live_sky.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
@@ -123,6 +124,61 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // "For You" (everything) vs "Following" (only people you follow)
   bool _followingOnly = false;
+
+  // 21 Nov 2026 - "Fly Mix" (feed_mix.dart): the For You order, decided
+  // ONCE per app run (feed keys), so the list never jumps around while
+  // watching (likes / views changing re-run build()). New videos from
+  // others go to the end; my own fresh upload goes first.
+  final List<String> _mixOrder = [];
+
+  List<_FeedItem> _mixed(List<_FeedItem> items) {
+    final String? me = FirebaseAuth.instance.currentUser?.uid;
+    final Set<String> watched = WatchedVideos.watched.value;
+    final String? launchUrl = LaunchVideo.warmedUrl;
+    final DateTime now = DateTime.now();
+    final Map<String, _FeedItem> byKey = {
+      for (final _FeedItem i in items) i.feedKey: i,
+    };
+    bool ownFresh(_FeedItem i) =>
+        !i.isRepost &&
+        i.originalUserId == me &&
+        now.difference(i.createdAt).inMinutes < 15;
+    double score(_FeedItem i) => FeedMix.score(
+          key: i.feedKey,
+          ageHours: now.difference(i.createdAt).inMinutes / 60,
+          reactions: i.reactionCount,
+          views: i.viewCount,
+          watched: watched.contains(i.postId),
+          pinned: ownFresh(i) ||
+              (_mixOrder.isEmpty &&
+                  launchUrl != null &&
+                  i.videoUrl == launchUrl),
+        );
+    List<_FeedItem> ranked(Iterable<_FeedItem> list) {
+      final List<_FeedItem> l = list.toList();
+      final Map<String, double> s = {for (final i in l) i.feedKey: score(i)};
+      l.sort((a, b) => s[b.feedKey]!.compareTo(s[a.feedKey]!));
+      return FeedMix.spreadCreators<_FeedItem>(
+          l, (i) => (i.isRepost ? i.sharedByUserId : i.originalUserId) ?? '');
+    }
+
+    if (_mixOrder.isEmpty) {
+      _mixOrder.addAll(ranked(items).map((i) => i.feedKey));
+    } else {
+      _mixOrder.removeWhere((k) => !byKey.containsKey(k));
+      final Set<String> known = _mixOrder.toSet();
+      for (final _FeedItem i
+          in ranked(items.where((i) => !known.contains(i.feedKey)))) {
+        if (ownFresh(i)) {
+          _mixOrder.insert(0, i.feedKey);
+        } else {
+          _mixOrder.add(i.feedKey);
+        }
+      }
+    }
+    return [for (final String k in _mixOrder) byKey[k]!];
+  }
+
   Set<String> _followingIds = {};
   StreamSubscription<QuerySnapshot>? _followingSub;
 
@@ -348,7 +404,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         }
                         return _followingIds.contains(item.originalUserId);
                       }).toList()
-                    : unreportedItems;
+                    // 21 Nov 2026: For You = Fly Mix (unseen first,
+                    // fresh + liked a bit higher, a different mix every
+                    // app start); Following stays newest first.
+                    : _mixed(unreportedItems);
 
                 // Every 5 real videos swiped, insert a YouTube-style "Shorts
                 // shelf" page: a horizontal strip previewing a few of the
@@ -366,7 +425,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 // a preload on every rebuild would download the video that
                 // is already playing a second time.)
                 if (visibleItems.isNotEmpty && !_followingOnly) {
-                  LaunchVideo.remember(visibleItems[0].videoUrl);
+                  // Fly Mix: next time start with a video I have NOT
+                  // watched yet (not today's first one) - it is put first
+                  // and loaded at once on the next launch.
+                  final Set<String> seenIds = WatchedVideos.watched.value;
+                  final _FeedItem nextFirst = visibleItems.skip(1).firstWhere(
+                      (i) => !seenIds.contains(i.postId),
+                      orElse: () => visibleItems[0]);
+                  LaunchVideo.remember(nextFirst.videoUrl);
                   LaunchVideo.settle({
                     for (final _FeedItem i in visibleItems.take(3)) i.videoUrl,
                   });
