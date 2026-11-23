@@ -39,8 +39,11 @@
 > files are not prefetched. **23 Nov night: PROD RELEASE DONE**
 > (`Fly-bn263272151.apk`) - every DEV item above is live on prod, prod
 > migrations ran, rules tightened on both projects (see the 23 Nov 22:53
-> entry). Next: Saved screen "Remove" count fix, then tighten saves
-> delete._
+> entry). 23 Nov 23:44: **Saved screen "Remove" now does saveCount -1**
+> (confirmed on DEV `FlyDev-bn263272312.apk`). Next: the same on PROD
+> (APK on A and B), then tighten the `saves` delete rule on both
+> projects, then re-run prod `/migrate-counts` to fix old too-high
+> counts._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2571,6 +2574,27 @@ OK). Play Console: Terms URL =
 > Stream pull zones (a limit hit DISABLES the zone until next month, so
 > set it well above normal use)._
 >
+> _23 Nov 2026 (23:44) - **Saved screen "Remove" fix (app part)**
+> (confirmed by Ko on DEV `FlyDev-bn263272312.apk`, 237 s; analyze "No
+> issues found"; 5c NEW `remove this video from Saved. Please try again.`
+> True / OLD `remove it right now. Please try again.` False; phone A:
+> save +1 -> Saved -> long-press Remove -> tile gone, count -1).
+> **`saved_videos_screen.dart`**: `_confirmUnsave` now calls new
+> `_removeFromSaved(postId, myId)` -> (1) ONE batch = delete
+> `posts/{id}/saves/{me}` + delete `users/{me}/saved/{id}` + post
+> `saveCount` increment(-1) (same as `_toggleSave`, rules
+> `saveCountStep`); (2) on `permission-denied` / `not-found` (post deleted
+> meanwhile): delete the two docs alone; (3) refused again (old data, my
+> saves doc missing): delete only `users/{me}/saved/{id}`. Snackbar text
+> changed to "Couldn't remove this video from Saved. Please try again."
+> No rules / Worker change yet. **STILL OPEN (in this order):** (a) prod
+> APK with this fix on A and B (and anyone else on prod); (b) tighten
+> `firestore.rules` saves delete on BOTH projects to `isMe(saverId) &&
+> (!exists(post) || postNumAfter(postId, 'saveCount') ==
+> postNumBefore(postId, 'saveCount') - 1)`; (c) re-run prod
+> `/migrate-counts` (safe to re-run) so counts left too high by the old
+> Remove are exact again._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -3898,7 +3922,9 @@ position)` — Android drops the video surface in the background and a
   Streams `users/{me}/saved` (ordered by `savedAt`), then fetches the real
   post docs in `whereIn` chunks of 10 (so deleted posts drop out and
   captions/effects are current). Tap → `SavedVideosFeedScreen`; long-press
-  → confirm → unsave (deletes both docs). Opened from the bookmark icon in
+  → confirm → unsave (`_removeFromSaved`, 23 Nov 2026: deletes both docs
+  + post `saveCount` -1 in one batch, falls back to the docs alone if the
+  post is gone). Opened from the bookmark icon in
   `profile_screen.dart`'s AppBar. Saves made before this build aren't in
   the list (only `posts/*/saves` had them) — re-save to show them.
 - `screens/public_profile_screen.dart` — another user's profile (since

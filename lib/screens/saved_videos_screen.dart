@@ -1,9 +1,14 @@
 // "Saved" - the signed-in user's own bookmarked videos, newest save first.
 //
-// Tapping the bookmark on a video (home_screen.dart's _toggleSave) writes
-// two docs in one batch: posts/{postId}/saves/{uid} (used for the count on
-// the video) and users/{uid}/saved/{postId} (this screen's list). This list
-// is private - Firestore rules let only its owner read it.
+// Tapping the bookmark on a video (home_video_post.dart's _toggleSave)
+// writes, in one batch: posts/{postId}/saves/{uid}, users/{uid}/saved/
+// {postId} (this screen's list) and the post's saveCount +1 (S1b, 22 Nov
+// 2026). This list is private - Firestore rules let only its owner read it.
+//
+// 24 Nov 2026: "Remove" (long-press a tile) now undoes all three in one
+// batch - the two docs AND saveCount -1 - like _toggleSave does. Before
+// this it deleted only the two docs, so the count on the video stayed 1
+// too high (bug since S1b). See _removeFromSaved for the fallbacks.
 //
 // The list only stores post ids; the real post docs are fetched fresh, so
 // a saved video shows its current caption/effects, and a video its owner
@@ -133,27 +138,65 @@ class _SavedVideosScreenState extends State<SavedVideosScreen> {
     );
     if (confirmed != true) return;
 
-    // Same two docs _toggleSave writes, removed together.
-    final batch = FirebaseFirestore.instance.batch();
-    batch.delete(FirebaseFirestore.instance
-        .collection('posts')
-        .doc(post.id)
-        .collection('saves')
-        .doc(myId));
-    batch.delete(FirebaseFirestore.instance
-        .collection('users')
-        .doc(myId)
-        .collection('saved')
-        .doc(post.id));
+    final bool removed = await _removeFromSaved(post.id, myId);
+    if (!removed && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                "Couldn't remove this video from Saved. Please try again.")),
+      );
+    }
+  }
+
+  // Removes one video from my Saved list. Returns false only if nothing
+  // could be removed.
+  //
+  // 1. Normal case: ONE batch = delete posts/{id}/saves/{me} + delete
+  //    users/{me}/saved/{id} + post saveCount -1 - exactly what
+  //    _toggleSave does on un-save (firestore.rules saveCountStep).
+  // 2. If the rules refuse that (the post was deleted meanwhile, so it
+  //    can't be updated): delete the two docs alone. The tightened saves
+  //    delete rule allows this only when the post no longer exists.
+  // 3. If that is refused too (old data: my saves doc is missing, so
+  //    there is no count to lower): delete only my list entry, so the
+  //    tile can still go away.
+  // Offline: commit() waits for the server, but the local cache already
+  // drops the tile, and Firestore sends the batch when back online.
+  Future<bool> _removeFromSaved(String postId, String myId) async {
+    final FirebaseFirestore db = FirebaseFirestore.instance;
+    final DocumentReference postRef = db.collection('posts').doc(postId);
+    final DocumentReference saveRef = postRef.collection('saves').doc(myId);
+    final DocumentReference myListRef =
+        db.collection('users').doc(myId).collection('saved').doc(postId);
+
     try {
+      final WriteBatch batch = db.batch();
+      batch.delete(saveRef);
+      batch.delete(myListRef);
+      batch.update(postRef, {'saveCount': FieldValue.increment(-1)});
       await batch.commit();
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text("Couldn't remove it right now. Please try again.")),
-        );
+      return true;
+    } on FirebaseException catch (e) {
+      if (e.code != 'permission-denied' && e.code != 'not-found') {
+        return false;
       }
+    } catch (_) {
+      return false;
+    }
+
+    try {
+      final WriteBatch batch = db.batch();
+      batch.delete(saveRef);
+      batch.delete(myListRef);
+      await batch.commit();
+      return true;
+    } catch (_) {}
+
+    try {
+      await myListRef.delete();
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
