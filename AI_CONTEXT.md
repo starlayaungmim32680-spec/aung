@@ -32,7 +32,11 @@
 > in PAGES with .get() (`feed_pager.dart`), no live list any more. **S1b
 > done on DEV** - comment / share / save numbers live on the post
 > (`commentCount` / `shareCount` / `saveCount`), lists no longer
-> downloaded; prod migration is in the PROD RELEASE CHECKLIST._
+> downloaded; prod migration is in the PROD RELEASE CHECKLIST. 23 Nov:
+> S1b rules + Worker ALSO deployed on prod (Ko). **S4 (app part) done on
+> DEV** - "data saver": on mobile data videos never pull 720p (capped
+> local HLS playlist WITH audio), only the next video is preloaded, story
+> files are not prefetched._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2484,7 +2488,46 @@ OK). Play Console: Terms URL =
 > notifications / moderation unchanged. Rules + Worker deployed on DEV
 > (fly-dev rules 22 Nov 00:46, fly-dev-worker 22 Nov); prod rules + prod
 > Worker: publish / deploy the same files (safe for old prod apps - only
-> new allowances), prod migration only at the prod release._
+> new allowances), prod migration only at the prod release. **23 Nov: Ko
+> published the S1b rules on aung-1756e and deployed the S1b Worker on
+> livekit-token-worker** (both projects equal again)._
+>
+> _23 Nov 2026 (21:38) - **Scale plan 2 step S4 (app part): "data saver"
+> on mobile data** (confirmed by Ko on DEV `FlyDev-bn263272124.apk`, 221
+> s; 5c NEW `fly_hls` True / OLD `Camera could not start: ` False; mobile
+> data: 10 videos play WITH sound, stories play; Wi-Fi unchanged). Why:
+> Bunny bills every byte served (only the part downloaded) and the player
+> picked 720p even on mobile data; 2 neighbours + the previous video were
+> preloaded; story bar prefetched whole ORIGINAL files (up to 6 people x 3,
+> 60 MB each). Bunny master `playlist.m3u8` (checked 23 Nov): AUDIO is its
+> own track `#EXT-X-MEDIA TYPE=AUDIO ... URI="audio/audio.m3u8"`, video
+> variants `360p/video.m3u8` (~1.2 Mbps), `480p/video.m3u8` (~1.7 Mbps),
+> `720p/video.m3u8` (~2.7 Mbps) - so **playing `480p/video.m3u8` directly
+> has NO SOUND** (first try, rejected). **`lib/network_service.dart`**:
+> `isOnMobileData` (connectivity has mobile and no wifi / ethernet;
+> `checkConnectivity()` at init + every change); new `dispose()` (also
+> clears 2 old unused_field warnings). NEW **`lib/screens/data_saver_hls.dart`**
+> `DataSaverHls`: on mobile data `fileFor(url)` fetches the master
+> playlist once (6 s timeout), `cappedMaster()` drops `#EXT-X-STREAM-INF`
+> variants whose SHORTER side > 480 (portrait-safe) and
+> `#EXT-X-I-FRAME-STREAM-INF`, makes every link absolute (variants +
+> `URI="..."` of `#EXT-X-MEDIA`), writes `<temp>/fly_hls/<guid>.m3u8`;
+> `controllerFor(url)` = `VideoPlayerController.file(capped)` or the normal
+> `networkUrl(playableVideoUrl(url))`; null (Wi-Fi, not Bunny, fetch failed,
+> nothing <= 480p, fresh upload not encoded) -> normal url; `isCapped()` /
+> `markFailed()` - a capped file that fails to play -> `_VideoPostItem`
+> retries at once with the normal url (that video, this run). Used by
+> `VideoPreloadCache.preload` and `_initializeVideo` (not for the Early-Play
+> `original` file). **`video_preload_cache.dart`**: `preload(url, {extra})`
+> - `extra: true` (the one after next, the previous one, initial index 2)
+> is skipped on mobile data; call sites marked in `home_screen.dart` and
+> `home_feeds.dart` (FullScreen, Shorts, UserVideoFeed, SingleVideoScreen).
+> **`story_file_prefetch.dart`**: `prefetch()` returns on mobile data
+> (stories stream instead; `StoryVideoPrefetch` warm-up unchanged).
+> `media_utils.dart` unchanged (the first 480p-url try was reverted). Not
+> done yet (Bunny dashboard, Ko): monthly bandwidth limit on both Stream
+> pull zones as a safety cap; Volume tier only after checking its PoPs
+> near Malaysia / Myanmar. No rules / Worker change._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
@@ -4395,7 +4438,8 @@ Workers, D1, storage are small IF the reads are fixed. Steps:
   S3. Hot counters: one Firestore doc takes ~1 write/s sustained; a viral
       post breaks that. Count views / likes in the Worker (D1 or Durable
       Object) and write the totals to the post every ~minute.
-  S4. Video bandwidth: Bunny volume network for the Stream pull zone,
+  S4. **App part DONE on DEV 23 Nov 2026** (data saver, see the 23 Nov
+      21:38 entry); still open: Bunny dashboard parts. Was: Bunny volume network for the Stream pull zone,
       adaptive HLS (540p on mobile data), preload only the next 1-2 videos
       (first seconds), a Bunny monthly bandwidth limit as a safety cap
       (the Firebase budget alert is email only, it does NOT cap).

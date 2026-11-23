@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
-import 'media_utils.dart';
+import '../network_service.dart';
+import 'data_saver_hls.dart';
 
 // A tiny shared cache that lets a feed screen start initializing the NEXT
 // video's controller in the background while the CURRENT video is still
@@ -34,7 +35,12 @@ class VideoPreloadCache {
   /// Starts initializing [url] in the background if it isn't already
   /// cached or in progress. Safe to call repeatedly - it's a no-op once
   /// a preload for this url is already underway or done.
-  static Future<void> preload(String url) async {
+  ///
+  /// 23 Nov 2026 (S4 "data saver"): [extra] = a nice-to-have neighbour
+  /// (the one AFTER the next, or the previous one). On mobile data those
+  /// are skipped - only the very next video is fetched ahead.
+  static Future<void> preload(String url, {bool extra = false}) async {
+    if (extra && NetworkService.instance.isOnMobileData) return;
     if (url.isEmpty || _ready.containsKey(url)) return;
     if (_pending.containsKey(url)) {
       // Wanted again while loading: keep it.
@@ -47,8 +53,8 @@ class VideoPreloadCache {
     _pending[url] = done.future;
     VideoPlayerController? controller;
     try {
-      controller =
-          VideoPlayerController.networkUrl(Uri.parse(playableVideoUrl(url)));
+      // S4: 480p-capped local playlist on mobile data (data_saver_hls.dart).
+      controller = await DataSaverHls.controllerFor(url);
       // Without a timeout, a lost connection would leave this url stuck in
       // _pending forever - the preload guard at the top of this function
       // would then skip it on every future call, so it could never be

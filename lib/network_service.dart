@@ -25,6 +25,21 @@ class NetworkService {
   final ValueNotifier<NetworkStatus> status =
       ValueNotifier<NetworkStatus>(NetworkStatus.good);
 
+  // 23 Nov 2026 (Scale plan 2, S4 "data saver"): true while the phone is
+  // on MOBILE DATA only (no Wi-Fi / ethernet). Videos then play the 480p
+  // rendition and fewer neighbours are preloaded (media_utils.dart,
+  // video_preload_cache.dart, story_file_prefetch.dart) - less to
+  // download for the person's data plan AND for Fly's CDN bill.
+  bool _onMobileData = false;
+  bool get isOnMobileData => _onMobileData;
+
+  void _applyConnectivity(List<ConnectivityResult> results) {
+    final bool hasUnmetered = results.contains(ConnectivityResult.wifi) ||
+        results.contains(ConnectivityResult.ethernet);
+    _onMobileData =
+        !hasUnmetered && results.contains(ConnectivityResult.mobile);
+  }
+
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   Timer? _probeTimer;
   bool _initialized = false;
@@ -40,7 +55,14 @@ class NetworkService {
     if (_initialized) return;
     _initialized = true;
 
+    // S4: know Wi-Fi vs mobile data from the start, not only after the
+    // first change event.
+    Connectivity()
+        .checkConnectivity()
+        .then(_applyConnectivity)
+        .catchError((_) {});
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
+      _applyConnectivity(results);
       if (results.every((r) => r == ConnectivityResult.none)) {
         status.value = NetworkStatus.offline;
       } else {
@@ -76,6 +98,17 @@ class NetworkService {
       stopwatch.stop();
       status.value = NetworkStatus.offline;
     }
+  }
+
+  // Stops listening (tests / a future sign-out flow). Fly keeps the
+  // service for the whole run, so nothing calls this today - it also
+  // keeps the two fields above "used" for the analyzer.
+  void dispose() {
+    _connectivitySub?.cancel();
+    _probeTimer?.cancel();
+    _connectivitySub = null;
+    _probeTimer = null;
+    _initialized = false;
   }
 
   // True when the app should behave conservatively - lower video

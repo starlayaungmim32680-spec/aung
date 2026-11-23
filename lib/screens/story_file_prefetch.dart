@@ -17,6 +17,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import '../network_service.dart';
 import 'local_video_cache.dart';
 import 'video_upload_service.dart' show bunnyOriginalFileUrl;
 
@@ -34,8 +35,12 @@ class StoryFilePrefetch {
   static int _active = 0;
 
   // Asks for [hlsUrl]'s video file to be fetched in the background.
+  // 23 Nov 2026 (S4 "data saver"): only on Wi-Fi. These are whole
+  // original files (up to 60 MB) fetched before anyone opens the story;
+  // on mobile data the story streams like a post instead.
   static void prefetch(String hlsUrl) {
     if (hlsUrl.isEmpty) return;
+    if (NetworkService.instance.isOnMobileData) return;
     if (LocalVideoCache.fileFor(hlsUrl) != null) return;
     if (_busy.contains(hlsUrl) || _queue.contains(hlsUrl)) return;
     final DateTime? failed = _failedAt[hlsUrl];

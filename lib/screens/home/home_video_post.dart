@@ -537,8 +537,12 @@ class _VideoPostItemState extends State<_VideoPostItem>
         if (cachedFile != null && await cachedFile.exists()) {
           controller = VideoPlayerController.file(cachedFile);
           playingFromDisk = true;
-        } else {
+        } else if (originalUrl != null) {
           controller = VideoPlayerController.networkUrl(Uri.parse(playUrl));
+        } else {
+          // 23 Nov 2026 (S4): on mobile data, the 480p-capped playlist
+          // (with its audio track) - see data_saver_hls.dart.
+          controller = await DataSaverHls.controllerFor(widget.videoUrl);
         }
         await controller.initialize().timeout(_initTimeout);
       }
@@ -585,8 +589,19 @@ class _VideoPostItemState extends State<_VideoPostItem>
         controller.dispose();
       }
     } catch (_) {
+      final bool wasCapped =
+          controller != null && DataSaverHls.isCapped(controller);
       controller?.dispose();
       if (!mounted) return;
+
+      // 23 Nov 2026 (S4 "data saver"): the 480p-capped local playlist used
+      // on mobile data did not play -> remember it and try the normal
+      // playlist straight away.
+      if (wasCapped) {
+        DataSaverHls.markFailed(widget.videoUrl);
+        _initializeVideo(startAt: startAt, autoPlay: autoPlay);
+        return;
+      }
 
       // Freshly uploaded and Bunny is still encoding it. First try the
       // original file right away (Early-Play) so nobody has to wait.

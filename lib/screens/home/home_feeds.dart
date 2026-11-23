@@ -90,11 +90,13 @@ class _FullScreenVideoScreenState extends State<FullScreenVideoScreen> {
                 // from ever catching up to an unstarted download.
                 if (index + 2 < widget.items.length) {
                   keep.add(widget.items[index + 2].videoUrl);
-                  VideoPreloadCache.preload(widget.items[index + 2].videoUrl);
+                  VideoPreloadCache.preload(widget.items[index + 2].videoUrl,
+                      extra: true);
                 }
                 if (index - 1 >= 0) {
                   keep.add(widget.items[index - 1].videoUrl);
-                  VideoPreloadCache.preload(widget.items[index - 1].videoUrl);
+                  VideoPreloadCache.preload(widget.items[index - 1].videoUrl,
+                      extra: true);
                 }
                 VideoPreloadCache.evictExcept(keep);
               },
@@ -289,7 +291,8 @@ class _ShortsScreenState extends State<ShortsScreen> {
                 VideoPreloadCache.preload(visibleItems[1].videoUrl);
               }
               if (visibleItems.length > 2) {
-                VideoPreloadCache.preload(visibleItems[2].videoUrl);
+                VideoPreloadCache.preload(visibleItems[2].videoUrl,
+                    extra: true);
               }
 
               if (visibleItems.isEmpty) {
@@ -325,13 +328,13 @@ class _ShortsScreenState extends State<ShortsScreen> {
                           final String nextNextUrl =
                               visibleItems[index + 2].videoUrl;
                           keep.add(nextNextUrl);
-                          VideoPreloadCache.preload(nextNextUrl);
+                          VideoPreloadCache.preload(nextNextUrl, extra: true);
                         }
                         if (index - 1 >= 0) {
                           final String prevUrl =
                               visibleItems[index - 1].videoUrl;
                           keep.add(prevUrl);
-                          VideoPreloadCache.preload(prevUrl);
+                          VideoPreloadCache.preload(prevUrl, extra: true);
                         }
                         VideoPreloadCache.evictExcept(keep);
                       },
@@ -801,7 +804,7 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
           if (posts.length > 2) {
             final String nextNextUrl =
                 (posts[2].data() as Map<String, dynamic>)['videoUrl'] ?? '';
-            VideoPreloadCache.preload(nextNextUrl);
+            VideoPreloadCache.preload(nextNextUrl, extra: true);
           }
 
           return Stack(
@@ -826,12 +829,12 @@ class _UserVideoFeedScreenState extends State<UserVideoFeedScreen> {
                   if (index + 2 < posts.length) {
                     final String nextNextUrl = urlOf(index + 2);
                     keep.add(nextNextUrl);
-                    VideoPreloadCache.preload(nextNextUrl);
+                    VideoPreloadCache.preload(nextNextUrl, extra: true);
                   }
                   if (index - 1 >= 0) {
                     final String prevUrl = urlOf(index - 1);
                     keep.add(prevUrl);
-                    VideoPreloadCache.preload(prevUrl);
+                    VideoPreloadCache.preload(prevUrl, extra: true);
                   }
                   VideoPreloadCache.evictExcept(keep);
                 },
@@ -1193,7 +1196,7 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
         : (docs[i - 1].data()['videoUrl'] as String?) ?? '';
 
     if (docs.isNotEmpty) VideoPreloadCache.preload(urlOf(1));
-    if (docs.length > 1) VideoPreloadCache.preload(urlOf(2));
+    if (docs.length > 1) VideoPreloadCache.preload(urlOf(2), extra: true);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -1219,12 +1222,12 @@ class _SingleVideoScreenState extends State<SingleVideoScreen> {
                 if (index + 2 < total) {
                   final String nextNextUrl = urlOf(index + 2);
                   keep.add(nextNextUrl);
-                  VideoPreloadCache.preload(nextNextUrl);
+                  VideoPreloadCache.preload(nextNextUrl, extra: true);
                 }
                 if (index - 1 >= 0) {
                   final String prevUrl = urlOf(index - 1);
                   keep.add(prevUrl);
-                  VideoPreloadCache.preload(prevUrl);
+                  VideoPreloadCache.preload(prevUrl, extra: true);
                 }
                 VideoPreloadCache.evictExcept(keep);
               },

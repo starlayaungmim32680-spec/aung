@@ -30,6 +30,7 @@ import 'text_overlay_style.dart';
 import 'gifting.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'media_utils.dart';
+import 'data_saver_hls.dart';
 import 'moderation_service.dart';
 import 'video_preload_cache.dart';
 import 'video_upload_service.dart' show isVideoVisibleTo;
@@ -511,7 +512,7 @@ class _HomeScreenState extends State<HomeScreen> {
             VideoPreloadCache.preload(visibleItems[1].videoUrl);
           }
           if (visibleItems.length > 2) {
-            VideoPreloadCache.preload(visibleItems[2].videoUrl);
+            VideoPreloadCache.preload(visibleItems[2].videoUrl, extra: true);
           }
 
           if (feedItems.isEmpty) {
@@ -680,12 +681,14 @@ class _HomeScreenState extends State<HomeScreen> {
                             final _FeedItem? nextNext = slots.itemAt(index + 2);
                             if (nextNext != null) {
                               keep.add(nextNext.videoUrl);
-                              VideoPreloadCache.preload(nextNext.videoUrl);
+                              VideoPreloadCache.preload(nextNext.videoUrl,
+                                  extra: true);
                             }
                             final _FeedItem? prev = slots.itemAt(index - 1);
                             if (prev != null) {
                               keep.add(prev.videoUrl);
-                              VideoPreloadCache.preload(prev.videoUrl);
+                              VideoPreloadCache.preload(prev.videoUrl,
+                                  extra: true);
                             }
                             VideoPreloadCache.evictExcept(keep);
                           },
