@@ -214,6 +214,18 @@ service cloud.firestore {
         .data.get('reactionCount', 0);
     }
 
+    // 23 Nov 2026 (prod release, checklist (e)): any count field of a
+    // post before / after this write - views / saves / shares / comments
+    // docs must move their count in the same batch.
+    function postNumBefore(postId, field) {
+      return get(/databases/$(database)/documents/posts/$(postId))
+        .data.get(field, 0);
+    }
+    function postNumAfter(postId, field) {
+      return getAfter(/databases/$(database)/documents/posts/$(postId))
+        .data.get(field, 0);
+    }
+
     function isPostOwner(postId) {
       return signedIn()
         && get(/databases/$(database)/documents/posts/$(postId))
@@ -356,10 +368,9 @@ service cloud.firestore {
           && ((resource.data.get('hiddenByReports', false) != true
               && resource.data.get('limitedByReports', false) != true)
             || !changedKeys().hasAny(['audience'])))
-        // Old app versions: my entry in the post's `reactions` map.
-        // TRANSITION ONLY - remove this line when every phone runs the
-        // private-reactions version (prod release + force update).
-        || (canSeePost(resource.data) && onlyMyReaction())
+        // (23 Nov 2026 prod release: the TRANSITION line for old apps'
+        // `reactions` map on posts is gone - onlyMyReaction() stays for
+        // comment / reply reactions.)
         // 19 Nov 2026: private reactions - only the count, by exactly 1.
         || (canSeePost(resource.data) && reactionCountStep(postId))
         // 19 Nov 2026: view count - +1 with my first view doc.
@@ -391,21 +402,39 @@ service cloud.firestore {
       }
 
       // views / saves / shares: one doc per user, doc id = that user's uid
+      // 23 Nov 2026 (prod release, checklist (e)): nobody lists these any
+      // more - the app reads only MY doc and shows the counts on the post;
+      // "who viewed" comes only from the Worker's /post-viewers (opt-in
+      // View history), so not even the owner may list views directly.
+      // A new doc must raise the post's count by 1 in the same batch.
       match /views/{viewerId} {
-        // TRANSITION ONLY: old app versions count views by reading the
-        // whole list. At the prod release of the viewCount version this
-        // becomes owner / me only (see AI_CONTEXT 19 Nov "views").
-        allow read: if signedIn();
-        allow create, update: if isMe(viewerId);
+        allow get: if isMe(viewerId);
+        allow list: if false;
+        allow create: if isMe(viewerId)
+          && postNumAfter(postId, 'viewCount')
+               == postNumBefore(postId, 'viewCount') + 1;
+        allow update: if isMe(viewerId);
         allow delete: if false;
       }
       match /saves/{saverId} {
-        allow read: if signedIn();
-        allow create, update, delete: if isMe(saverId);
+        allow get: if isMe(saverId) || isPostOwner(postId);
+        allow list: if false;
+        allow create: if isMe(saverId)
+          && postNumAfter(postId, 'saveCount')
+               == postNumBefore(postId, 'saveCount') + 1;
+        allow update: if isMe(saverId);
+        // STILL OPEN (23 Nov 2026): the Saved screen's "Remove" deletes
+        // without the count -1 (fixed in the next app version) - tighten
+        // to the -1 check after that version is on every phone.
+        allow delete: if isMe(saverId);
       }
       match /shares/{sharerId} {
-        allow read: if signedIn();
-        allow create, update: if isMe(sharerId);
+        allow get: if isMe(sharerId) || isPostOwner(postId);
+        allow list: if false;
+        allow create: if isMe(sharerId)
+          && postNumAfter(postId, 'shareCount')
+               == postNumBefore(postId, 'shareCount') + 1;
+        allow update: if isMe(sharerId);
         allow delete: if false;
       }
 
@@ -415,11 +444,15 @@ service cloud.firestore {
       // those two fields, so they can't undo the owner's hide.
       match /comments/{commentId} {
         allow read: if canSeePostId(postId);
+        // 23 Nov 2026 (prod release): a top-level comment raises / lowers
+        // the post's commentCount by 1 in the same batch (S1b).
         allow create: if signedIn()
           && request.resource.data.userId == request.auth.uid
           && !request.resource.data.keys().hasAny(['hidden', 'hiddenAt'])
           && !request.resource.data.keys().hasAny(reportFields())
-          && canSeePostId(postId);
+          && canSeePostId(postId)
+          && postNumAfter(postId, 'commentCount')
+               == postNumBefore(postId, 'commentCount') + 1;
         allow update: if signedIn() && (
           (resource.data.userId == request.auth.uid
             && !changedKeys().hasAny(['hidden', 'hiddenAt'])
@@ -431,7 +464,8 @@ service cloud.firestore {
         );
         allow delete: if signedIn() && (
           resource.data.userId == request.auth.uid || isPostOwner(postId)
-        );
+        ) && postNumAfter(postId, 'commentCount')
+               == postNumBefore(postId, 'commentCount') - 1;
 
         match /replies/{replyId} {
           allow read: if canSeePostId(postId);

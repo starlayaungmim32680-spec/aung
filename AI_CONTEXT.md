@@ -36,7 +36,11 @@
 > S1b rules + Worker ALSO deployed on prod (Ko). **S4 (app part) done on
 > DEV** - "data saver": on mobile data videos never pull 720p (capped
 > local HLS playlist WITH audio), only the next video is preloaded, story
-> files are not prefetched._
+> files are not prefetched. **23 Nov night: PROD RELEASE DONE**
+> (`Fly-bn263272151.apk`) - every DEV item above is live on prod, prod
+> migrations ran, rules tightened on both projects (see the 23 Nov 22:53
+> entry). Next: Saved screen "Remove" count fix, then tighten saves
+> delete._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2204,7 +2208,8 @@ OK). Play Console: Terms URL =
 > `post.reactionCount` (Orbit Ring too). `_PostReactorsSheet` now streams
 > `posts/{id}/reactions` ordered by createdAt desc. Comments / replies /
 > stories / live keep their own reactions as before.
-> **PROD RELEASE CHECKLIST (do in this order, same day):** (a) build the
+> **(DONE 23 Nov 2026 - see the 23 Nov 22:53 entry; (d) skipped on
+> purpose, no Play release yet.)** **PROD RELEASE CHECKLIST (do in this order, same day):** (a) build the
 > prod APK (5a-5e) with Fly Dock + who-reacted + private reactions + view
 > count (20 Nov entry); (b) run
 > `https://livekit-token-worker.chakaboycom.workers.dev/migrate-reactions?token=...`
@@ -2528,6 +2533,43 @@ OK). Play Console: Terms URL =
 > done yet (Bunny dashboard, Ko): monthly bandwidth limit on both Stream
 > pull zones as a safety cap; Volume tier only after checking its PoPs
 > near Malaysia / Myanmar. No rules / Worker change._
+>
+> _23 Nov 2026 (22:53) - **PROD RELEASE of everything since 19 Nov**
+> (confirmed by Ko on phones A and B): Fly Dock + Wing F, who-reacted,
+> private reactions, viewCount, View history, Instant Start, Window seats
+> + passport stamp, Your sky, Fly Mix, S1 paging, S1b counts, S4 data
+> saver. (a) `Fly-bn263272151.apk` (`--flavor prod`, 212 s; 5c `fly_hls`
+> True / `Camera could not start: ` False), installed as an Update on A
+> and B. (b) prod Worker migrations, all "All done", project aung-1756e:
+> `/migrate-reactions` 63 posts checked, 40 moved, 64 reactions;
+> `/migrate-views` 63 posts, 211 views; `/migrate-counts` 63 posts, 18
+> comments, 5 shares, 7 saves. (c) A/B test OK (likes kept + +-1,
+> who-reacted, views, comments, saves, Dock / sky / windows, Fly Mix,
+> pull-to-refresh, View history). **(d) force update SKIPPED on
+> purpose:** there is no Play release, so `MIN_APP_BUILD` would send old
+> apps to a Play page that has no Fly = locked out; prod Worker still has
+> no MIN / LATEST variables. Anyone else on an old prod APK must get
+> `Fly-bn263272151.apk` by hand (old apps can no longer like / comment /
+> count views after (e)). (e) **`firestore.rules` tightened and
+> published on BOTH projects:** posts update no longer has the TRANSITION
+> `onlyMyReaction()` line (the function stays for comment / reply
+> reactions); new helpers `postNumBefore` / `postNumAfter(postId, field)`;
+> `views`: get only me, list false, create needs viewCount +1 in the same
+> batch; `saves` / `shares`: get me or the post owner, list false, create
+> needs saveCount / shareCount +1; top-level `comments` create needs
+> commentCount +1 and delete -1 (replies unchanged). **STILL OPEN:**
+> `saves` delete is still just `isMe` - `saved_videos_screen.dart`
+> "Remove" deletes `posts/{id}/saves/{me}` + `users/{me}/saved/{id}`
+> WITHOUT saveCount -1 (bug since S1b: the count stays 1 too high). Fix
+> the app (post update -1 in the batch; if the post is gone, delete the
+> two docs alone), ship it, then require `postNumAfter(postId,
+> 'saveCount') == postNumBefore(...) - 1 || !exists(post)` on saves
+> delete. **Bunny (23 Nov):** balance $7.80, auto-recharge OFF, no card ->
+> the most Bunny can ever charge is the balance, so no bandwidth limit is
+> needed now; at $0 Bunny stops serving = videos stop -> top up below ~$2.
+> Before real users: auto-recharge + a monthly bandwidth limit on both
+> Stream pull zones (a limit hit DISABLES the zone until next month, so
+> set it well above normal use)._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
