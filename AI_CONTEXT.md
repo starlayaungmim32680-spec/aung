@@ -43,7 +43,9 @@
 > saveCount -1, on DEV and PROD** (`Fly-bn263272357.apk` on A and B),
 > `saves` delete rule tightened on BOTH projects, prod `/migrate-counts`
 > re-run (see the 24 Nov 00:45 entry). Nothing from the 23 Nov prod
-> release is open any more._
+> release is open any more. 24 Nov 01:06: Bunny checked - prod Stream
+> library is ALREADY on the High Volume tier, no card / no limit for now
+> (see the 24 Nov 01:06 entry). Next: Scale plan 2 step S2._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2612,6 +2614,24 @@ OK). Play Console: Terms URL =
 > (c) prod `/migrate-counts` re-run, "All done": aung-1756e, 65 posts, 19
 > comments, 5 shares, 7 saves. No Worker change._
 >
+> _24 Nov 2026 (01:06) - **Bunny dashboard check (S4 dashboard part,
+> nothing changed).** Prod Stream library `fly-videos` (756617), "Usage
+> this month": 54 videos, bandwidth 4 GB, storage 1 GB; balance $7.72.
+> Stream -> fly-videos -> **Delivery**: the library is ALREADY on the
+> **High Volume Tier** (from $0.005/GB; still selected after an F5, so it
+> is the saved setting - the orange Confirm button is always shown, do
+> NOT press it without a reason). Videos played fine on A and B in
+> Malaysia on this tier, so it stays. That Delivery page has only tier +
+> routing filters (EEA / EU only - leave OFF, Fly is global); **no monthly
+> bandwidth limit there**, and Stream pull zones are hidden from Delivery
+> -> CDN (that list shows only the Storage zone `fly-images-aungdev756617`,
+> 129 MB, $0). **Decision (Ko):** no card on Bunny for now - the balance is
+> the spending cap, so no bandwidth limit is needed; top up below ~$2.
+> Before the Play release: card + auto-recharge + a bandwidth limit
+> together (ask Bunny support where the Stream pull zone limit is).
+> `fly-dev` library tier not checked. Biggest Bunny cost is Premium
+> Encoding (~$0.05 per video minute), not bandwidth._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -4524,7 +4544,8 @@ Workers, D1, storage are small IF the reads are fixed. Steps:
       post breaks that. Count views / likes in the Worker (D1 or Durable
       Object) and write the totals to the post every ~minute.
   S4. **App part DONE on DEV 23 Nov 2026** (data saver, see the 23 Nov
-      21:38 entry); still open: Bunny dashboard parts. Was: Bunny volume network for the Stream pull zone,
+      21:38 entry); Bunny dashboard checked 24 Nov 2026 01:06 (prod already
+      High Volume tier; card + limit only before the Play release). Was: Bunny volume network for the Stream pull zone,
       adaptive HLS (540p on mobile data), preload only the next 1-2 videos
       (first seconds), a Bunny monthly bandwidth limit as a safety cap
       (the Firebase budget alert is email only, it does NOT cap).
