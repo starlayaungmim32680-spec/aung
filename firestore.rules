@@ -423,10 +423,14 @@ service cloud.firestore {
           && postNumAfter(postId, 'saveCount')
                == postNumBefore(postId, 'saveCount') + 1;
         allow update: if isMe(saverId);
-        // STILL OPEN (23 Nov 2026): the Saved screen's "Remove" deletes
-        // without the count -1 (fixed in the next app version) - tighten
-        // to the -1 check after that version is on every phone.
-        allow delete: if isMe(saverId);
+        // 24 Nov 2026: un-saving must lower the post's saveCount by 1 in
+        // the same batch (home_video_post.dart _toggleSave and, since
+        // Fly-bn263272357, saved_videos_screen.dart _removeFromSaved).
+        // Only if the post itself is gone may the saves doc go alone.
+        allow delete: if isMe(saverId)
+          && (!exists(/databases/$(database)/documents/posts/$(postId))
+            || postNumAfter(postId, 'saveCount')
+                 == postNumBefore(postId, 'saveCount') - 1);
       }
       match /shares/{sharerId} {
         allow get: if isMe(sharerId) || isPostOwner(postId);

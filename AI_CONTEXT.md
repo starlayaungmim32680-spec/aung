@@ -39,11 +39,11 @@
 > files are not prefetched. **23 Nov night: PROD RELEASE DONE**
 > (`Fly-bn263272151.apk`) - every DEV item above is live on prod, prod
 > migrations ran, rules tightened on both projects (see the 23 Nov 22:53
-> entry). 23 Nov 23:44: **Saved screen "Remove" now does saveCount -1**
-> (confirmed on DEV `FlyDev-bn263272312.apk`). Next: the same on PROD
-> (APK on A and B), then tighten the `saves` delete rule on both
-> projects, then re-run prod `/migrate-counts` to fix old too-high
-> counts._
+> entry). 23 Nov 23:44 - 24 Nov 00:45: **Saved screen "Remove" now does
+> saveCount -1, on DEV and PROD** (`Fly-bn263272357.apk` on A and B),
+> `saves` delete rule tightened on BOTH projects, prod `/migrate-counts`
+> re-run (see the 24 Nov 00:45 entry). Nothing from the 23 Nov prod
+> release is open any more._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2593,7 +2593,24 @@ OK). Play Console: Terms URL =
 > (!exists(post) || postNumAfter(postId, 'saveCount') ==
 > postNumBefore(postId, 'saveCount') - 1)`; (c) re-run prod
 > `/migrate-counts` (safe to re-run) so counts left too high by the old
-> Remove are exact again._
+> Remove are exact again. **All three DONE 24 Nov 00:45 - next entry.**_
+>
+> _24 Nov 2026 (00:45) - **Saved "Remove" fix on PROD + saves delete rule
+> tightened** (confirmed by Ko on phones A and B). (a) `Fly-bn263272357.apk`
+> (`--flavor prod`, 243 s; 5a needed one `Start-Sleep 5` retry because
+> `.dex` files were still held after killing Java; 5c NEW `remove this
+> video from Saved. Please try again.` True / OLD `remove it right now.
+> Please try again.` False), installed as an Update on A and B; save +1,
+> un-save -1, Saved -> Remove -> tile gone, count -1 (also recorded on
+> DEV). (b) **`firestore.rules`** `posts/{postId}/saves/{saverId}`:
+> `allow delete: if isMe(saverId) && (!exists(posts/{postId}) ||
+> postNumAfter(postId, 'saveCount') == postNumBefore(postId, 'saveCount')
+> - 1)` - live rules were first checked equal to the repo copy (`git diff
+> --ignore-cr-at-eol --stat` empty), then published on fly-dev-58b29 AND
+> aung-1756e. Old apps that un-save without the count are now refused
+> (only A / B use prod; anyone else needs `Fly-bn263272357.apk` by hand).
+> (c) prod `/migrate-counts` re-run, "All done": aung-1756e, 65 posts, 19
+> comments, 5 shares, 7 saves. No Worker change._
 >
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
