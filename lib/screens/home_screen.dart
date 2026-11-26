@@ -43,6 +43,7 @@ import 'view_history.dart' show showPostViewersSheet;
 import 'window_tile.dart' show WatchedVideos;
 import 'feed_mix.dart';
 import 'feed_pager.dart';
+import 'server_feed.dart';
 import 'live_sky.dart';
 import 'call_push_service.dart' show sendActivityPush;
 import '../block_service.dart';
@@ -133,6 +134,21 @@ class _HomeScreenState extends State<HomeScreen> {
   // Created ONCE here, not inside build().
   late final FeedPager _posts;
   late final FeedPager _reposts;
+  // 25 Nov 2026 (S2, server_feed.dart): For You comes from the Worker's
+  // ready-made list (0 Firestore reads). The pages above load only when
+  // they are needed: the Following tab, or the server list failed.
+  final ServerFeed _server = ServerFeed();
+  bool _pagersStarted = false;
+  void _startPagers() {
+    if (_pagersStarted) return;
+    _pagersStarted = true;
+    _posts.refresh();
+    _reposts.refresh();
+  }
+
+  // For You from the server list (until it fails); Following always from
+  // the Firestore pages.
+  bool get _fromServer => !_followingOnly && !_server.failed;
   // Pages loaded on their own because too few videos were left to show
   // (Following tab, many blocked) - capped so it never walks the whole
   // database. Reset on refresh / tab change.
@@ -242,19 +258,24 @@ class _HomeScreenState extends State<HomeScreen> {
     // createdAt Desc (AI_CONTEXT). Private posts of my circle come from
     // _circle instead.
     // 21 Nov 2026 (S1): same queries, now in pages (feed_pager.dart).
+    // 25 Nov 2026 (S2): not loaded here any more - see _startPagers.
     _posts = FeedPager(
       FirebaseFirestore.instance
           .collection('posts')
           .where('audience', isEqualTo: 'everyone')
           .orderBy('createdAt', descending: true),
       pageSize: kFeedPostsPage,
-    )..refresh();
+    );
     _reposts = FeedPager(
       FirebaseFirestore.instance
           .collection('reposts')
           .orderBy('createdAt', descending: true),
       pageSize: kFeedRepostsPage,
-    )..refresh();
+    );
+    // S2: For You = the server list; only if that fails, the pages.
+    _server.refresh().then((_) {
+      if (mounted && _server.failed) _startPagers();
+    });
     _circle.start();
 
     // Keep the set of followed accounts up to date so the Following
@@ -284,6 +305,7 @@ class _HomeScreenState extends State<HomeScreen> {
     BlockService.instance.hidden.removeListener(_onBlockedChanged);
     ReportedPosts.instance.loaded.removeListener(_refreshHiddenReported);
     _circle.dispose();
+    _server.dispose();
     _posts.dispose();
     _reposts.dispose();
     _pageController.dispose();
@@ -307,16 +329,25 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // Next page of both lists (S1) - called near the end of the feed.
+  // S2: the server list comes whole (~200 videos), no pages.
   void _loadMore() {
+    if (_fromServer) return;
     _posts.loadMore();
     _reposts.loadMore();
   }
 
   // Pull-to-refresh at the first video (S1): newest posts again and a NEW
   // Fly Mix order; what I reported since is left out.
+  // S2: For You asks the Worker again (the pages only if already in use).
   Future<void> _refresh() async {
-    await Future.wait([_posts.refresh(), _reposts.refresh()]);
+    await Future.wait([
+      // 26 Nov 2026: fresh - the Worker rebuilds first if needed, so a
+      // video someone just posted is in the new list.
+      if (!_followingOnly) _server.refresh(fresh: true),
+      if (_pagersStarted) ...[_posts.refresh(), _reposts.refresh()],
+    ]);
     if (!mounted) return;
+    if (_server.failed) _startPagers();
     setState(() {
       _mixOrder.clear();
       _autoPages = 0;
@@ -328,6 +359,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // Too few videos to swipe through (Following tab, blocked accounts):
   // fetch another page on our own, at most [_maxAutoPages] times.
   void _maybeAutoLoad(int visibleCount) {
+    if (_fromServer || !_pagersStarted) return;
     if (visibleCount >= 2 * kFeedLoadMoreAhead) return;
     if (_autoPages >= _maxAutoPages) return;
     if (_posts.isLoading || _reposts.isLoading) return;
@@ -355,6 +387,8 @@ class _HomeScreenState extends State<HomeScreen> {
     return GestureDetector(
       onTap: () {
         if (_followingOnly == followingTab) return;
+        // S2: the Following tab is filtered from the Firestore pages.
+        if (followingTab) _startPagers();
         setState(() {
           _followingOnly = followingTab;
           _autoPages = 0;
@@ -402,29 +436,59 @@ class _HomeScreenState extends State<HomeScreen> {
           _reposts.docs,
           _posts.loaded,
           _reposts.loaded,
+          _server.items,
+          _server.loaded,
           homeDeletedPosts,
         ]),
         builder: (context, _) {
           final List<QueryDocumentSnapshot> circleDocs = _circle.docs.value;
-          // Wait for BOTH first pages (S1), so the first Fly Mix ranks
-          // posts and reposts together. A failed page counts as loaded.
-          if (!_posts.loaded.value || !_reposts.loaded.value) {
-            return const Center(
-              child: CircularProgressIndicator(color: Colors.redAccent),
-            );
+          final bool fromServer = _fromServer;
+          if (fromServer) {
+            // S2: wait for the server list (a failure counts as loaded
+            // and switches to the pages).
+            if (!_server.loaded.value) {
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.redAccent),
+              );
+            }
+          } else {
+            if (!_pagersStarted) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _startPagers();
+              });
+            }
+            // Wait for BOTH first pages (S1), so the first Fly Mix ranks
+            // posts and reposts together. A failed page counts as loaded.
+            if (!_posts.loaded.value || !_reposts.loaded.value) {
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.redAccent),
+              );
+            }
           }
           final Set<String> deleted = homeDeletedPosts.value;
 
-          // Everyone posts + my circle's private ones, no duplicates.
+          // My circle's posts (live) + Everyone posts, no duplicates -
+          // the circle copy wins (it is live, e.g. my fresh upload).
           final Map<String, QueryDocumentSnapshot> postsById = {
-            for (final d in _posts.docs.value) d.id: d,
+            if (!fromServer)
+              for (final d in _posts.docs.value) d.id: d,
             for (final d in circleDocs) d.id: d,
           }..removeWhere((id, _) => deleted.contains(id));
           final ownDocs = postsById.values.toList();
-          final repostDocs = _reposts.docs.value
-              .where((d) => !deleted
-                  .contains((d.data()['originalPostId'] as String?) ?? ''))
-              .toList();
+          final repostDocs = fromServer
+              ? const <QueryDocumentSnapshot<Map<String, dynamic>>>[]
+              : _reposts.docs.value
+                  .where((d) => !deleted
+                      .contains((d.data()['originalPostId'] as String?) ?? ''))
+                  .toList();
+          // S2: the server list (Everyone posts + reposts).
+          final List<ServerFeedItem> serverItems = fromServer
+              ? _server.items.value
+                  .where((s) =>
+                      !deleted.contains(s.postId) &&
+                      (s.isRepost || !postsById.containsKey(s.id)))
+                  .toList()
+              : const <ServerFeedItem>[];
 
           // Combine original posts with shared videos (reposts) into
           // one newest-first feed, so a video someone shares shows up
@@ -437,6 +501,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     FirebaseAuth.instance.currentUser?.uid))
                 .map((d) => _FeedItem.post(d)),
             ...repostDocs.map((d) => _FeedItem.repost(d)),
+            ...serverItems.map((s) => _FeedItem.server(s)),
           ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
           // Never show posts/reposts from accounts you've blocked,
@@ -518,7 +583,9 @@ class _HomeScreenState extends State<HomeScreen> {
           if (feedItems.isEmpty) {
             // S1: the first page failed (no internet) - say so and
             // let the person try again.
-            if (_posts.error != null && _reposts.docs.value.isEmpty) {
+            if (!fromServer &&
+                _posts.error != null &&
+                _reposts.docs.value.isEmpty) {
               return Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,

@@ -718,6 +718,40 @@ class _FeedItem {
         effectsBaked =
             (doc.data() as Map<String, dynamic>)['effectsBaked'] as bool? ??
                 false;
+
+  // 25 Nov 2026 (S2): a For You item from the Worker's ready-made list
+  // (server_feed.dart) - the same fields as .post / .repost, from JSON.
+  _FeedItem.server(ServerFeedItem s)
+      : feedKey = s.isRepost ? 'repost_${s.id}' : 'post_${s.id}',
+        postId = s.postId,
+        videoUrl = s.data['videoUrl'] as String? ?? '',
+        caption = s.data['caption'] as String? ?? '',
+        userEmail = s.data['userEmail'] as String? ??
+            (s.isRepost ? '' : 'Unknown user'),
+        videoType = s.data['videoType'] as String? ?? 'short',
+        originalUserId = (s.isRepost
+                ? s.data['originalUserId'] as String?
+                : s.data['userId'] as String?) ??
+            '',
+        reactionCount =
+            s.isRepost ? 0 : (s.data['reactionCount'] as num?)?.toInt() ?? 0,
+        viewCount =
+            s.isRepost ? 0 : (s.data['viewCount'] as num?)?.toInt() ?? 0,
+        isRepost = s.isRepost,
+        createdAt = s.createdAt,
+        note = s.isRepost ? s.data['note'] as String? : null,
+        sharedByName = s.isRepost ? s.data['sharedByName'] as String? : null,
+        sharedByUserId = s.isRepost ? s.data['sharedBy'] as String? : null,
+        sharedByPhoto = s.isRepost ? s.data['sharedByPhoto'] as String? : null,
+        videoSpeed = (s.data['videoSpeed'] as num?)?.toDouble() ?? 1.0,
+        filterType = s.data['filterType'] as String? ?? 'none',
+        blurBackground = s.data['blurBackground'] as bool? ?? true,
+        textOverlays = (s.data['textOverlays'] as List<dynamic>?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(TextOverlayData.fromMap)
+                .toList() ??
+            const [],
+        effectsBaked = s.data['effectsBaked'] as bool? ?? false;
 }
 
 // Full-screen, swipeable viewer of a single user's videos (opened from a

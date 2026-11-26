@@ -190,6 +190,14 @@
 //  GET /admin-auth-config?token=SEARCH_ADMIN_TOKEN[&set=1] - shows the
 //                         Firebase Auth email action URL; set=1 points it
 //                         at <this Worker>/auth-action (6 Nov 2026).
+//  POST /feed            - (24 Nov 2026, Scale plan 2 S2) the For You list,
+//                         ranked on the server and kept in KV (FEED_KV):
+//                         {builtAt, items: [{kind, id, createdAtMs, score,
+//                         data}]}. 0 Firestore reads per call. See the
+//                         "For You feed, made on the server" section.
+//  GET /feed-rebuild?token=SEARCH_ADMIN_TOKEN - rebuilds that list now and
+//                         shows it (Ko's check page). &view=1 = only show
+//                         the current list and its age, no rebuild.
 //  GET /moderation-video-test?token=SEARCH_ADMIN_TOKEN&video=ID - shows
 //                         that re-check's scores for one video; removes
 //                         nothing. With &remove=1 it runs the real
@@ -214,6 +222,9 @@
 //   SEARCH_ADMIN_TOKEN      - any long random string, only for
 //                             /search-backfill?token=...
 // plus a D1 binding (Settings -> Bindings): SEARCH_DB -> fly-search.
+// plus (24 Nov 2026, S2 For You list) a KV binding (Settings -> Bindings):
+//   FEED_KV -> KV namespace `fly-feed` (prod) / `fly-feed-dev` (dev)
+// and a Cron Trigger (Settings -> Triggers): */5 * * * *
 // and one for the Bunny webhook:
 //   BUNNY_WEBHOOK_TOKEN     - any long random string; the same value goes
 //                             at the end of the Webhook URL set in Bunny
@@ -237,7 +248,13 @@ const FIREBASE_JWKS_URL =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
 
 export default {
-  async fetch(request, env) {
+  // 24 Nov 2026 (S2): Cron Trigger (Settings -> Triggers, every 5 min)
+  // rebuilds the For You list in KV.
+  async scheduled(event, env, ctx) {
+    if (env.FEED_KV) ctx.waitUntil(feedRebuildSoon(env));
+  },
+
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // Public account-deletion page + its form (no Firebase sign-in - the
@@ -355,6 +372,10 @@ export default {
     if (request.method === 'GET' && url.pathname === '/moderation-video-test') {
       return handleModerationVideoTest(env, url);
     }
+    // 24 Nov 2026 (S2): Ko's For You check page (token-protected).
+    if (request.method === 'GET' && url.pathname === '/feed-rebuild') {
+      return handleFeedRebuildPage(env, url);
+    }
     if (request.method === 'GET' && url.pathname === '/admin-auth-config') {
       return handleAdminAuthConfig(env, url);
     }
@@ -374,7 +395,7 @@ export default {
     // Bunny's own webhook - authenticated by its URL token instead of a
     // user's Firebase token, so it's routed before that check.
     if (url.pathname === '/bunny-webhook') {
-      return handleBunnyWebhook(request, env, url);
+      return handleBunnyWebhook(request, env, url, ctx);
     }
 
     // { uid } for a verified Firebase user, { uid: null } for a legacy
@@ -433,7 +454,14 @@ export default {
       return handleWeather(request, env, url);
     }
     if (path === '/search-index-post') {
+      // 24 Nov 2026 (S2): a new post -> rebuild the For You list too.
+      // 26 Nov 2026: unless the list is under 10 s old (was 60 s).
+      ctx.waitUntil(feedRebuildSoon(env, FEED_NEW_POST_MIN_MS));
       return handleSearchIndexPost(body, env, caller);
+    }
+    // 24 Nov 2026 (S2): the ready-made For You list (from KV).
+    if (path === '/feed') {
+      return handleFeed(body, env, ctx);
     }
     if (path === '/search-log') {
       return handleSearchLog(body, env, caller);
@@ -895,7 +923,7 @@ async function deleteBunnyVideo(env, videoId) {
 // that bunnyVideoId. The app does the mirror image (creates the post,
 // THEN reads videoStatus), so whichever side is second always catches
 // the "ready" signal - even if encoding finishes before the post exists.
-async function handleBunnyWebhook(request, env, url) {
+async function handleBunnyWebhook(request, env, url, ctx) {
   const token = url.searchParams.get('token');
   if (!env.BUNNY_WEBHOOK_TOKEN || token !== env.BUNNY_WEBHOOK_TOKEN) {
     return new Response('Unauthorized', { status: 401 });
@@ -967,6 +995,7 @@ async function handleBunnyWebhook(request, env, url) {
       updatedAt: new Date(),
     });
 
+    let postChanged = false;
     for (const collection of ['posts', 'stories']) {
       const docNames = await firestoreFindByField(
         env,
@@ -989,6 +1018,7 @@ async function handleBunnyWebhook(request, env, url) {
         const patch = { videoReady: ready, videoFailed: failed };
         if (doc && !(doc.fields && doc.fields.audience)) patch.audience = 'everyone';
         await firestorePatchByName(accessToken, name, patch);
+        if (collection === 'posts') postChanged = true;
         // A post whose video just became playable goes into search
         // (best-effort - search must never make Bunny retry the webhook).
         if (collection === 'posts' && ready && env.SEARCH_DB && doc) {
@@ -1001,6 +1031,9 @@ async function handleBunnyWebhook(request, env, url) {
         }
       }
     }
+
+    // 24 Nov 2026 (S2): a post's video is ready / failed -> For You list.
+    if (postChanged && ctx) ctx.waitUntil(feedRebuildSoon(env));
 
     return new Response('OK', { status: 200 });
   } catch (err) {
@@ -3399,6 +3432,284 @@ async function handleMigrateCounts(env, url) {
   } catch (err) {
     return html(`<h2>❌ Error</h2><pre>${String(err.message)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`);
+  }
+}
+
+// ---------------------------------------------------------------------
+// For You feed, made on the server (24 Nov 2026, Scale plan 2 step S2)
+// ---------------------------------------------------------------------
+// Before: EVERY phone read the newest 30 posts + 10 reposts from
+// Firestore on every app start and ranked them itself (Fly Mix) - the
+// same 40 docs read again and again by everyone, and older good videos
+// never came back once 30 newer ones existed.
+//
+// Now the Worker reads Firestore ONCE per rebuild, scores the candidates
+// (fresh + liked + viewed - the parts of Fly Mix that are the same for
+// everyone) and keeps the ready-made list in Cloudflare KV (binding
+// FEED_KV, key FEED_KV_KEY). POST /feed answers from KV = 0 Firestore
+// reads per app start. The phone still does the personal part (unwatched
+// first, its own random mix, blocked / reported removed) with FeedMix.
+//
+// Only `audience == 'everyone'` posts whose video did not fail are in the
+// list (reports that hide / limit a post change its audience, so they
+// drop out at the next rebuild). Private posts of my circle and the
+// Following tab still come from Firestore on the phone.
+//
+// Rebuilt: every 5 minutes by the Cron Trigger (scheduled() above), right
+// after a new post (/search-index-post) and when Bunny says a video is
+// ready (/bunny-webhook) - but never more than once per
+// FEED_MIN_REBUILD_MS (KV free plan: 1,000 writes a day). /feed itself
+// rebuilds in the background if the list is older than FEED_STALE_MS
+// (e.g. the Cron Trigger is missing) and builds it once if KV is empty.
+// Without the FEED_KV binding /feed answers 503 and the app falls back to
+// its old Firestore pages - so deploying this Worker first is safe.
+//
+// Ko's check page: GET /feed-rebuild?token=SEARCH_ADMIN_TOKEN rebuilds
+// now and shows the list (counts + the top videos).
+const FEED_KV_KEY = 'feed:v1';
+const FEED_POSTS_SCAN = 300;
+const FEED_REPOSTS_SCAN = 100;
+const FEED_MAX_ITEMS = 200;
+const FEED_STALE_MS = 10 * 60 * 1000;
+const FEED_MIN_REBUILD_MS = 60 * 1000;
+// 26 Nov 2026: a NEW post rebuilds unless the list is younger than this
+// (with the 60 s rule a post made right after a Cron rebuild waited up to
+// 5 minutes - phone B did not see A's new video on refresh).
+const FEED_NEW_POST_MIN_MS = 10 * 1000;
+// How long a Cloudflare location may keep its copy of the list (KV's
+// smallest allowed value) - so a rebuild reaches phones within ~30 s.
+const FEED_KV_CACHE_TTL = 30;
+// 26 Nov 2026: pull-to-refresh sends {fresh: true}. If the list is older
+// than this, /feed rebuilds it FIRST and answers with the new list itself
+// (not via KV, which can be ~60 s behind in other places) - so a video
+// someone just posted shows on the next pull-to-refresh. Ko's test: B
+// still did not see A's new video after refreshing.
+const FEED_REFRESH_MIN_MS = 60 * 1000;
+
+// Only the fields the app's _FeedItem needs (home_feeds.dart) - a
+// projection, so Firestore sends less and the KV list stays small.
+const FEED_POST_FIELDS = [
+  'videoUrl', 'caption', 'userEmail', 'videoType', 'userId',
+  'reactionCount', 'viewCount', 'createdAt', 'videoSpeed', 'filterType',
+  'blurBackground', 'textOverlays', 'effectsBaked', 'audience',
+  'videoFailed',
+];
+const FEED_REPOST_FIELDS = [
+  'originalPostId', 'videoUrl', 'caption', 'userEmail', 'videoType',
+  'originalUserId', 'createdAt', 'note', 'sharedByName', 'sharedBy',
+  'sharedByPhoto', 'videoSpeed', 'filterType', 'blurBackground',
+  'textOverlays', 'effectsBaked',
+];
+
+// Firestore REST value -> plain JSON. Timestamps become milliseconds.
+function fsPlainValue(v) {
+  if (!v || typeof v !== 'object') return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return Number(v.doubleValue);
+  if ('booleanValue' in v) return v.booleanValue === true;
+  if ('timestampValue' in v) {
+    const t = Date.parse(v.timestampValue);
+    return Number.isFinite(t) ? t : 0;
+  }
+  if ('arrayValue' in v) {
+    return ((v.arrayValue && v.arrayValue.values) || []).map(fsPlainValue);
+  }
+  if ('mapValue' in v) return fsPlainObject((v.mapValue && v.mapValue.fields) || {});
+  return null;
+}
+function fsPlainObject(fields) {
+  const out = {};
+  for (const [key, value] of Object.entries(fields || {})) {
+    out[key] = fsPlainValue(value);
+  }
+  return out;
+}
+
+async function feedRunQuery(env, accessToken, structuredQuery) {
+  const response = await fetch(`${firestoreBase(env)}:runQuery`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ structuredQuery }),
+  });
+  if (!response.ok) {
+    throw new Error(`Feed query failed: ${await response.text()}`);
+  }
+  const rows = await response.json();
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => row && row.document)
+    .filter((doc) => !!doc && !!doc.name);
+}
+
+// The everyone-part of Fly Mix (lib/screens/feed_mix.dart FeedMix.score
+// without "watched", "pinned" and the random part, which are per phone).
+function feedScore(ageHours, reactions, views) {
+  return 2.2 * Math.exp(-Math.max(0, ageHours) / 36) +
+    0.6 * Math.log(1 + Math.max(0, reactions)) +
+    0.3 * Math.log(1 + Math.max(0, views));
+}
+
+// Reads Firestore, ranks, writes the list to KV and returns it.
+async function feedRebuild(env) {
+  const accessToken = await getGoogleAccessToken(env, DATASTORE_SCOPE);
+  const select = (names) => ({ fields: names.map((fieldPath) => ({ fieldPath })) });
+  const newestFirst = [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }];
+  const [postDocs, repostDocs] = await Promise.all([
+    // Same query (and composite index audience + createdAt) as the app.
+    feedRunQuery(env, accessToken, {
+      select: select(FEED_POST_FIELDS),
+      from: [{ collectionId: 'posts' }],
+      where: {
+        fieldFilter: {
+          field: { fieldPath: 'audience' },
+          op: 'EQUAL',
+          value: { stringValue: 'everyone' },
+        },
+      },
+      orderBy: newestFirst,
+      limit: FEED_POSTS_SCAN,
+    }),
+    feedRunQuery(env, accessToken, {
+      select: select(FEED_REPOST_FIELDS),
+      from: [{ collectionId: 'reposts' }],
+      orderBy: newestFirst,
+      limit: FEED_REPOSTS_SCAN,
+    }),
+  ]);
+
+  const now = Date.now();
+  const items = [];
+  for (const doc of postDocs) {
+    const data = fsPlainObject(doc.fields);
+    if (data.videoFailed === true || !data.videoUrl) continue;
+    const createdAtMs = Number(data.createdAt) || 0;
+    delete data.createdAt;
+    items.push({
+      kind: 'post',
+      id: docIdFromName(doc.name),
+      createdAtMs,
+      score: feedScore((now - createdAtMs) / 3600000,
+        Number(data.reactionCount) || 0, Number(data.viewCount) || 0),
+      data,
+    });
+  }
+  for (const doc of repostDocs) {
+    const data = fsPlainObject(doc.fields);
+    if (!data.videoUrl || !data.originalPostId) continue;
+    const createdAtMs = Number(data.createdAt) || 0;
+    delete data.createdAt;
+    items.push({
+      kind: 'repost',
+      id: docIdFromName(doc.name),
+      createdAtMs,
+      score: feedScore((now - createdAtMs) / 3600000, 0, 0),
+      data,
+    });
+  }
+  items.sort((a, b) => b.score - a.score);
+  const feed = {
+    builtAt: now,
+    scanned: { posts: postDocs.length, reposts: repostDocs.length },
+    items: items.slice(0, FEED_MAX_ITEMS),
+  };
+  await env.FEED_KV.put(FEED_KV_KEY, JSON.stringify(feed));
+  return feed;
+}
+
+// A rebuild "soon" (Cron / new post / video ready): skipped if the list
+// is younger than [minAgeMs] (default FEED_MIN_REBUILD_MS). Never throws.
+async function feedRebuildSoon(env, minAgeMs = FEED_MIN_REBUILD_MS) {
+  if (!env.FEED_KV) return;
+  try {
+    const current = await env.FEED_KV.get(FEED_KV_KEY, 'json');
+    if (current && Date.now() - Number(current.builtAt || 0) < minAgeMs) {
+      return;
+    }
+    await feedRebuild(env);
+  } catch (err) {
+    console.log('feed rebuild failed', err.message);
+  }
+}
+
+// POST /feed (signed-in app). Body {fresh: true} on pull-to-refresh.
+// Answer: {builtAt, items: [{kind: 'post' | 'repost', id, createdAtMs,
+// score, data}]}, best first.
+async function handleFeed(body, env, ctx) {
+  if (!env.FEED_KV) return jsonResponse({ error: 'feed not set up' }, 503);
+  try {
+    let feed = await env.FEED_KV.get(FEED_KV_KEY, {
+      type: 'json',
+      cacheTtl: FEED_KV_CACHE_TTL,
+    });
+    const fresh = !!(body && body.fresh === true);
+    if (!feed || !Array.isArray(feed.items) ||
+        (fresh && Date.now() - Number(feed.builtAt || 0) > FEED_REFRESH_MIN_MS)) {
+      feed = await feedRebuild(env);
+    } else if (Date.now() - Number(feed.builtAt || 0) > FEED_STALE_MS) {
+      ctx.waitUntil(feedRebuildSoon(env));
+    }
+    return new Response(JSON.stringify({ builtAt: feed.builtAt, items: feed.items }), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (err) {
+    return jsonResponse({ error: `feed failed: ${err.message}` }, 500);
+  }
+}
+
+// GET /feed-rebuild?token=SEARCH_ADMIN_TOKEN - Ko's check page.
+async function handleFeedRebuildPage(env, url) {
+  const html = (body) =>
+    new Response(
+      `<!doctype html><meta name="viewport" content="width=device-width">` +
+        `<body style="font-family:sans-serif;padding:24px;max-width:720px">` +
+        `${body}</body>`,
+      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    );
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const token = url.searchParams.get('token') || '';
+  if (!env.SEARCH_ADMIN_TOKEN || token !== env.SEARCH_ADMIN_TOKEN) {
+    return new Response('Not allowed', { status: 403 });
+  }
+  if (!env.FEED_KV) {
+    return html('<h2>❌ FEED_KV binding missing</h2>' +
+      '<p>Settings → Bindings → Add → KV namespace, name <b>FEED_KV</b>.</p>');
+  }
+  try {
+    // 26 Nov 2026: &view=1 shows the list phones get NOW, without
+    // rebuilding it - to see whether a new post is in it and how old it is.
+    const viewOnly = url.searchParams.get('view') === '1';
+    const feed = viewOnly
+      ? await env.FEED_KV.get(FEED_KV_KEY, 'json')
+      : await feedRebuild(env);
+    if (!feed || !Array.isArray(feed.items)) {
+      return html('<h2>❌ No list in KV yet</h2>');
+    }
+    const ageSec = Math.round((Date.now() - Number(feed.builtAt || 0)) / 1000);
+    const posts = feed.items.filter((i) => i.kind === 'post').length;
+    const rows = feed.items.slice(0, 15).map((i, n) =>
+      `<li>${n + 1}. <b>${i.kind}</b> · score ${i.score.toFixed(2)} · ` +
+      `${esc(new Date(i.createdAtMs).toISOString().slice(0, 16))} · ` +
+      `${esc(String(i.data.caption || '').slice(0, 40)) || '<i>(no caption)</i>'}</li>`,
+    ).join('');
+    return html(
+      `<h2>${viewOnly ? '👀 Current list (not rebuilt)' : '🎉 Feed rebuilt'}</h2>` +
+        `<p>Project: <b>${esc(env.FIREBASE_PROJECT_ID)}</b></p>` +
+        `<p>Built: <b>${ageSec}</b> seconds ago</p>` +
+        `<p>Scanned: <b>${(feed.scanned || {}).posts}</b> posts · ` +
+        `<b>${(feed.scanned || {}).reposts}</b> reposts</p>` +
+        `<p>In the list: <b>${feed.items.length}</b> ` +
+        `(${posts} posts, ${feed.items.length - posts} reposts)</p>` +
+        `<p>Top 15:</p><ol style="list-style:none;padding:0">${rows}</ol>`,
+    );
+  } catch (err) {
+    return html(`<h2>❌ Error</h2><pre>${esc(err.message)}</pre>`);
   }
 }
 

@@ -45,7 +45,10 @@
 > re-run (see the 24 Nov 00:45 entry). Nothing from the 23 Nov prod
 > release is open any more. 24 Nov 01:06: Bunny checked - prod Stream
 > library is ALREADY on the High Volume tier, no card / no limit for now
-> (see the 24 Nov 01:06 entry). Next: Scale plan 2 step S2._
+> (see the 24 Nov 01:06 entry). 26 Nov 23:52: **S2 (server-made For You,
+> Worker + KV) confirmed on DEV** (`FlyDev-bn263302308.apk`, see the 26 Nov
+> 23:52 entry). Next: **S2c** = the same on PROD (KV `fly-feed` + binding
+> + Cron on `livekit-token-worker`, Worker deploy, prod APK on A and B)._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2632,6 +2635,51 @@ OK). Play Console: Terms URL =
 > `fly-dev` library tier not checked. Biggest Bunny cost is Premium
 > Encoding (~$0.05 per video minute), not bandwidth._
 >
+> _26 Nov 2026 (23:52) - **Scale plan 2 step S2: For You made on the
+> server - DONE on DEV** (confirmed by Ko on A and B with
+> `FlyDev-bn263302308.apk`, 382 s; analyze "No issues found"; 5c NEW
+> `ServerFeed: refresh failed` True / OLD `ServerFeed: failed (` False).
+> Before: every phone read the newest 30 posts + 10 reposts from
+> Firestore on every app start (FeedPager, S1). Now:
+> **Worker** (`livekit_token_worker.js`, section "For You feed, made on
+> the server"): `feedRebuild` runs ONE Firestore runQuery for the newest
+> 300 `audience == 'everyone'` posts (same index as the app, field
+> projection = only what `_FeedItem` needs) + 100 reposts, drops
+> `videoFailed`, scores = the everyone-part of Fly Mix (2.2*exp(-ageH/36)
+> + 0.6*ln(1+reactions) + 0.3*ln(1+views)), keeps the best 200 in KV
+> (binding **`FEED_KV`**, key `feed:v1`, `{builtAt, scanned, items:[{kind,
+> id, createdAtMs, score, data}]}`). Rebuilt by a **Cron Trigger `*/5 * *
+> * *`** (`scheduled()`), after `/search-index-post` (new post; unless the
+> list is <10 s old), after the Bunny webhook marks a post ready/failed
+> (<60 s rule), and on **`POST /feed` with `{fresh: true}`** (app
+> pull-to-refresh) if the list is >60 s old - then /feed answers with the
+> NEW list directly (KV copies in other locations can be ~60 s behind:
+> this was why phone B first did not see A's new video). `/feed` reads KV
+> with `cacheTtl: 30`; no KV binding -> 503 (app falls back). Ko's page:
+> `GET /feed-rebuild?token=SEARCH_ADMIN_TOKEN` (rebuilds + shows top 15),
+> `&view=1` = show the current KV list and its age, no rebuild.
+> **App:** new `lib/screens/server_feed.dart` (`ServerFeed`: one POST
+> /feed, 10 s timeout / 20 s when fresh; `failed` only if there is no list
+> at all - a failed refresh keeps the old list); `home_feeds.dart`
+> `_FeedItem.server(ServerFeedItem)`; `home_screen.dart`: For You =
+> server list + my circle's live posts (the circle copy wins on
+> duplicates, so my own upload shows at once); the S1 `FeedPager`s now load
+> ONLY for the Following tab or when the server list failed
+> (`_startPagers`), no paging in server mode (whole list at once);
+> pull-to-refresh = `_server.refresh(fresh: true)`. Fly Mix (unwatched
+> first, random, spread creators, blocked/reported out) still runs on the
+> phone. **DEV setup done:** KV namespace `fly-feed-dev` (Standard
+> location), binding `FEED_KV` on fly-dev-worker, Cron `*/5 * * * *`;
+> `/feed-rebuild` showed fly-dev-58b29, 23 posts. **Free-plan limits:** KV
+> 100k reads / 1,000 writes a day (Cron = 288 writes; fresh rebuilds at
+> most 1/min) - move to Workers Paid ($5/mo) when users grow. Firestore
+> rules: no change. **STILL OPEN - S2c (prod):** KV namespace `fly-feed`,
+> binding `FEED_KV` + Cron `*/5 * * * *` on `livekit-token-worker`, deploy
+> this Worker (live-vs-repo check first), `/feed-rebuild` on aung-1756e,
+> then prod APK on A and B. Until then the prod app (old) is unaffected,
+> and a new prod app without the prod KV falls back to the Firestore pages
+> (/feed -> 404/503)._
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -4536,7 +4584,8 @@ Workers, D1, storage are small IF the reads are fixed. Steps:
       comments = 10,000 reads per view. Add commentCount / shareCount /
       saveCount on the post (rules step like viewCount + a one-time Worker
       migration), show the numbers, list comments only when the sheet opens.
-  S2. Server-made For You: a Worker builds the ranked candidate list
+  S2. **DONE on DEV 26 Nov 2026** (see the 26 Nov 23:52 entry; prod =
+      S2c, still open). Was: Server-made For You: a Worker builds the ranked candidate list
       (FeedMix-style score) every few minutes and caches it (KV / Cache
       API); the app pages through it -> Firestore reads ~0 for the feed,
       and new videos reach everyone, not only the newest 100.
