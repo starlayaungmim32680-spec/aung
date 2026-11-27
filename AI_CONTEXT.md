@@ -47,8 +47,10 @@
 > library is ALREADY on the High Volume tier, no card / no limit for now
 > (see the 24 Nov 01:06 entry). 26 Nov 23:52: **S2 (server-made For You,
 > Worker + KV) confirmed on DEV** (`FlyDev-bn263302308.apk`, see the 26 Nov
-> 23:52 entry). Next: **S2c** = the same on PROD (KV `fly-feed` + binding
-> + Cron on `livekit-token-worker`, Worker deploy, prod APK on A and B)._
+> 23:52 entry). 28 Nov 00:35: **S2 also on PROD** (`Fly-bn263312303.apk`
+> on A and B, KV `fly-feed`, Cloudinary videos left out of the list - see
+> the 28 Nov 00:35 entry). Scale plan 2: S1, S1b, S2, S4 done; S3 (hot
+> counters) open._
 > _Latest small update: 1 Oct 2026 — chat photos/voice notes moved from
 > Cloudinary to Bunny Storage; chat streams built once; note on networks
 > that can't reach Firestore; Messenger-style Sent/Delivered/Seen and
@@ -2680,6 +2682,31 @@ OK). Play Console: Terms URL =
 > and a new prod app without the prod KV falls back to the Firestore pages
 > (/feed -> 404/503)._
 >
+> _28 Nov 2026 (00:35) - **S2c: server-made For You on PROD - DONE**
+> (confirmed by Ko on A and B). Prod Worker `livekit-token-worker` was
+> first checked equal to `aa467e8` (`git diff --ignore-cr-at-eol --stat
+> aa467e8 -- cloudflare/livekit_token_worker.js` empty, then `git checkout`
+> back to the S2 file). Prod setup: KV namespace **`fly-feed`** (Standard),
+> binding `FEED_KV` -> `fly-feed` on livekit-token-worker, Cron `*/5 * * *
+> *` (the Schedule tab first showed "30" minutes - use the Cron expression
+> tab; the Trigger page then needs **Save** on "Unsaved changes"). Worker
+> deployed; `/feed-rebuild` = aung-1756e, 62 posts + 2 reposts scanned.
+> `Fly-bn263312303.apk` (`--flavor prod`, 221 s; 5c NEW `ServerFeed:
+> refresh failed` True / OLD `ServerFeed: failed (` False) on A and B.
+> **Bug found on prod and fixed in the Worker only:** the first For You
+> video showed "Couldn't load - tap to retry" - the list ranks liked
+> videos high, and prod's most-liked videos are the OLD Cloudinary ones
+> (June-Oct), which cannot play (Cloudinary account disabled); before S2
+> the feed was newest-first, so they sat at the bottom. DEV has only Bunny
+> videos, so it never showed there. Fix: `FEED_DEAD_VIDEO_HOSTS =
+> ['res.cloudinary.com']` + `feedVideoPlayable()` - posts and reposts with
+> such a videoUrl are left out of the list (remove if Cloudinary is ever
+> reactivated). After it: 27 posts, 0 reposts in the list (both prod
+> reposts were Cloudinary videos). Deployed on livekit-token-worker AND
+> fly-dev-worker. Test: A posts -> B pull-to-refresh at the first video ->
+> the new video is at the top. (Profile / Following still show the old
+> Cloudinary videos that cannot play - old problem, not S2.)_
+>
 >
 > _Last checked against the code: 27 Sep 2026 (commit `5955a16`) — fixed
 > the nav-bar description, package list and feature list, and added Sky
@@ -4584,8 +4611,8 @@ Workers, D1, storage are small IF the reads are fixed. Steps:
       comments = 10,000 reads per view. Add commentCount / shareCount /
       saveCount on the post (rules step like viewCount + a one-time Worker
       migration), show the numbers, list comments only when the sheet opens.
-  S2. **DONE on DEV 26 Nov 2026** (see the 26 Nov 23:52 entry; prod =
-      S2c, still open). Was: Server-made For You: a Worker builds the ranked candidate list
+  S2. **DONE on DEV 26 Nov 2026 and PROD 28 Nov 2026** (see the 26 Nov
+      23:52 and 28 Nov 00:35 entries). Was: Server-made For You: a Worker builds the ranked candidate list
       (FeedMix-style score) every few minutes and caches it (KV / Cache
       API); the app pages through it -> Firestore reads ~0 for the feed,
       and new videos reach everyone, not only the newest 100.

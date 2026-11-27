@@ -3479,6 +3479,17 @@ const FEED_NEW_POST_MIN_MS = 10 * 1000;
 // How long a Cloudflare location may keep its copy of the list (KV's
 // smallest allowed value) - so a rebuild reaches phones within ~30 s.
 const FEED_KV_CACHE_TTL = 30;
+// 28 Nov 2026: videos still hosted on Cloudinary cannot play (that account
+// is disabled - AI_CONTEXT "Cloudinary account ... disabled"). On PROD the
+// server list ranked old liked Cloudinary videos first, so the first video
+// showed "Couldn't load - tap to retry" (DEV has only Bunny videos, so it
+// looked fine there). Leave them out of the For You list. Remove this if
+// Cloudinary is ever reactivated.
+const FEED_DEAD_VIDEO_HOSTS = ['res.cloudinary.com'];
+function feedVideoPlayable(url) {
+  const u = String(url || '');
+  return u !== '' && !FEED_DEAD_VIDEO_HOSTS.some((h) => u.includes(h));
+}
 // 26 Nov 2026: pull-to-refresh sends {fresh: true}. If the list is older
 // than this, /feed rebuilds it FIRST and answers with the new list itself
 // (not via KV, which can be ~60 s behind in other places) - so a video
@@ -3584,7 +3595,7 @@ async function feedRebuild(env) {
   const items = [];
   for (const doc of postDocs) {
     const data = fsPlainObject(doc.fields);
-    if (data.videoFailed === true || !data.videoUrl) continue;
+    if (data.videoFailed === true || !feedVideoPlayable(data.videoUrl)) continue;
     const createdAtMs = Number(data.createdAt) || 0;
     delete data.createdAt;
     items.push({
@@ -3598,7 +3609,7 @@ async function feedRebuild(env) {
   }
   for (const doc of repostDocs) {
     const data = fsPlainObject(doc.fields);
-    if (!data.videoUrl || !data.originalPostId) continue;
+    if (!feedVideoPlayable(data.videoUrl) || !data.originalPostId) continue;
     const createdAtMs = Number(data.createdAt) || 0;
     delete data.createdAt;
     items.push({
